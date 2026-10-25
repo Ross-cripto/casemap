@@ -294,9 +294,9 @@ fn compute_rows(
     let open = |rank: usize, r: &mut i32, open_row: &mut Vec<i32>| {
         let ds = depths(&|(lo, _)| lo == rank);
         for (k, &dep) in ds.iter().enumerate() {
-            for c in 0..nc {
-                if cl.depth[c] == dep && cl.rank[c].is_some_and(|(lo, _)| lo == rank) {
-                    open_row[c] = *r + k as i32;
+            for (cluster, row) in open_row.iter_mut().enumerate() {
+                if cl.depth[cluster] == dep && cl.rank[cluster].is_some_and(|(lo, _)| lo == rank) {
+                    *row = *r + k as i32;
                 }
             }
         }
@@ -321,9 +321,9 @@ fn compute_rows(
         if !ds.is_empty() {
             r += 1 + extra_pad[l];
             for (k, &dep) in ds.iter().enumerate() {
-                for c in 0..nc {
-                    if cl.depth[c] == dep && cl.rank[c].is_some_and(|(_, hi)| hi == l) {
-                        close_row[c] = r + k as i32;
+                for (cluster, row) in close_row.iter_mut().enumerate() {
+                    if cl.depth[cluster] == dep && cl.rank[cluster].is_some_and(|(_, hi)| hi == l) {
+                        *row = r + k as i32;
                     }
                 }
             }

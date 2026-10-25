@@ -3,13 +3,16 @@
 Rust CLI and library that renders Mermaid flowcharts as clean terminal diagrams, built to keep an architecture diagram open in a side pane while working on the code.
 
 - Type: my own open source project (MIT), in `~/Code/open-source-projects/strata`.
-- Stack: Rust 2021, one dependency (`unicode-width`).
+- Stack: Rust 2024 (MSRV 1.85); library deps unicode-width + thiserror; CLI behind the `cli` feature (clap, clap_complete, anyhow, notify).
 
 ## Commands
 
 ```bash
 cargo build
 cargo test                                      # invariants over tests/fixtures in all four directions
+cargo test --no-default-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo insta review
 cargo run -- examples/simple.mmd                # render once
 cargo run -- --watch examples/architecture.mmd  # redraw on every save
 ```
