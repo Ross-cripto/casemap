@@ -192,8 +192,8 @@ fn assign_slots(prefs: &[(f64, f64)], lo: i32, hi: i32) -> Vec<i32> {
     let inf = f64::INFINITY;
     let mut dp = vec![vec![inf; s]; k];
     let mut from = vec![vec![0usize; s]; k];
-    for j in 0..s {
-        dp[0][j] = cost(0, j);
+    for (j, slot) in dp[0].iter_mut().enumerate() {
+        *slot = cost(0, j);
     }
     for i in 1..k {
         let (mut best, mut best_j) = (inf, 0);

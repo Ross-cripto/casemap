@@ -175,7 +175,7 @@ let drawing = strata::render_diagram(&changes.union, &options);
 
 ## Development
 
-Rust 1.85 is the minimum supported version (MSRV); the crate uses edition 2024.
+Rust 1.88 is the minimum supported version (MSRV); the crate uses edition 2024.
 Run `cargo test` for the full suite and `cargo test --no-default-features` for
 library-only tests. Run `cargo fmt --all --check` and
 `cargo clippy --all-targets --all-features -- -D warnings` before submitting changes.

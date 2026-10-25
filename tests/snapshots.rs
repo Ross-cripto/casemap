@@ -65,15 +65,29 @@ fn cli(args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> String {
     )
 }
 
-fn repo_cli(repo: &TempRepo, args: &[&str]) -> String {
-    let run: CliRun = repo.strata(args).into();
-    let mut body = transcript(&args.join(" "), &run);
-    for revision in ["HEAD", "main"] {
-        let sha = repo.git_stdout(&["rev-parse", revision]);
-        body = body.replace(&sha[..7], "[SHA]");
+fn redact_shas(repo: &TempRepo, mut body: String) -> String {
+    for query in [
+        &["rev-parse", "HEAD"][..],
+        &["rev-parse", "main"],
+        &["merge-base", "HEAD", "main"],
+    ] {
+        let output = common::git_command(&repo.config_path())
+            .args(query)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            continue;
+        }
+        let sha = String::from_utf8(output.stdout).unwrap();
+        body = body.replace(&sha[..flows::SHORT_SHA_LEN], "[SHA]");
     }
-    let sha = repo.git_stdout(&["merge-base", "HEAD", "main"]);
-    body.replace(&sha[..7], "[SHA]")
+    body
+}
+
+fn repo_transcript(repo: &TempRepo, args: &[&str]) -> String {
+    let run: CliRun = repo.strata(args).into();
+    redact_shas(repo, transcript(&args.join(" "), &run))
 }
 
 #[test]
@@ -243,6 +257,7 @@ fn cli_no_color_then_color() {
     );
 }
 
+// pins: an explicit --color beats NO_COLOR
 #[test]
 fn cli_no_color_env() {
     insta::assert_snapshot!(
@@ -389,24 +404,15 @@ fn cli_markdown() {
     fs::write(repo.file("empty.md"), "# No diagram\n").unwrap();
     insta::assert_snapshot!(
         "cli__markdown_uppercase",
-        transcript(
-            "README.MD --no-color",
-            &repo.strata(&["README.MD", "--no-color"]).into()
-        )
+        repo_transcript(&repo, &["README.MD", "--no-color"])
     );
     insta::assert_snapshot!(
         "cli__markdown_extension",
-        transcript(
-            "flow.markdown --no-color",
-            &repo.strata(&["flow.markdown", "--no-color"]).into()
-        )
+        repo_transcript(&repo, &["flow.markdown", "--no-color"])
     );
     insta::assert_snapshot!(
         "cli__markdown_empty",
-        transcript(
-            "empty.md --no-color",
-            &repo.strata(&["empty.md", "--no-color"]).into()
-        )
+        repo_transcript(&repo, &["empty.md", "--no-color"])
     );
 }
 
@@ -415,16 +421,19 @@ fn cli_catalog_diff() {
     let repo = divergent_catalog();
     insta::assert_snapshot!(
         "cli__diff_main",
-        repo_cli(&repo, &["diff", "main", "--no-color"])
+        repo_transcript(&repo, &["diff", "main", "--no-color"])
     );
-    insta::assert_snapshot!("cli__diff_head", repo_cli(&repo, &["diff", "--no-color"]));
+    insta::assert_snapshot!(
+        "cli__diff_head",
+        repo_transcript(&repo, &["diff", "--no-color"])
+    );
     insta::assert_snapshot!(
         "cli__diff_color",
-        repo_cli(&repo, &["diff", "main", "--color"])
+        repo_transcript(&repo, &["diff", "main", "--color"])
     );
     insta::assert_snapshot!(
         "cli__diff_invalid_revision",
-        repo_cli(&repo, &["diff", "-", "--no-color"])
+        repo_transcript(&repo, &["diff", "-", "--no-color"])
     );
 }
 
@@ -439,7 +448,7 @@ fn cli_broken_flow() {
     repo.add_fixture("after", "refund.md");
     insta::assert_snapshot!(
         "cli__diff_broken_flow",
-        repo_cli(&repo, &["diff", "--no-color"])
+        repo_transcript(&repo, &["diff", "--no-color"])
     );
 }
 
@@ -449,11 +458,88 @@ fn cli_empty_catalog() {
     fs::create_dir(repo.file("empty")).unwrap();
     insta::assert_snapshot!(
         "cli__empty_catalog",
-        transcript(
-            "flows --flows empty --no-color",
-            &repo
-                .strata(&["flows", "--flows", "empty", "--no-color"])
-                .into()
+        repo_transcript(&repo, &["flows", "--flows", "empty", "--no-color"])
+    );
+}
+
+#[test]
+fn cli_no_color_env_no_flag() {
+    insta::assert_snapshot!(
+        "cli__no_color_env_no_flag",
+        cli(&["examples/simple.mmd"], &[("NO_COLOR", "1")], None)
+    );
+}
+
+#[test]
+fn cli_no_flags_piped() {
+    insta::assert_snapshot!(
+        "cli__no_flags_piped",
+        cli(&["examples/simple.mmd"], &[], None)
+    );
+}
+
+#[test]
+fn cli_flows_flag_before_subcommand() {
+    insta::assert_snapshot!(
+        "cli__flows_flag_before_subcommand",
+        cli(
+            &[
+                "--flows",
+                "tests/fixtures/flows/after",
+                "--no-color",
+                "flows"
+            ],
+            &[],
+            None
         )
+    );
+}
+
+#[test]
+fn cli_flows_repeated() {
+    insta::assert_snapshot!(
+        "cli__flows_repeated",
+        cli(
+            &[
+                "--flows",
+                "nope",
+                "--flows",
+                "tests/fixtures/flows/after",
+                "--no-color",
+                "flows"
+            ],
+            &[],
+            None
+        )
+    );
+}
+
+#[test]
+fn cli_flows_ascii_dir() {
+    insta::assert_snapshot!(
+        "cli__flows_ascii_dir",
+        cli(
+            &[
+                "flows",
+                "refund",
+                "--flows",
+                "tests/fixtures/flows/after",
+                "--ascii",
+                "--dir",
+                "LR",
+                "--no-color"
+            ],
+            &[],
+            None
+        )
+    );
+}
+
+#[test]
+fn cli_diff_ascii() {
+    let repo = divergent_catalog();
+    insta::assert_snapshot!(
+        "cli__diff_ascii",
+        repo_transcript(&repo, &["diff", "main", "--ascii", "--no-color"])
     );
 }

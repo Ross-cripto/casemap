@@ -1,0 +1,20 @@
+---
+source: tests/snapshots.rs
+assertion_line: 519
+expression: "cli(&[\"flows\", \"refund\", \"--flows\", \"tests/fixtures/flows/after\", \"--ascii\",\n\"--dir\", \"LR\", \"--no-color\"], &[], None)"
+---
+$ strata flows refund --flows tests/fixtures/flows/after --ascii --dir LR --no-color
+[exit 0]
+--- stdout
+Refund
+A customer asks for a refund and gets the money back or a reason why not.
+
+                                                                  +----------------+
+                                                      +-- yes --->| Refund to card |
++--------------------------+     /-----------------\  |           +----------------+
+| Customer requests refund +---><  Within 30 days?  >-+
++--------------------------+     \-----------------/  |           +---------------------------+
+                                                      +-- no ---->| Explain the refund policy |
+                                                                  +---------------------------+
+--- stderr
+[end]

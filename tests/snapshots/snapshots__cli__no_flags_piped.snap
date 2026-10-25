@@ -1,0 +1,32 @@
+---
+source: tests/snapshots.rs
+assertion_line: 475
+expression: "cli(&[\"examples/simple.mmd\"], &[], None)"
+---
+$ strata examples/simple.mmd
+[exit 0]
+--- stdout
+                 ┌─────────┐
+                 │ Request │
+                 └────┬────┘
+                      │
+                      ▼
+             ╱─────────────────╲
+            <  Authenticated?   >
+             ╲────────┬────────╱
+          ╭───────────┴──────────╮
+          │                      │
+         yes                    no
+          │                      │
+          ▼                      ▼
+  ┌───────────────┐    ┌───────────────────┐
+  │ Load profile  │    │ Redirect to login │
+  └───────┬───────┘    └─────────┬─────────┘
+          ├────────────╮ ╭───────╯
+          ▼            ▼ ▼
+╭───────────╮    ┌─────────────┐
+├───────────┤    │ Render page │
+│ Users DB  │    └─────────────┘
+╰───────────╯
+--- stderr
+[end]

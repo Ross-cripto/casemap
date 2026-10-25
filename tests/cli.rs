@@ -4,32 +4,15 @@ use assert_cmd::Command;
 use common::{BASE_BRANCH, FLOWS_DIR, TempRepo, divergent_catalog};
 use predicates::prelude::*;
 use std::fs;
-use std::process::Output;
+use std::io::Read;
+use std::process::{Child, Output, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use strata::flows;
 
 fn strata_command(repo: &TempRepo) -> Command {
-    let config = repo.path().parent().unwrap().join("gitconfig");
-    let isolated = common::strata_command(&config);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_strata"));
-    for (variable, value) in isolated.get_envs() {
-        match value {
-            Some(value) => {
-                command.env(variable, value);
-            }
-            None => {
-                command.env_remove(variable);
-            }
-        }
-    }
-    command
-}
-
-fn run_repo(repo: &TempRepo, args: &[&str]) -> Output {
-    strata_command(repo)
-        .args(args)
-        .current_dir(repo.path())
-        .output()
-        .unwrap()
+    Command::from_std(common::strata_command(&repo.config_path()))
 }
 
 fn stdout(output: &Output) -> String {
@@ -45,7 +28,7 @@ fn stdout(output: &Output) -> String {
 fn cli_diff_uses_merge_base_not_ref() {
     let repo = divergent_catalog();
     let sha = repo.git_stdout(&["merge-base", BASE_BRANCH, "HEAD"]);
-    let output = stdout(&run_repo(&repo, &["diff", BASE_BRANCH, "--no-color"]));
+    let output = stdout(&repo.strata(&["diff", BASE_BRANCH, "--no-color"]));
     assert_eq!(
         output.lines().next().unwrap(),
         format!(
@@ -64,7 +47,7 @@ fn cli_diff_reports_base_that_did_not_parse() {
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "broken base"]);
     fs::write(path, "# X\n```mermaid\ngraph TD\na[A]\n```\n").unwrap();
-    let output = stdout(&run_repo(&repo, &["diff", "--no-color"]));
+    let output = stdout(&repo.strata(&["diff", "--no-color"]));
     assert!(
         output.contains("X (x.md)  new flow: +1 step (base version did not parse)"),
         "{output}"
@@ -74,7 +57,7 @@ fn cli_diff_reports_base_that_did_not_parse() {
 #[test]
 fn cli_diff_against_branch_includes_uncommitted() {
     let repo = divergent_catalog();
-    let output = stdout(&run_repo(&repo, &["diff", BASE_BRANCH, "--no-color"]));
+    let output = stdout(&repo.strata(&["diff", BASE_BRANCH, "--no-color"]));
     for expected in [
         "1 modified, 1 new, 1 removed",
         "Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link",
@@ -85,14 +68,14 @@ fn cli_diff_against_branch_includes_uncommitted() {
     ] {
         assert!(output.contains(expected), "missing {expected}\n{output}");
     }
-    let output = stdout(&run_repo(&repo, &["diff", "--no-color"]));
+    let output = stdout(&repo.strata(&["diff", "--no-color"]));
     assert!(output.contains("1 modified, 0 new, 0 removed"), "{output}");
 }
 
 #[test]
 fn cli_diff_without_changes() {
     let repo = TempRepo::committed_before();
-    let output = stdout(&run_repo(&repo, &["diff", "--no-color"]));
+    let output = stdout(&repo.strata(&["diff", "--no-color"]));
     assert!(
         output.starts_with("no flow changes since HEAD ("),
         "{output}"
@@ -116,7 +99,7 @@ fn cli_diff_ignores_hidden_flow_files() {
         "# Hidden\n\n```mermaid\nflowchart TD\n    a --> c\n```\n",
     )
     .unwrap();
-    let result = run_repo(&repo, &["diff", "--no-color"]);
+    let result = repo.strata(&["diff", "--no-color"]);
     assert_eq!(result.status.code(), Some(0));
     let output = stdout(&result);
     assert!(
@@ -182,10 +165,10 @@ fn cli_flows_lists_and_renders_one() {
 #[test]
 fn cli_guide_prints_convention() {
     let repo = TempRepo::new();
-    let output = stdout(&run_repo(&repo, &["guide"]));
+    let output = stdout(&repo.strata(&["guide"]));
     assert!(output.contains("docs/flows/"));
     assert!(output.contains("strata diff main"));
-    let output = stdout(&run_repo(&repo, &["guide", "--flows", "flows"]));
+    let output = stdout(&repo.strata(&["guide", "--flows", "flows"]));
     assert!(output.contains("flows/checkout.md"));
     assert!(!output.contains("docs/flows"));
 }
@@ -199,7 +182,7 @@ fn cli_diff_reports_broken_flow_and_continues() {
     )
     .unwrap();
     repo.add_fixture("after", "refund.md");
-    let output = run_repo(&repo, &["diff", "--no-color"]);
+    let output = repo.strata(&["diff", "--no-color"]);
     assert_eq!(output.status.code(), Some(1));
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(
@@ -228,17 +211,11 @@ fn cli_diff_handles_catalog_absent_at_base_and_unusual_paths() {
         dir.join("sign in ü.md"),
     )
     .unwrap();
-    let output = stdout(&run_repo(
-        &repo,
-        &["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"],
-    ));
+    let output = stdout(&repo.strata(&["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"]));
     assert!(output.contains("0 modified, 1 new, 0 removed"), "{output}");
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "add catalog"]);
-    let output = stdout(&run_repo(
-        &repo,
-        &["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"],
-    ));
+    let output = stdout(&repo.strata(&["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"]));
     assert!(
         output.starts_with("no flow changes since HEAD ("),
         "{output}"
@@ -253,11 +230,11 @@ fn cli_render_markdown_and_reject_invalid_arguments() {
         "# Render\n```mermaid\ngraph TD\na[Visible]\n```\n",
     )
     .unwrap();
-    let output = stdout(&run_repo(&repo, &["flow.markdown", "--no-color"]));
+    let output = stdout(&repo.strata(&["flow.markdown", "--no-color"]));
     assert!(output.starts_with("Render\n"), "{output}");
     assert!(output.contains("Visible"), "{output}");
     fs::copy(repo.file("flow.markdown"), repo.file("README.MD")).unwrap();
-    let output = stdout(&run_repo(&repo, &["README.MD", "--no-color"]));
+    let output = stdout(&repo.strata(&["README.MD", "--no-color"]));
     assert!(output.starts_with("Render\n"), "{output}");
     assert!(output.contains("Visible"), "{output}");
     fs::write(repo.file("empty.md"), "# No diagram\n").unwrap();
@@ -280,7 +257,7 @@ fn cli_render_markdown_and_reject_invalid_arguments() {
         (vec!["diff", "HEAD", "extra"], "Usage:"),
         (vec!["one.mmd", "two.mmd"], "Usage:"),
     ] {
-        let output = run_repo(&repo, &args);
+        let output = repo.strata(&args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(expected),
@@ -297,11 +274,19 @@ fn usage_errors_exit_with_one() {
         vec!["--bogus"],
         vec!["--flows"],
         vec!["--dir"],
-        vec!["--dir", "XX"],
         vec!["a.mmd", "b.mmd"],
     ] {
         strata_command(&repo).args(args).assert().code(1);
     }
+    strata_command(&repo)
+        .args(["--dir", "XX"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("expects one of TD, BT, LR, RL"));
+    strata_command(&repo)
+        .args(["--dir=lr", "examples/simple.mmd", "--no-color"])
+        .assert()
+        .success();
     for flag in ["--help", "--version", "-h", "-V"] {
         strata_command(&repo).arg(flag).assert().success();
     }
@@ -366,34 +351,33 @@ fn no_color_wins_across_subcommand_boundaries() {
     }
 }
 
-const WATCH_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
-const WATCH_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+const WATCH_TEST_DEADLINE: Duration = Duration::from_secs(15);
+const WATCH_SAVE_INTERVAL: Duration = Duration::from_millis(300);
 
 struct WatchProcess {
-    child: std::process::Child,
-    output: std::sync::mpsc::Receiver<Vec<u8>>,
-    reader: Option<std::thread::JoinHandle<()>>,
+    child: Child,
+    output: Receiver<Vec<u8>>,
+    reader: Option<JoinHandle<()>>,
 }
 
 impl WatchProcess {
     fn start(repo: &TempRepo) -> Self {
-        use std::io::Read;
-        use std::process::Stdio;
-
-        let mut command = common::strata_command(&repo.path().parent().unwrap().join("gitconfig"));
+        let mut command = common::strata_command(&repo.config_path());
         let mut child = command
             .args(["--watch", "--no-color", "f.mmd"])
             .current_dir(repo.path())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let mut stdout = child.stdout.take().unwrap();
-        let (sender, output) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
+        let (sender, output) = mpsc::channel();
+        let reader = thread::spawn(move || {
             let mut buffer = [0; 4096];
             loop {
-                let count = stdout.read(&mut buffer).unwrap();
+                let Ok(count) = stdout.read(&mut buffer) else {
+                    break;
+                };
                 if count == 0 || sender.send(buffer[..count].to_vec()).is_err() {
                     break;
                 }
@@ -406,14 +390,15 @@ impl WatchProcess {
         }
     }
 
+    // Each call starts with an empty buffer so a second wait only sees new output.
     fn wait_for(&self, expected: &str, mut on_tick: impl FnMut()) -> bool {
-        let deadline = std::time::Instant::now() + WATCH_TEST_DEADLINE;
+        let deadline = Instant::now() + WATCH_TEST_DEADLINE;
         let mut output = Vec::new();
-        while std::time::Instant::now() < deadline {
+        while Instant::now() < deadline {
             match self.output.recv_timeout(WATCH_SAVE_INTERVAL) {
                 Ok(chunk) => output.extend(chunk),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => on_tick(),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => on_tick(),
+                Err(RecvTimeoutError::Disconnected) => break,
             }
             if String::from_utf8_lossy(&output).contains(expected) {
                 return true;
@@ -426,8 +411,10 @@ impl WatchProcess {
 impl Drop for WatchProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
-        self.child.wait().unwrap();
-        self.reader.take().unwrap().join().unwrap();
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 

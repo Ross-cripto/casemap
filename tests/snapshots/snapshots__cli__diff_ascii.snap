@@ -1,0 +1,86 @@
+---
+source: tests/snapshots.rs
+assertion_line: 541
+expression: "repo_transcript(&repo, &[\"diff\", \"main\", \"--ascii\", \"--no-color\"])"
+---
+$ strata diff main --ascii --no-color
+[exit 0]
+--- stdout
+flow changes since main ([SHA]): 1 modified, 1 new, 1 removed
+
+Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link
+  + step fraud "Fraud check"
+  ~ step confirm "Order confirmed" -> "Order confirmed and emailed"
+  - step address "Enter address"
+  + link cart -> pay
+  + link pay -> fraud "yes"
+  + link fraud -> confirm
+  ~ link pay -> error "no" -> "declined"
+  - link cart -> address
+  - link address -> pay
+  - link pay -> confirm "yes"
+
+                                                   +---------------------+
+                                                   | Customer opens cart |
+                                                   +---------+---+-------+
+                                              +--------------+   |
+                                              |                  |
+                                              |                  -
+                                              |                  |
+                                              |                  v
+                                              +         +-----------------+
+                                              |         | - Enter address |
+                                              |         +--------+--------+
+                                              |                  |
+                                              |                  |
+                                              |                  -
+                                              | +----------------+
+                                              v v
+                                       /-------------\
+                                      <  Payment ok?  >
+                                       \----+-+--+---/
+        +-----------------------------------+ |  |
+        |                       +-------------+  |
+        |                       |                |
+      + yes                ~ declined            |
+        |                       |                |
+        v                       v                |
++---------------+    +---------------------+   - yes
+| + Fraud check |    | Show payment error  |     |
++-------+-------+    +---------------------+     |
+        |                                        |
+        |                                        |
+        +                                        |
+        +---------------------------+            |
+                                    v            v
+                     +-------------------------------+
+                     | ~ Order confirmed and emailed |
+                     +-------------------------------+
+
+Legacy export (legacy-export.md)  removed
+
+Refund (refund.md)  new flow: +4 steps, +3 links
+
+          +-----------------------------+
+          | + Customer requests refund  |
+          +--------------+--------------+
+                         |
+                         |
+                         +
+                         |
+                         v
+               /-------------------\
+              <  + Within 30 days?  >
+               \---------+---------/
+          +--------------+--------------+
+          |                             |
+        + yes                         + no
+          |                             |
+          v                             v
++-------------------+    +-----------------------------+
+| + Refund to card  |    | + Explain the refund policy |
++-------------------+    +-----------------------------+
+
+unchanged: login
+--- stderr
+[end]

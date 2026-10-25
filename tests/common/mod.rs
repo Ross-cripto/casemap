@@ -46,6 +46,7 @@ pub fn git_command(config: &Path) -> Command {
 pub fn strata_command(config: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_strata"));
     isolate_git(&mut command, config);
+    command.env_remove("NO_COLOR");
     command
 }
 
@@ -57,16 +58,20 @@ pub struct TempRepo {
 impl TempRepo {
     pub fn new() -> Self {
         let directory = assert_fs::TempDir::new().unwrap();
-        fs::write(directory.path().join("gitconfig"), "").unwrap();
         fs::create_dir(directory.path().join("repo")).unwrap();
         let path = directory.path().join("repo");
         let repo = Self { directory, path };
+        fs::write(repo.config_path(), "").unwrap();
         fs::create_dir_all(repo.file(FLOWS_DIR)).unwrap();
         repo
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.directory.path().join("gitconfig")
     }
 
     pub fn file(&self, relative: &str) -> PathBuf {
@@ -82,7 +87,7 @@ impl TempRepo {
     }
 
     pub fn git_stdout(&self, args: &[&str]) -> String {
-        let output = git_command(&self.directory.path().join("gitconfig"))
+        let output = git_command(&self.config_path())
             .args(args)
             .current_dir(self.path())
             .output()
@@ -121,7 +126,7 @@ impl TempRepo {
 
     #[cfg(feature = "cli")]
     pub fn strata(&self, args: &[&str]) -> Output {
-        strata_command(&self.directory.path().join("gitconfig"))
+        strata_command(&self.config_path())
             .args(args)
             .current_dir(self.path())
             .output()
@@ -156,7 +161,7 @@ pub fn divergent_catalog() -> TempRepo {
 #[cfg(feature = "cli")]
 impl TempRepo {
     pub fn strata_stdin(&self, args: &[&str], input: &str) -> Output {
-        let mut child = strata_command(&self.directory.path().join("gitconfig"))
+        let mut child = strata_command(&self.config_path())
             .args(args)
             .current_dir(self.path())
             .stdin(Stdio::piped())
