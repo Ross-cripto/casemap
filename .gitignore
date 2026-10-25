@@ -4,3 +4,5 @@
 !.env.example
 *.log
 /target
+*.snap.new
+*.pending-snap

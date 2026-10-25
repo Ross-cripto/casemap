@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "cli(&[\"--watch\", \"diff\"], &[], None)"
+---
+$ strata --watch diff
+[exit 1]
+--- stdout
+--- stderr
+strata: --watch only applies to rendering a file
+[end]

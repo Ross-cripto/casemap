@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "repo_cli(&repo, &[\"diff\", \"-\", \"--no-color\"])"
+---
+$ strata diff - --no-color
+[exit 1]
+--- stdout
+--- stderr
+strata: invalid revision -
+[end]

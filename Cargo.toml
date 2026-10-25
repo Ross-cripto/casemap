@@ -2,6 +2,7 @@
 name = "strata"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 description = "Render Mermaid flowcharts as clean, readable terminal diagrams"
 license = "MIT"
 
@@ -10,3 +11,16 @@ unicode-width = "0.2"
 
 [profile.release]
 opt-level = 3
+
+[dev-dependencies]
+assert_fs = "1.1.4"
+insta = "1.49.0"
+
+[features]
+default = ["cli"]
+cli = []
+
+[[test]]
+name = "snapshots"
+path = "tests/snapshots.rs"
+required-features = ["cli"]

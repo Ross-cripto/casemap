@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+expression: "transcript(\"flow.markdown --no-color\",\n&repo.strata(&[\"flow.markdown\", \"--no-color\"]).into())"
+---
+$ strata flow.markdown --no-color
+[exit 0]
+--- stdout
+Render
+┌─────────┐
+│ Visible │
+└─────────┘
+--- stderr
+[end]

@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "transcript(\"flows --flows empty --no-color\",\n&repo.strata(&[\"flows\", \"--flows\", \"empty\", \"--no-color\"]).into())"
+---
+$ strata flows --flows empty --no-color
+[exit 0]
+--- stdout
+no flows in empty
+--- stderr
+[end]

@@ -1,0 +1,36 @@
+---
+source: tests/snapshots.rs
+expression: "repo_cli(&repo, &[\"diff\", \"--no-color\"])"
+---
+$ strata diff --no-color
+[exit 1]
+--- stdout
+flow changes since HEAD ([SHA]): 0 modified, 1 new, 0 removed
+
+Checkout (checkout.md)  parse error, line 5: link has no target node
+
+Refund (refund.md)  new flow: +4 steps, +3 links
+
+          ╭─────────────────────────────╮
+          │ + Customer requests refund  │
+          ╰──────────────┬──────────────╯
+                         │
+                         │
+                         +
+                         │
+                         ▼
+               ╱───────────────────╲
+              <  + Within 30 days?  >
+               ╲─────────┬─────────╱
+          ╭──────────────┴──────────────╮
+          │                             │
+        + yes                         + no
+          │                             │
+          ▼                             ▼
+┌───────────────────┐    ┌─────────────────────────────┐
+│ + Refund to card  │    │ + Explain the refund policy │
+└───────────────────┘    └─────────────────────────────┘
+
+unchanged: legacy-export, login
+--- stderr
+[end]
