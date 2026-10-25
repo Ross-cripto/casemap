@@ -328,11 +328,38 @@ impl Screen {
         if frame == self.last {
             return false;
         }
-        let _ = out.write_all(frame.as_bytes());
-        let _ = out.flush();
+        // A frame that failed to reach the terminal is not remembered, so the next tick retries it.
+        if out
+            .write_all(frame.as_bytes())
+            .and_then(|()| out.flush())
+            .is_err()
+        {
+            return false;
+        }
         self.last = frame.to_string();
         true
     }
+}
+
+/// The stamp of the last successful read of the watched file.
+enum Seen {
+    Never,
+    Stamp(FileStamp),
+}
+
+impl Seen {
+    fn matches(&self, stamp: &FileStamp) -> bool {
+        matches!(self, Seen::Stamp(seen) if seen == stamp)
+    }
+}
+
+fn start_watcher(
+    dir: &Path,
+    sender: mpsc::Sender<notify::Result<notify::Event>>,
+) -> notify::Result<notify::RecommendedWatcher> {
+    let mut watcher = notify::recommended_watcher(sender)?;
+    watcher.watch(dir, RecursiveMode::NonRecursive)?;
+    Ok(watcher)
 }
 
 enum Wake {
@@ -365,11 +392,7 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let watcher = notify::recommended_watcher(sender).and_then(|mut watcher| {
-        watcher
-            .watch(parent, RecursiveMode::NonRecursive)
-            .map(|()| watcher)
-    });
+    let watcher = start_watcher(parent, sender);
     let mut wake = match &watcher {
         Ok(_) => Wake::Events(receiver),
         Err(error) => {
@@ -377,7 +400,7 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
             Wake::Poll
         }
     };
-    let mut last_seen: Option<FileStamp> = None;
+    let mut last_seen = Seen::Never;
     let mut last_good = String::new();
     let mut screen = Screen {
         last: String::new(),
@@ -385,10 +408,10 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
     let mut stdout = io::stdout();
     loop {
         let stamp = file_stamp(path);
-        if last_seen != Some(stamp) {
+        if !last_seen.matches(&stamp) {
             let read = std::fs::read_to_string(path);
             if read.is_ok() {
-                last_seen = Some(stamp);
+                last_seen = Seen::Stamp(stamp);
             }
             let screen_text = watch_frame(path, read, opts, &mut last_good);
             screen.show(&screen_text, &mut stdout);
