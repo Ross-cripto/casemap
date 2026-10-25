@@ -1,0 +1,10 @@
+flowchart TD
+  user([User]) --> lb[Load Balancer]
+  subgraph cloud [AWS eu-west-1]
+    subgraph vpc [VPC]
+      lb --> app1[App 1] & app2[App 2]
+      app1 & app2 --> db[(Postgres)]
+    end
+    s3[(S3 Bucket)]
+  end
+  app1 -.-> s3

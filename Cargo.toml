@@ -1,0 +1,12 @@
+[package]
+name = "strata"
+version = "0.1.0"
+edition = "2021"
+description = "Render Mermaid flowcharts as clean, readable terminal diagrams"
+license = "MIT"
+
+[dependencies]
+unicode-width = "0.2"
+
+[profile.release]
+opt-level = 3

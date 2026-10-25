@@ -1,0 +1,5 @@
+flowchart LR
+  src[Git push] --> ci[[CI Build]] --> test{Tests pass?}
+  test -->|yes| img[Docker Image] --> stg[Staging] --> prod[Production]
+  test -->|no| fix[Notify author]
+  fix -.-> src

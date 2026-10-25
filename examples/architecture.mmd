@@ -1,0 +1,49 @@
+flowchart TD
+    %% A deliberately messy service architecture: two bounded contexts,
+    %% cross-context calls, a feedback cycle, labels and mixed edge styles.
+    client([Web Client])
+    mobile([Mobile App])
+    cdn[CDN]
+    gw[API Gateway]
+    auth[Auth Service]
+    cache[(Redis Cache)]
+
+    subgraph orders [Orders Context]
+        oapi[Orders API]
+        cart[Cart Service]
+        stock{Stock OK?}
+        odb[(Orders DB)]
+    end
+
+    subgraph billing [Billing Context]
+        bapi[Billing API]
+        charge[Charge Service]
+        invoice[Invoice Generator]
+        bdb[(Billing DB)]
+    end
+
+    bus[[Event Bus]]
+    notif[Notification Worker]
+    email[Email Provider]
+    analytics[Analytics Pipeline]
+    wh[(Data Warehouse)]
+
+    client --> cdn --> gw
+    mobile --> gw
+    gw --> auth
+    gw --> oapi
+    gw --> bapi
+    auth -.-> cache
+    oapi --> cache
+    oapi --> cart --> stock
+    stock -->|yes| bapi
+    stock -->|no| notif
+    cart --> odb
+    bapi --> charge --> invoice --> bdb
+    charge --> bdb
+    charge -- payment.succeeded --> bus
+    oapi --> bus
+    bus --> notif --> email
+    bus --> analytics --> wh
+    invoice -.-> notif
+    notif -.->|retry| bus
