@@ -393,16 +393,20 @@ mod tests {
         let result = diff(&diagram, &diagram);
         assert!(result.is_empty());
         assert_eq!(result.summary(), "no changes");
-        assert!(result
-            .union
-            .nodes
-            .iter()
-            .all(|node| node.mark == Mark::Same));
-        assert!(result
-            .union
-            .edges
-            .iter()
-            .all(|edge| edge.mark == Mark::Same));
+        assert!(
+            result
+                .union
+                .nodes
+                .iter()
+                .all(|node| node.mark == Mark::Same)
+        );
+        assert!(
+            result
+                .union
+                .edges
+                .iter()
+                .all(|edge| edge.mark == Mark::Same)
+        );
         assert_eq!(result.union.nodes[0].label, ["A"]);
         assert_eq!(result.union.edges[0].label.as_deref(), Some("yes"));
     }

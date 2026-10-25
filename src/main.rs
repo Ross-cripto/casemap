@@ -1,54 +1,72 @@
 //! strata CLI — render a Mermaid flowchart once, or keep re-rendering it as
 //! the file changes so the diagram can live in a side pane while you work.
 
-use std::io::{IsTerminal, Read, Write};
-use std::path::Path;
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
+use anyhow::{Context, bail};
+use clap::{CommandFactory, Parser, Subcommand};
+use notify::{RecursiveMode, Watcher};
 use strata::flows::Flow;
 use strata::markdown::is_markdown_path;
 use strata::{Direction, Options};
 
 const DEFAULT_FLOWS_DIR: &str = "docs/flows";
 const DEFAULT_REF: &str = "HEAD";
-const MAX_CATALOG_POSITIONALS: usize = 2; // command word + one argument
+const WATCH_HEARTBEAT: Duration = Duration::from_secs(1);
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
 
-enum CatalogCommand {
-    Diff,
-    Flows,
+#[derive(Debug, Parser)]
+#[command(
+    name = "strata",
+    version,
+    about,
+    args_override_self = true,
+    disable_help_subcommand = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+    /// Mermaid source or a .md file; stdin when omitted or '-'.
+    file: Option<PathBuf>,
+    /// Re-render whenever FILE changes (Ctrl-C to quit).
+    #[arg(short, long, global = true)]
+    watch: bool,
+    /// Flow catalog directory (default docs/flows).
+    #[arg(long, global = true, value_name = "DIR")]
+    flows: Option<PathBuf>,
+    /// Override the flowchart direction.
+    #[arg(long, global = true, value_parser = parse_direction, value_name = "TD|BT|LR|RL")]
+    dir: Option<Direction>,
+    /// Use plain ASCII instead of box-drawing characters.
+    #[arg(long, global = true)]
+    ascii: bool,
+    /// Force ANSI colour.
+    #[arg(long, global = true, overrides_with = "no_color")]
+    color: bool,
+    /// Disable ANSI colour (also respects NO_COLOR).
+    #[arg(long, global = true, overrides_with = "color")]
+    no_color: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Show catalog changes since REF (default HEAD), including uncommitted edits.
+    Diff { rev: Option<String> },
+    /// List the flow catalog, or render one flow.
+    Flows { name: Option<String> },
+    /// Print the flow-catalog convention for AGENTS.md or CLAUDE.md.
     Guide,
+    /// Generate shell completions.
+    Completions { shell: clap_complete::Shell },
 }
 
-impl CatalogCommand {
-    fn parse(word: &str) -> Option<Self> {
-        match word {
-            "diff" => Some(Self::Diff),
-            "flows" => Some(Self::Flows),
-            "guide" => Some(Self::Guide),
-            _ => None,
-        }
-    }
+fn parse_direction(value: &str) -> Result<Direction, String> {
+    Direction::parse(value).ok_or_else(|| "expects one of TD, BT, LR, RL".into())
 }
-
-const USAGE: &str = "\
-strata — render Mermaid flowcharts in the terminal
-
-USAGE:
-    strata [OPTIONS] [FILE]      Render FILE (.mmd, or every mermaid block of a .md); stdin when omitted or '-'
-    strata diff [REF]            Show how the flow catalog changed since REF (default HEAD), uncommitted edits included
-    strata flows [NAME]          List the flow catalog, or render one flow
-    strata guide                 Print the flow-catalog convention to paste into AGENTS.md or CLAUDE.md
-
-OPTIONS:
-    -w, --watch           Re-render whenever FILE changes (Ctrl-C to quit)
-    --flows <DIR>         Flow catalog directory (default docs/flows)
-    --dir <TD|BT|LR|RL>   Override the flowchart direction
-    --ascii               Use plain ASCII instead of box-drawing characters
-    --color               Force ANSI colour
-    --no-color            Disable ANSI colour (also respects NO_COLOR)
-    -h, --help            Show this help
-";
 
 const GUIDE: &str = r"# Flow catalog
 
@@ -80,122 +98,96 @@ Rules for agents:
 ";
 
 fn main() -> ExitCode {
-    let mut positionals: Vec<String> = Vec::new();
-    let mut flows_dir: Option<String> = None;
-    let mut watch = false;
-    let mut color: Option<bool> = None;
-    let mut opts = Options::default();
-
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            "-w" | "--watch" => watch = true,
-            "--ascii" => opts.ascii = true,
-            "--color" => color = Some(true),
-            "--no-color" => color = Some(false),
-            "--flows" => match args.next() {
-                Some(dir) => flows_dir = Some(dir),
-                None => return fail("--flows expects a directory"),
-            },
-            "--dir" => match args.next().as_deref().and_then(Direction::parse) {
-                Some(d) => opts.direction = Some(d),
-                None => return fail("--dir expects one of TD, BT, LR, RL"),
-            },
-            _ if arg.starts_with('-') && arg != "-" => {
-                return fail(&format!("unknown option {arg}\n\n{USAGE}"))
-            }
-            _ => positionals.push(arg),
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let _ = error.print();
+            return ExitCode::from(if error.use_stderr() { 1 } else { 0 });
         }
-    }
-    opts.color = color.unwrap_or_else(|| {
-        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-    });
-
-    if let Some(command) = positionals
-        .first()
-        .and_then(|word| CatalogCommand::parse(word))
-    {
-        if watch {
-            return fail("--watch only applies to rendering a file");
-        }
-        if positionals.len() > MAX_CATALOG_POSITIONALS {
-            return fail(USAGE);
-        }
-        let argument = positionals.get(1).map(String::as_str);
-        let directory = Path::new(flows_dir.as_deref().unwrap_or(DEFAULT_FLOWS_DIR));
-        return run_catalog_command(command, argument, directory, &opts);
-    }
-    if positionals.len() > 1 {
-        return fail(USAGE);
-    }
-    let file = positionals.first().map(String::as_str);
-    if watch {
-        return match file {
-            Some(path) if path != "-" => watch_file(Path::new(path), &opts),
-            _ => fail("--watch needs a file path"),
-        };
-    }
-
-    let source = match file {
-        None | Some("-") => {
-            let mut s = String::new();
-            if let Err(e) = std::io::stdin().read_to_string(&mut s) {
-                return fail(&format!("reading stdin: {e}"));
-            }
-            s
-        }
-        Some(path) => match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => return fail(&format!("{path}: {e}")),
-        },
     };
-    match render_source(file.map(Path::new), &source, &opts) {
-        Ok(out) => {
-            print!("{out}");
-            ExitCode::SUCCESS
+    match run(cli) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("strata: {error:#}");
+            ExitCode::FAILURE
         }
-        Err(e) => fail(&e.to_string()),
     }
 }
 
-fn run_catalog_command(
-    command: CatalogCommand,
-    argument: Option<&str>,
-    directory: &Path,
-    opts: &Options,
-) -> ExitCode {
-    match command {
-        CatalogCommand::Diff => diff_catalog(directory, argument.unwrap_or(DEFAULT_REF), opts),
-        CatalogCommand::Flows => show_flows(directory, argument, opts),
-        CatalogCommand::Guide => {
-            if argument.is_some() {
-                return fail(USAGE);
-            }
+fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    if cli.command.is_some() && cli.watch {
+        bail!("--watch only applies to rendering a file");
+    }
+    if cli.command.is_some() && cli.file.is_some() {
+        bail!("FILE cannot be combined with a subcommand");
+    }
+    let color = if cli.no_color {
+        false
+    } else if cli.color {
+        true
+    } else {
+        io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    };
+    let opts = Options {
+        color,
+        ascii: cli.ascii,
+        direction: cli.dir,
+    };
+    let directory = cli
+        .flows
+        .as_deref()
+        .unwrap_or_else(|| Path::new(DEFAULT_FLOWS_DIR));
+    match cli.command {
+        Some(Commands::Diff { rev }) => {
+            diff_catalog(directory, rev.as_deref().unwrap_or(DEFAULT_REF), &opts)
+        }
+        Some(Commands::Flows { name }) => show_flows(directory, name.as_deref(), &opts),
+        Some(Commands::Guide) => {
             print!(
                 "{}",
                 GUIDE.replace(DEFAULT_FLOWS_DIR, &directory.to_string_lossy())
             );
-            ExitCode::SUCCESS
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Commands::Completions { shell }) => {
+            clap_complete::generate(shell, &mut Cli::command(), "strata", &mut io::stdout());
+            Ok(ExitCode::SUCCESS)
+        }
+        None => {
+            let file = cli.file.as_deref();
+            if cli.watch {
+                return match file {
+                    Some(path) if path != Path::new("-") => watch_file(path, &opts),
+                    _ => bail!("--watch needs a file path"),
+                };
+            }
+            let source = match file {
+                None => read_stdin()?,
+                Some(path) if path == Path::new("-") => read_stdin()?,
+                Some(path) => {
+                    std::fs::read_to_string(path).with_context(|| path.display().to_string())?
+                }
+            };
+            print!("{}", render_source(file, &source, &opts)?);
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
 
-#[derive(Debug)]
+fn read_stdin() -> anyhow::Result<String> {
+    let mut source = String::new();
+    io::stdin()
+        .read_to_string(&mut source)
+        .context("reading stdin")?;
+    Ok(source)
+}
+
+#[derive(Debug, thiserror::Error)]
 enum RenderError {
+    #[error("{0}")]
     Parse(String),
+    #[error("{0}")]
     NoBlocks(String),
-}
-
-impl std::fmt::Display for RenderError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Parse(message) | Self::NoBlocks(message) => formatter.write_str(message),
-        }
-    }
 }
 
 fn render_source(path: Option<&Path>, src: &str, opts: &Options) -> Result<String, RenderError> {
@@ -212,37 +204,23 @@ fn render_source(path: Option<&Path>, src: &str, opts: &Options) -> Result<Strin
     strata::render_markdown(src, opts).map_err(|error| RenderError::Parse(error.to_string()))
 }
 
-fn check_catalog(dir: &Path) -> Result<(), String> {
+fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
     if !dir.is_dir() {
-        return Err(format!(
+        bail!(
             "no flow catalog at {} (create it or pass --flows <dir>)",
             dir.display()
-        ));
+        );
     }
-    Ok(())
+    Ok(strata::flows::load_dir(dir)?)
 }
 
-fn load_catalog(dir: &Path) -> Result<Vec<Flow>, String> {
-    check_catalog(dir)?;
-    strata::flows::load_dir(dir).map_err(|error| error.to_string())
-}
-
-fn diff_catalog(dir: &Path, rev: &str, opts: &Options) -> ExitCode {
-    let new = match load_catalog(dir) {
-        Ok(flows) => flows,
-        Err(error) => return fail(&error),
-    };
-    let base = match strata::git::merge_base(dir, rev) {
-        Ok(base) => base,
-        Err(error) => return fail(&error.to_string()),
-    };
-    let old = match strata::git::files_at(dir, &base) {
-        Ok(files) => files
-            .into_iter()
-            .map(|(path, text)| strata::flows::parse_flow(&path, &text))
-            .collect::<Vec<_>>(),
-        Err(error) => return fail(&error.to_string()),
-    };
+fn diff_catalog(dir: &Path, rev: &str, opts: &Options) -> anyhow::Result<ExitCode> {
+    let new = load_catalog(dir)?;
+    let base = strata::git::merge_base(dir, rev)?;
+    let old = strata::git::files_at(dir, &base)?
+        .into_iter()
+        .map(|(path, text)| strata::flows::parse_flow(&path, &text))
+        .collect::<Vec<_>>();
     let changes = strata::flows::compare(&old, &new);
     print!(
         "{}",
@@ -252,36 +230,30 @@ fn diff_catalog(dir: &Path, rev: &str, opts: &Options) -> ExitCode {
         .iter()
         .any(|change| matches!(change, strata::flows::FlowChange::Broken { .. }))
     {
-        ExitCode::FAILURE
+        Ok(ExitCode::FAILURE)
     } else {
-        ExitCode::SUCCESS
+        Ok(ExitCode::SUCCESS)
     }
 }
 
-fn show_flows(dir: &Path, name: Option<&str>, opts: &Options) -> ExitCode {
-    let flows = match load_catalog(dir) {
-        Ok(flows) => flows,
-        Err(error) => return fail(&error),
-    };
+fn show_flows(dir: &Path, name: Option<&str>, opts: &Options) -> anyhow::Result<ExitCode> {
+    let flows = load_catalog(dir)?;
     let Some(name) = name else {
         if flows.is_empty() {
             println!("no flows in {}", dir.display());
         } else {
             print!("{}", strata::flows::render_list(&flows));
         }
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     };
     let Some(flow) = flows.iter().find(|flow| flow.name == name) else {
         let available: Vec<&str> = flows.iter().map(|flow| flow.name.as_str()).collect();
-        return fail(&format!(
-            "no flow named {name}; available: {}",
-            available.join(", ")
-        ));
+        bail!("no flow named {name}; available: {}", available.join(", "));
     };
     let diagram = match strata::flows::diagram(flow) {
         Some(Ok(diagram)) => diagram,
-        Some(Err(error)) => return fail(&format!("{}: {error}", flow.path)),
-        None => return fail(&format!("{}: no mermaid block", flow.path)),
+        Some(Err(error)) => bail!("{}: {error}", flow.path),
+        None => bail!("{}: no mermaid block", flow.path),
     };
     print!("{}", strata::render::bold_line(&flow.title, opts.color));
     if let Some(description) = &flow.description {
@@ -289,52 +261,129 @@ fn show_flows(dir: &Path, name: Option<&str>, opts: &Options) -> ExitCode {
     }
     println!();
     print!("{}", strata::render_diagram(&diagram, opts));
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
-/// Polls the file and redraws on change. Keeps the last good diagram on
-/// screen when an edit is temporarily invalid, with the error underneath.
-fn watch_file(path: &Path, opts: &Options) -> ExitCode {
-    let mut last_seen: Option<(SystemTime, u64)> = None;
-    let mut last_good = String::new();
-    let mut stdout = std::io::stdout();
-    loop {
-        let stamp = std::fs::metadata(path)
-            .ok()
-            .map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
-        if stamp != last_seen {
-            last_seen = stamp;
-            let status = match std::fs::read_to_string(path) {
-                Ok(src) => match render_source(Some(path), &src, opts) {
-                    Ok(out) => {
-                        last_good = out;
-                        String::new()
-                    }
-                    Err(RenderError::Parse(message)) => format!("parse error, {message}"),
-                    Err(error @ RenderError::NoBlocks(_)) => error.to_string(),
-                },
-                Err(e) => format!("cannot read file: {e}"),
-            };
-            let header = format!("{} · watching for changes", path.display());
-            let (dim, bold, reset) = if opts.color {
-                ("\x1b[90m", "\x1b[1m", "\x1b[0m")
-            } else {
-                ("", "", "")
-            };
-            let mut frame = String::from("\x1b[2J\x1b[H");
-            frame.push_str(&format!("{dim}{header}{reset}\n\n"));
-            frame.push_str(&last_good);
-            if !status.is_empty() {
-                frame.push_str(&format!("\n{bold}{status}{reset}\n"));
+fn frame(path: &Path, read: io::Result<String>, opts: &Options, last_good: &mut String) -> String {
+    let status = match read {
+        Ok(source) => match render_source(Some(path), &source, opts) {
+            Ok(output) => {
+                *last_good = output;
+                String::new()
             }
+            Err(RenderError::Parse(message)) => format!("parse error, {message}"),
+            Err(error @ RenderError::NoBlocks(_)) => error.to_string(),
+        },
+        Err(error) => format!("cannot read file: {error}"),
+    };
+    let header = format!("{} · watching for changes", path.display());
+    let (dim, bold, reset) = if opts.color {
+        ("\x1b[90m", "\x1b[1m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    let mut frame = String::from("\x1b[2J\x1b[H");
+    frame.push_str(&format!("{dim}{header}{reset}\n\n"));
+    frame.push_str(last_good);
+    if !status.is_empty() {
+        frame.push_str(&format!("\n{bold}{status}{reset}\n"));
+    }
+    frame
+}
+
+fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
+    let (sender, receiver) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(sender)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+    let mut last_seen = None;
+    let mut last_good = String::new();
+    let mut stdout = io::stdout();
+    loop {
+        let stamp = std::fs::metadata(path).ok().map(|metadata| {
+            (
+                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                metadata.len(),
+            )
+        });
+        if last_seen != Some(stamp) {
+            let read = std::fs::read_to_string(path);
+            if read.is_ok() {
+                last_seen = Some(stamp);
+            }
+            let frame = frame(path, read, opts, &mut last_good);
             let _ = stdout.write_all(frame.as_bytes());
             let _ = stdout.flush();
         }
-        std::thread::sleep(Duration::from_millis(250));
+        let _ = receiver.recv_timeout(WATCH_HEARTBEAT);
+        while receiver.recv_timeout(WATCH_DEBOUNCE).is_ok() {}
     }
 }
 
-fn fail(msg: &str) -> ExitCode {
-    eprintln!("strata: {msg}");
-    ExitCode::FAILURE
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_frame_keeps_last_good_on_error() {
+        let path = Path::new("flow.mmd");
+        let opts = Options::default();
+        let mut last_good = String::new();
+        let good = frame(
+            path,
+            Ok("graph TD\na[Visible]\n".into()),
+            &opts,
+            &mut last_good,
+        );
+        assert_eq!(
+            good,
+            format!("\x1b[2J\x1b[Hflow.mmd · watching for changes\n\n{last_good}")
+        );
+        assert!(last_good.contains("Visible"));
+        let diagram = last_good.clone();
+        let broken = frame(path, Ok("graph TD\na -->".into()), &opts, &mut last_good);
+        assert_eq!(last_good, diagram);
+        assert!(broken.starts_with(&good));
+        assert!(broken.contains("\nparse error, line 2:"));
+        let unreadable = frame(
+            path,
+            Err(io::Error::other("temporarily busy")),
+            &opts,
+            &mut last_good,
+        );
+        assert_eq!(last_good, diagram);
+        assert_eq!(
+            unreadable,
+            format!("{good}\ncannot read file: temporarily busy\n")
+        );
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_like_before() {
+        for file in ["./diff", "-", "help"] {
+            let cli = Cli::try_parse_from(["strata", file]).unwrap();
+            assert_eq!(cli.file.as_deref(), Some(Path::new(file)));
+            assert!(cli.command.is_none());
+        }
+        for args in [["strata", "--watch", "diff"], ["strata", "diff", "--watch"]] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.watch);
+            assert!(matches!(cli.command, Some(Commands::Diff { rev: None })));
+        }
+        let cli = Cli::try_parse_from(["strata", "--dir", "LR", "--dir", "TD"]).unwrap();
+        assert_eq!(cli.dir, Some(Direction::TopDown));
+        assert!(
+            Cli::try_parse_from(["strata", "--ascii", "--ascii"])
+                .unwrap()
+                .ascii
+        );
+    }
 }

@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use strata::{parser, Direction, Options};
+use strata::{Direction, Options, parser};
 
 fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();

@@ -7,26 +7,48 @@ work on the code.
 ```
 strata docs/architecture.mmd           # render once
 strata --watch docs/architecture.mmd   # redraw on every save
-cat flow.mmd | strata --dir LR         # stdin, override direction
+cat flow.mmd | strata --dir=LR         # stdin, override direction
 ```
 
 The source of truth is plain Mermaid in your repo, so diagrams diff, review
 and version like code. The layout engine is where the work went, because
 that's where terminal diagram tools usually fall apart.
 
+## Install
+
+```bash
+cargo install --path .
+```
+
+For the library only, disable the default CLI feature:
+
+```toml
+strata = { version = "0.2", default-features = false }
+```
+
 ## Usage
 
 ```
-strata [OPTIONS] [FILE]   # Mermaid source, or every mermaid block of a .md file
-strata diff [REF]          # catalog changes since REF (default HEAD), including uncommitted edits
-strata flows [NAME]        # list use cases, or render one
-strata guide               # convention for AGENTS.md or CLAUDE.md
+Usage: strata [OPTIONS] [FILE] [COMMAND]
 
+Commands:
+  diff [REF]          Catalog changes since REF (default HEAD), including uncommitted edits
+  flows [NAME]        List use cases, or render one
+  guide               Convention for AGENTS.md or CLAUDE.md
+  completions <SHELL> Generate completions for bash, zsh, fish, powershell or elvish
+
+Arguments:
+  [FILE]                Mermaid source or a .md file; stdin when omitted or '-'
+
+Options:
   -w, --watch           Re-render whenever FILE changes (Ctrl-C to quit)
-  --flows <DIR>         Flow catalog directory (default docs/flows)
-  --dir <TD|BT|LR|RL>   Override the flowchart direction
-  --ascii               Plain ASCII instead of box-drawing characters
-  --color / --no-color  Force or disable ANSI colour (auto on a TTY; respects NO_COLOR)
+      --flows <DIR>     Flow catalog directory (default docs/flows)
+      --dir <TD|BT|LR|RL> Override direction; --dir=LR also works
+      --ascii           Plain ASCII instead of box-drawing characters
+      --color           Force ANSI colour
+      --no-color        Disable ANSI colour (auto on a TTY; respects NO_COLOR)
+  -h, --help            Print help
+  -V, --version         Print version
 ```
 
 In watch mode an invalid edit keeps the last good diagram on screen with the
@@ -40,7 +62,9 @@ thick `==>`, open `---`, bidirectional `<-->`; labels as `-->|x|` or
 `-- x -->`; nested `subgraph … end`. Styling statements (`classDef`,
 `style`, `linkStyle`, `click`) are accepted and ignored.
 
-To render a file literally named `diff`, `flows` or `guide`, write `./diff`.
+The command words `diff`, `flows`, `guide` and `completions` are reserved.
+To render a file with one of those names, use `./diff` or `strata -- diff`.
+`help` remains a file name; use `--help` or `-h` to print help.
 
 ## Flow catalog
 
@@ -148,6 +172,20 @@ let changes = strata::diff::diff(&old, &new);
 let summary = changes.summary();
 let drawing = strata::render_diagram(&changes.union, &options);
 ```
+
+## Development
+
+Rust 1.85 is the minimum supported version (MSRV); the crate uses edition 2024.
+Run `cargo test` for the full suite and `cargo test --no-default-features` for
+library-only tests. Run `cargo fmt --all --check` and
+`cargo clippy --all-targets --all-features -- -D warnings` before submitting changes.
+
+The default `cli` feature enables clap, clap_complete, anyhow and notify.
+With `default-features = false`, normal library dependencies are only
+unicode-width and thiserror.
+
+Review snapshot updates with `cargo insta review` (requires cargo-insta), or run
+`INSTA_UPDATE=always cargo test` and inspect the diff before accepting changes.
 
 ## Tests
 

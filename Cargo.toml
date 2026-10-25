@@ -1,26 +1,43 @@
 [package]
 name = "strata"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 rust-version = "1.85"
 description = "Render Mermaid flowcharts as clean, readable terminal diagrams"
 license = "MIT"
 
 [dependencies]
+anyhow = { version = "1.0.104", optional = true }
+clap = { version = "4.6.7", features = ["derive"], optional = true }
+clap_complete = { version = "4.6.11", optional = true }
+notify = { version = "8.2.1", optional = true }
+thiserror = "2.0.21"
 unicode-width = "0.2"
 
 [profile.release]
 opt-level = 3
 
 [dev-dependencies]
+assert_cmd = "2.2.2"
 assert_fs = "1.1.4"
 insta = "1.49.0"
+predicates = "3.1.4"
 
 [features]
 default = ["cli"]
-cli = []
+cli = ["dep:clap", "dep:clap_complete", "dep:anyhow", "dep:notify"]
 
 [[test]]
 name = "snapshots"
 path = "tests/snapshots.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "strata"
+path = "src/main.rs"
 required-features = ["cli"]

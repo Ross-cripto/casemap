@@ -32,11 +32,7 @@ pub fn port_inset(shape: Shape) -> i32 {
 }
 
 fn odd(x: i32) -> i32 {
-    if x % 2 == 0 {
-        x + 1
-    } else {
-        x
-    }
+    if x % 2 == 0 { x + 1 } else { x }
 }
 
 pub fn assign(lay: &mut Layout, d: &crate::model::Diagram) {
@@ -59,11 +55,7 @@ pub fn assign(lay: &mut Layout, d: &crate::model::Diagram) {
             ItemKind::Dummy => (1, 0),
             ItemKind::Label(t) => {
                 let tw = UnicodeWidthStr::width(t.as_str()) as i32 + 2;
-                if vertical {
-                    (odd(tw), 1)
-                } else {
-                    (1, tw)
-                }
+                if vertical { (odd(tw), 1) } else { (1, tw) }
             }
             ItemKind::Border { .. } => (1, 0),
         };

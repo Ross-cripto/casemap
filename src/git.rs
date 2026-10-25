@@ -1,16 +1,17 @@
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Debug)]
-pub struct GitError(pub String);
-
-impl std::fmt::Display for GitError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum GitError {
+    #[error("cannot run git: {error}")]
+    Spawn { error: std::io::Error },
+    #[error("git {args}: {reason}")]
+    Failed { args: String, reason: String },
+    #[error("invalid revision {revision}")]
+    InvalidRevision { revision: String },
+    #[error("{revision} and HEAD have no common ancestor (shallow clone?)")]
+    NoCommonAncestor { revision: String },
 }
-
-impl std::error::Error for GitError {}
 
 fn run_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
     Command::new("git")
@@ -18,7 +19,7 @@ fn run_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, GitErro
         .arg(dir)
         .args(args)
         .output()
-        .map_err(|error| GitError(format!("cannot run git: {error}")))
+        .map_err(|error| GitError::Spawn { error })
 }
 
 fn output_text(output: std::process::Output, args: &[&str]) -> Result<String, GitError> {
@@ -29,7 +30,10 @@ fn output_text(output: std::process::Output, args: &[&str]) -> Result<String, Gi
         } else {
             stderr.trim().to_string()
         };
-        return Err(GitError(format!("git {}: {reason}", args.join(" "))));
+        return Err(GitError::Failed {
+            args: args.join(" "),
+            reason,
+        });
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -40,15 +44,17 @@ fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
 
 pub fn merge_base(dir: &Path, rev: &str) -> Result<String, GitError> {
     if rev.starts_with('-') {
-        return Err(GitError(format!("invalid revision {rev}")));
+        return Err(GitError::InvalidRevision {
+            revision: rev.to_string(),
+        });
     }
     let args = ["merge-base", rev, "HEAD"];
     let output = run_output(dir, &args)?;
     if output.status.code() == Some(1) && String::from_utf8_lossy(&output.stderr).trim().is_empty()
     {
-        return Err(GitError(format!(
-            "{rev} and HEAD have no common ancestor (shallow clone?)"
-        )));
+        return Err(GitError::NoCommonAncestor {
+            revision: rev.to_string(),
+        });
     }
     Ok(output_text(output, &args)?.trim().to_string())
 }

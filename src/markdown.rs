@@ -163,7 +163,9 @@ mod tests {
 
     #[test]
     fn extracts_mermaid_blocks_with_nearest_heading() {
-        let blocks = mermaid_blocks("# A ##\n\n```mermaid\ngraph TD\na --> b\n```\n## B\n  ~~~~MERMAID extra\ngraph LR\nc --> d\n  ~~~~~\n");
+        let blocks = mermaid_blocks(
+            "# A ##\n\n```mermaid\ngraph TD\na --> b\n```\n## B\n  ~~~~MERMAID extra\ngraph LR\nc --> d\n  ~~~~~\n",
+        );
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].heading.as_deref(), Some("A"));
         assert_eq!(blocks[0].line, 3);

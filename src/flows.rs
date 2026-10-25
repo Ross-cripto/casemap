@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::diff::{self, DiagramDiff};
 use crate::render::bold_line;
-use crate::{canvas, markdown, parser, paths, Diagram, Options, ParseError};
+use crate::{Diagram, Options, ParseError, canvas, markdown, parser, paths};
 
 pub const SHORT_SHA_LEN: usize = 7;
 
@@ -57,11 +57,21 @@ pub fn is_flow_file_name(name: &str) -> bool {
     !name.starts_with('.') && paths::has_extension(Path::new(name), &["md", "mmd"])
 }
 
-fn file_error(path: &Path, error: std::io::Error) -> std::io::Error {
-    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+#[derive(Debug, thiserror::Error)]
+#[error("{}: {error}", path.display())]
+pub struct CatalogError {
+    pub path: PathBuf,
+    pub error: std::io::Error,
 }
 
-pub fn load_dir(dir: &Path) -> std::io::Result<Vec<Flow>> {
+fn file_error(path: &Path, error: std::io::Error) -> CatalogError {
+    CatalogError {
+        path: path.to_path_buf(),
+        error,
+    }
+}
+
+pub fn load_dir(dir: &Path) -> Result<Vec<Flow>, CatalogError> {
     let mut flows = Vec::new();
     let entries = std::fs::read_dir(dir).map_err(|error| file_error(dir, error))?;
     for entry in entries {
@@ -118,7 +128,7 @@ fn compare_flow(old: Option<&Flow>, new: &Flow) -> FlowChange {
             return FlowChange::Broken {
                 flow: new.clone(),
                 error,
-            }
+            };
         }
         None if previous.is_some() => return FlowChange::Removed { flow: new.clone() },
         None => return FlowChange::Unchanged { flow: new.clone() },
@@ -304,7 +314,10 @@ mod tests {
 
     #[test]
     fn parses_title_description_and_first_block() {
-        let flow = parse_flow("checkout.md", "# Checkout\n\nA customer pays.\n\n```mermaid\ngraph TD\na --> b\n```\n```mermaid\ngraph TD\nc --> d\n```");
+        let flow = parse_flow(
+            "checkout.md",
+            "# Checkout\n\nA customer pays.\n\n```mermaid\ngraph TD\na --> b\n```\n```mermaid\ngraph TD\nc --> d\n```",
+        );
         assert_eq!(flow.title, "Checkout");
         assert_eq!(flow.description.as_deref(), Some("A customer pays."));
         assert_eq!(flow.line_offset, 5);

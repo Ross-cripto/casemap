@@ -11,16 +11,11 @@ use std::collections::HashMap;
 
 use crate::model::{Cluster, Diagram, Direction, Edge, LineStyle, Mark, Node, Shape};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("line {line}: {message}")]
 pub struct ParseError {
     pub line: usize,
     pub message: String,
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
-    }
 }
 
 pub fn parse(source: &str) -> Result<Diagram, ParseError> {

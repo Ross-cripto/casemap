@@ -9,7 +9,7 @@
 //! ordered so a vertical never cuts through a horizontal it could have
 //! avoided, and non-overlapping runs share a track.
 
-use crate::layout::{size::port_inset, ItemKind, Layout};
+use crate::layout::{ItemKind, Layout, size::port_inset};
 use crate::model::{Diagram, LineStyle, Mark, Shape};
 
 #[derive(Clone, Debug)]
