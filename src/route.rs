@@ -10,7 +10,7 @@
 //! avoided, and non-overlapping runs share a track.
 
 use crate::layout::{size::port_inset, ItemKind, Layout};
-use crate::model::{Diagram, LineStyle, Shape};
+use crate::model::{Diagram, LineStyle, Mark, Shape};
 
 #[derive(Clone, Debug)]
 pub struct Dest {
@@ -26,6 +26,7 @@ pub struct Group {
     pub src_o: i32,
     pub dests: Vec<Dest>,
     pub style: LineStyle,
+    pub mark: Mark,
     pub arrow_src: bool,
     /// None when the group is a single straight line.
     pub track: Option<usize>,
@@ -89,6 +90,7 @@ pub fn route(d: &Diagram, lay: &Layout) -> Routing {
                 src_o: o,
                 dests: Vec::new(),
                 style: u.style,
+                mark: u.mark,
                 arrow_src: u.arrow_src,
                 track: None,
             });

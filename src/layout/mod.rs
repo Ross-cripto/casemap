@@ -12,7 +12,7 @@ mod position;
 mod rank;
 pub mod size;
 
-use crate::model::{Diagram, Direction, LineStyle};
+use crate::model::{Diagram, Direction, LineStyle, Mark};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ItemKind {
@@ -68,6 +68,7 @@ pub struct Seg {
 pub struct Unit {
     pub arrow_src: bool,
     pub style: LineStyle,
+    pub mark: Mark,
     pub segs: Vec<usize>,
 }
 
@@ -117,18 +118,24 @@ impl Layout {
         for &s in &self.out_segs[item] {
             let seg = &self.segs[s];
             let style = d.edges[seg.edge].style;
+            let mark = d.edges[seg.edge].mark;
             if self.arrow_at_src(d, seg) {
                 units.push(Unit {
                     arrow_src: true,
                     style,
+                    mark,
                     segs: vec![s],
                 });
-            } else if let Some(u) = units.iter_mut().find(|u| !u.arrow_src && u.style == style) {
+            } else if let Some(u) = units
+                .iter_mut()
+                .find(|u| !u.arrow_src && u.style == style && u.mark == mark)
+            {
                 u.segs.push(s);
             } else {
                 units.push(Unit {
                     arrow_src: false,
                     style,
+                    mark,
                     segs: vec![s],
                 });
             }

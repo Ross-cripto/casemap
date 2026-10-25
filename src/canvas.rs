@@ -6,6 +6,8 @@
 
 use unicode_width::UnicodeWidthChar;
 
+use crate::model::Mark;
+
 pub const UP: u8 = 1;
 pub const DOWN: u8 = 2;
 pub const LEFT: u8 = 4;
@@ -40,15 +42,16 @@ pub enum Class {
 
 #[derive(Clone, Default)]
 struct Cell {
-    text: Option<(char, Class)>,
+    text: Option<(char, Class, Mark)>,
     continuation: bool,
-    lines: Vec<(Owner, u8, Pen)>,
+    lines: Vec<(Owner, u8, Pen, Mark)>,
 }
 
 pub struct Canvas {
     rows: i32,
     cols: i32,
     cells: Vec<Cell>,
+    ink: Mark,
 }
 
 impl Canvas {
@@ -58,7 +61,12 @@ impl Canvas {
             rows,
             cols,
             cells: vec![Cell::default(); size],
+            ink: Mark::Same,
         }
+    }
+
+    pub fn set_ink(&mut self, mark: Mark) {
+        self.ink = mark;
     }
 
     fn cell_mut(&mut self, r: i32, c: i32) -> Option<&mut Cell> {
@@ -89,18 +97,20 @@ impl Canvas {
         if flags == 0 {
             return;
         }
+        let ink = self.ink;
         if let Some(cell) = self.cell_mut(r, c) {
             match cell.lines.iter_mut().find(|e| e.0 == owner) {
                 Some(e) => e.1 |= flags,
-                None => cell.lines.push((owner, flags, pen)),
+                None => cell.lines.push((owner, flags, pen, ink)),
             }
         }
     }
 
     pub fn put(&mut self, r: i32, c: i32, ch: char, class: Class) {
         let w = ch.width().unwrap_or(1).max(1) as i32;
+        let ink = self.ink;
         if let Some(cell) = self.cell_mut(r, c) {
-            cell.text = Some((ch, class));
+            cell.text = Some((ch, class, ink));
             cell.continuation = false;
         }
         if w == 2 {
@@ -135,7 +145,7 @@ impl Canvas {
         let mut out = String::new();
         let mut lines: Vec<String> = Vec::with_capacity(self.rows as usize);
         for r in 0..self.rows {
-            let row: Vec<(Option<(char, Class)>, bool)> = (0..self.cols)
+            let row: Vec<_> = (0..self.cols)
                 .map(|c| {
                     let cell = &self.cells[(r * self.cols + c) as usize];
                     (resolve(cell), cell.continuation)
@@ -143,10 +153,10 @@ impl Canvas {
                 .collect();
             let last = row
                 .iter()
-                .rposition(|(t, cont)| *cont || t.is_some_and(|(ch, _)| ch != ' '));
+                .rposition(|(t, cont)| *cont || t.is_some_and(|(ch, _, _)| ch != ' '));
             let mut line = String::new();
             if let Some(last) = last {
-                let mut cur: Option<Class> = None;
+                let mut cur: Option<(Class, Mark)> = None;
                 for (t, cont) in &row[..=last] {
                     if *cont {
                         continue;
@@ -159,11 +169,11 @@ impl Canvas {
                             }
                             line.push(' ');
                         }
-                        Some((ch, class)) => {
-                            if color && cur != Some(*class) {
+                        Some((ch, class, mark)) => {
+                            if color && cur != Some((*class, *mark)) {
                                 line.push_str("\x1b[0m");
-                                line.push_str(sgr(*class));
-                                cur = Some(*class);
+                                line.push_str(sgr(*class, *mark));
+                                cur = Some((*class, *mark));
                             }
                             line.push(if ascii { to_ascii(*ch) } else { *ch });
                         }
@@ -186,7 +196,7 @@ impl Canvas {
     }
 }
 
-fn resolve(cell: &Cell) -> Option<(char, Class)> {
+fn resolve(cell: &Cell) -> Option<(char, Class, Mark)> {
     if let Some(t) = cell.text {
         return Some(t);
     }
@@ -194,13 +204,13 @@ fn resolve(cell: &Cell) -> Option<(char, Class)> {
         return None;
     }
     let is_cluster = |o: &Owner| matches!(o, Owner::Cluster(_));
-    let solid: Vec<&(Owner, u8, Pen)> = if cell.lines.iter().any(|e| !is_cluster(&e.0)) {
+    let solid: Vec<&(Owner, u8, Pen, Mark)> = if cell.lines.iter().any(|e| !is_cluster(&e.0)) {
         cell.lines.iter().filter(|e| !is_cluster(&e.0)).collect()
     } else {
         cell.lines.iter().collect()
     };
     let node = solid.iter().find(|e| matches!(e.0, Owner::Node(_)));
-    let edges: Vec<&&(Owner, u8, Pen)> = solid
+    let edges: Vec<&&(Owner, u8, Pen, Mark)> = solid
         .iter()
         .filter(|e| matches!(e.0, Owner::Edge(_)))
         .collect();
@@ -212,15 +222,15 @@ fn resolve(cell: &Cell) -> Option<(char, Class)> {
         if all_straight {
             if let Some(v) = edges.iter().find(|e| e.1 == vertical) {
                 if edges.iter().any(|e| e.1 == horizontal) {
-                    return Some((glyph(vertical, v.2), Class::Edge));
+                    return Some((glyph(vertical, v.2), Class::Edge, v.3));
                 }
             }
         }
     }
 
     let flags = solid.iter().fold(0, |a, e| a | e.1);
-    let (pen, class) = match node {
-        Some(n) => (n.2, Class::NodeBorder),
+    let (pen, class, mark) = match node {
+        Some(n) => (n.2, Class::NodeBorder, n.3),
         None if !edges.is_empty() => {
             let p = edges[0].2;
             (
@@ -230,11 +240,20 @@ fn resolve(cell: &Cell) -> Option<(char, Class)> {
                     Pen::Round
                 },
                 Class::Edge,
+                shared_edge_mark(&edges),
             )
         }
-        None => (solid[0].2, Class::ClusterBorder),
+        None => (solid[0].2, Class::ClusterBorder, Mark::Same),
     };
-    Some((glyph(flags, pen), class))
+    Some((glyph(flags, pen), class, mark))
+}
+
+fn shared_edge_mark(edges: &[&&(Owner, u8, Pen, Mark)]) -> Mark {
+    if edges.iter().all(|edge| edge.3 == edges[0].3) {
+        edges[0].3
+    } else {
+        Mark::Same
+    }
 }
 
 const LIGHT: [char; 16] = [
@@ -269,16 +288,51 @@ fn glyph(flags: u8, pen: Pen) -> char {
     }
 }
 
-/// Colours chosen to read well on both dark and light terminal themes.
-fn sgr(class: Class) -> &'static str {
+const ADDED: [&str; 3] = ["\x1b[1;32m", "\x1b[3;32m", "\x1b[32m"];
+const REMOVED: [&str; 3] = ["\x1b[1;31m", "\x1b[3;31m", "\x1b[31m"];
+const CHANGED: [&str; 3] = ["\x1b[1;33m", "\x1b[3;33m", "\x1b[33m"];
+const BOLD_WEIGHT: usize = 0;
+const ITALIC_WEIGHT: usize = 1;
+const PLAIN_WEIGHT: usize = 2;
+
+fn class_weight(class: Class) -> usize {
     match class {
-        Class::NodeBorder => "",
-        Class::NodeText => "\x1b[1m",
-        Class::Edge => "\x1b[90m",
-        Class::Arrow => "\x1b[90m",
-        Class::EdgeLabel => "\x1b[3;90m",
-        Class::ClusterBorder => "\x1b[90m",
-        Class::ClusterTitle => "\x1b[1;90m",
+        Class::NodeText => BOLD_WEIGHT,
+        Class::EdgeLabel => ITALIC_WEIGHT,
+        Class::NodeBorder
+        | Class::Edge
+        | Class::Arrow
+        | Class::ClusterBorder
+        | Class::ClusterTitle => PLAIN_WEIGHT,
+    }
+}
+
+fn marked_palette(mark: Mark) -> Option<&'static [&'static str; 3]> {
+    match mark {
+        Mark::Same => None,
+        Mark::Added => Some(&ADDED),
+        Mark::Removed => Some(&REMOVED),
+        Mark::Changed => Some(&CHANGED),
+    }
+}
+
+pub fn mark_sgr(mark: Mark) -> Option<&'static str> {
+    marked_palette(mark).map(|palette| palette[PLAIN_WEIGHT])
+}
+
+/// Colours chosen to read well on both dark and light terminal themes.
+fn sgr(class: Class, mark: Mark) -> &'static str {
+    match marked_palette(mark) {
+        Some(palette) => palette[class_weight(class)],
+        None => match class {
+            Class::NodeBorder => "",
+            Class::NodeText => "\x1b[1m",
+            Class::Edge => "\x1b[90m",
+            Class::Arrow => "\x1b[90m",
+            Class::EdgeLabel => "\x1b[3;90m",
+            Class::ClusterBorder => "\x1b[90m",
+            Class::ClusterTitle => "\x1b[1;90m",
+        },
     }
 }
 
