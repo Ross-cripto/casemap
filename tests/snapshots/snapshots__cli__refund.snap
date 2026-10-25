@@ -1,0 +1,28 @@
+---
+source: tests/snapshots.rs
+expression: "cli(&[\"flows\", \"refund\", \"--flows\", \"tests/fixtures/flows/after\",\n\"--no-color\"], &[], None)"
+---
+$ strata flows refund --flows tests/fixtures/flows/after --no-color
+[exit 0]
+--- stdout
+Refund
+A customer asks for a refund and gets the money back or a reason why not.
+
+         ╭───────────────────────────╮
+         │ Customer requests refund  │
+         ╰─────────────┬─────────────╯
+                       │
+                       ▼
+              ╱─────────────────╲
+             <  Within 30 days?  >
+              ╲────────┬────────╱
+         ╭─────────────┴─────────────╮
+         │                           │
+        yes                         no
+         │                           │
+         ▼                           ▼
+┌─────────────────┐    ┌───────────────────────────┐
+│ Refund to card  │    │ Explain the refund policy │
+└─────────────────┘    └───────────────────────────┘
+--- stderr
+[end]

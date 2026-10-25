@@ -1,0 +1,36 @@
+---
+source: tests/snapshots.rs
+expression: "cli(&[\"guide\", \"--no-color\"], &[], None)"
+---
+$ strata guide --no-color
+[exit 0]
+--- stdout
+# Flow catalog
+
+Every user-facing use case of this project has one file in docs/flows/,
+named after the use case (docs/flows/checkout.md):
+
+    # Checkout
+
+    A customer pays for the cart and gets a confirmation.
+
+    ```mermaid
+    flowchart TD
+        cart([Customer opens cart]) --> pay{Payment ok?}
+        pay -->|yes| confirm[Order confirmed]
+        pay -->|no| error[Show payment error]
+    ```
+
+Rules for agents:
+- When a task changes how a use case behaves, update its flow file in the
+  same change. Add a file for a new use case; delete the file of a removed one.
+- Describe the flow as it is after your change. Do not mark what changed:
+  `strata diff` computes that from git.
+- Keep node ids stable. Rename a step by changing its label, not its id;
+  a new id reads as one step removed and another added.
+- One mermaid flowchart per file. Name steps after behaviour a user would
+  recognise, not after functions or classes.
+- Check the result with `strata diff` (uncommitted changes) or
+  `strata diff main` (the whole branch).
+--- stderr
+[end]

@@ -1,0 +1,31 @@
+---
+source: tests/snapshots.rs
+expression: "cli(&[\"examples/simple.mmd\", \"--no-color\"], &[], None)"
+---
+$ strata examples/simple.mmd --no-color
+[exit 0]
+--- stdout
+                 ┌─────────┐
+                 │ Request │
+                 └────┬────┘
+                      │
+                      ▼
+             ╱─────────────────╲
+            <  Authenticated?   >
+             ╲────────┬────────╱
+          ╭───────────┴──────────╮
+          │                      │
+         yes                    no
+          │                      │
+          ▼                      ▼
+  ┌───────────────┐    ┌───────────────────┐
+  │ Load profile  │    │ Redirect to login │
+  └───────┬───────┘    └─────────┬─────────┘
+          ├────────────╮ ╭───────╯
+          ▼            ▼ ▼
+╭───────────╮    ┌─────────────┐
+├───────────┤    │ Render page │
+│ Users DB  │    └─────────────┘
+╰───────────╯
+--- stderr
+[end]

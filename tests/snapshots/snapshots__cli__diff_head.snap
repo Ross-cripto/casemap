@@ -1,0 +1,61 @@
+---
+source: tests/snapshots.rs
+expression: "repo_cli(&repo, &[\"diff\", \"--no-color\"])"
+---
+$ strata diff --no-color
+[exit 0]
+--- stdout
+flow changes since HEAD ([SHA]): 1 modified, 0 new, 0 removed
+
+Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link
+  + step fraud "Fraud check"
+  ~ step confirm "Order confirmed" -> "Order confirmed and emailed"
+  - step address "Enter address"
+  + link cart -> pay
+  + link pay -> fraud "yes"
+  + link fraud -> confirm
+  ~ link pay -> error "no" -> "declined"
+  - link cart -> address
+  - link address -> pay
+  - link pay -> confirm "yes"
+
+                                                   ╭─────────────────────╮
+                                                   │ Customer opens cart │
+                                                   ╰─────────┬───┬───────╯
+                                              ╭──────────────╯   │
+                                              │                  │
+                                              │                  -
+                                              │                  │
+                                              │                  ▼
+                                              +         ┌─────────────────┐
+                                              │         │ - Enter address │
+                                              │         └────────┬────────┘
+                                              │                  │
+                                              │                  │
+                                              │                  -
+                                              │ ╭────────────────╯
+                                              ▼ ▼
+                                       ╱─────────────╲
+                                      <  Payment ok?  >
+                                       ╲────┬─┬──┬───╱
+        ╭───────────────────────────────────╯ │  │
+        │                       ╭─────────────╯  │
+        │                       │                │
+      + yes                ~ declined            │
+        │                       │                │
+        ▼                       ▼                │
+┌───────────────┐    ┌─────────────────────┐   - yes
+│ + Fraud check │    │ Show payment error  │     │
+└───────┬───────┘    └─────────────────────┘     │
+        │                                        │
+        │                                        │
+        +                                        │
+        ╰───────────────────────────╮            │
+                                    ▼            ▼
+                     ┌───────────────────────────────┐
+                     │ ~ Order confirmed and emailed │
+                     └───────────────────────────────┘
+
+unchanged: login, refund
+--- stderr
+[end]

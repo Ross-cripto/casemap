@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "cli(&[\"flows\", \"--flows\", \"nope\", \"--no-color\"], &[], None)"
+---
+$ strata flows --flows nope --no-color
+[exit 1]
+--- stdout
+--- stderr
+strata: no flow catalog at nope (create it or pass --flows <dir>)
+[end]

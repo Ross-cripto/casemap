@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "transcript(\"empty.md --no-color\",\n&repo.strata(&[\"empty.md\", \"--no-color\"]).into())"
+---
+$ strata empty.md --no-color
+[exit 1]
+--- stdout
+--- stderr
+strata: empty.md: no mermaid blocks
+[end]
