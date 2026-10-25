@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::{Cluster, Diagram, Direction, Edge, LineStyle, Node, Shape};
+use crate::model::{Cluster, Diagram, Direction, Edge, LineStyle, Mark, Node, Shape};
 
 #[derive(Debug)]
 pub struct ParseError {
@@ -185,6 +185,7 @@ impl Builder {
                             style: link.style,
                             arrow_from: link.arrow_from,
                             arrow_to: link.arrow_to,
+                            mark: Mark::Same,
                         });
                     }
                 }
@@ -252,7 +253,12 @@ impl Builder {
         };
         let i = self.nodes.len();
         self.index.insert(id.clone(), i);
-        self.nodes.push(Node { id, label, shape });
+        self.nodes.push(Node {
+            id,
+            label,
+            shape,
+            mark: Mark::Same,
+        });
         self.node_cluster.push(current);
         i
     }

@@ -45,11 +45,33 @@ pub enum LineStyle {
     Thick,
 }
 
+/// Parsed elements are `Same`; the diff module assigns the other states.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Mark {
+    #[default]
+    Same,
+    Added,
+    Removed,
+    Changed,
+}
+
+impl Mark {
+    pub fn symbol(self) -> Option<char> {
+        match self {
+            Self::Same => None,
+            Self::Added => Some('+'),
+            Self::Removed => Some('-'),
+            Self::Changed => Some('~'),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Node {
     pub id: String,
     pub label: Vec<String>,
     pub shape: Shape,
+    pub mark: Mark,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +82,7 @@ pub struct Edge {
     pub style: LineStyle,
     pub arrow_from: bool,
     pub arrow_to: bool,
+    pub mark: Mark,
 }
 
 #[derive(Clone, Debug)]

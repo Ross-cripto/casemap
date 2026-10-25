@@ -17,9 +17,13 @@ that's where terminal diagram tools usually fall apart.
 ## Usage
 
 ```
-strata [OPTIONS] [FILE]
+strata [OPTIONS] [FILE]   # Mermaid source, or every mermaid block of a .md file
+strata diff [REF]          # catalog changes since REF (default HEAD), including uncommitted edits
+strata flows [NAME]        # list use cases, or render one
+strata guide               # convention for AGENTS.md or CLAUDE.md
 
   -w, --watch           Re-render whenever FILE changes (Ctrl-C to quit)
+  --flows <DIR>         Flow catalog directory (default docs/flows)
   --dir <TD|BT|LR|RL>   Override the flowchart direction
   --ascii               Plain ASCII instead of box-drawing characters
   --color / --no-color  Force or disable ANSI colour (auto on a TTY; respects NO_COLOR)
@@ -35,6 +39,77 @@ Supported Mermaid: `flowchart`/`graph` with TD/TB/BT/LR/RL; shapes `[]`,
 thick `==>`, open `---`, bidirectional `<-->`; labels as `-->|x|` or
 `-- x -->`; nested `subgraph … end`. Styling statements (`classDef`,
 `style`, `linkStyle`, `click`) are accepted and ignored.
+
+To render a file literally named `diff`, `flows` or `guide`, write `./diff`.
+
+## Flow catalog
+
+After an agent finishes a task, reading a multi-file diff to reconstruct the
+changed use cases takes work. Keep one Markdown file per use case in
+`docs/flows/` and have the agent update it with the code. `strata diff` uses
+git to compare the diagrams and show added, removed and changed steps and
+links. GitHub renders the same Mermaid files when you browse the repository.
+
+For example, `docs/flows/checkout.md`:
+
+````markdown
+# Checkout
+
+A customer pays for the cart and gets a confirmation.
+
+```mermaid
+flowchart TD
+    cart([Customer opens cart]) --> pay{Payment ok?}
+    pay -->|yes| confirm[Order confirmed]
+    pay -->|no| error[Show payment error]
+```
+````
+
+Keep node ids stable when editing labels. Describe the current behaviour;
+strata computes the changes from the diagram at the merge base of REF and
+HEAD against the working tree, including committed and uncommitted edits:
+
+```sh
+strata diff                  # since HEAD
+strata diff main             # the whole branch since its merge base with main
+strata diff main --no-color   # readable markers without ANSI colour
+strata diff --ascii          # markers also work in plain ASCII drawings
+```
+
+An excerpt for the before/after checkout fixtures (drawings omitted):
+
+```text
+flow changes since main (47c96f4): 1 modified, 1 new, 1 removed
+
+Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link
+  + step fraud "Fraud check"
+  ~ step confirm "Order confirmed" -> "Order confirmed and emailed"
+  - step address "Enter address"
+  + link cart -> pay
+  + link pay -> fraud "yes"
+  + link fraud -> confirm
+  ~ link pay -> error "no" -> "declined"
+  - link cart -> address
+  - link address -> pay
+  - link pay -> confirm "yes"
+```
+
+The base SHA depends on your repository. Each changed flow includes a union
+drawing: `+` means added (green), `-` removed (red), and `~` changed (yellow).
+A current flow with a parse error is reported at its file line while the
+other flows still render; the command exits 1. With no changes it prints
+one line, `no flow changes since HEAD (<sha7>)`, and exits 0.
+
+```sh
+strata flows                       # names, titles and descriptions
+strata flows checkout              # render one use case
+strata flows --flows path/to/flows  # use another catalog directory
+strata guide                       # print the agent convention to paste into AGENTS.md or CLAUDE.md
+```
+
+Catalogs contain top-level `.md` or `.mmd` files. `.mmd` files use the whole
+file as their diagram. `strata FILE.md` renders every Mermaid block under
+its nearest heading, and `strata --watch FILE.md` redraws them on save.
 
 ## How the layout works
 
@@ -63,7 +138,15 @@ not the edge.
 The CLI is a thin wrapper around the crate, so a TUI or an MCP server can embed it:
 
 ```rust
-let text = strata::render_str(source, &strata::Options::default())?;
+let options = strata::Options::default();
+let text = strata::render_str(source, &options)?;
+let document = strata::render_markdown(markdown, &options)?;
+
+let old = strata::parser::parse(old_source)?;
+let new = strata::parser::parse(new_source)?;
+let changes = strata::diff::diff(&old, &new);
+let summary = changes.summary();
+let drawing = strata::render_diagram(&changes.union, &options);
 ```
 
 ## Tests
@@ -71,11 +154,16 @@ let text = strata::render_str(source, &strata::Options::default())?;
 `cargo test` checks invariants across every fixture in all four directions:
 exactly one arrowhead per arrow end, every node and edge label visible, no
 dangling line ends, deterministic output, and pure-ASCII output in `--ascii` mode.
+The flow tests also check Markdown extraction, union diagrams and state colours,
+catalog classification, and CLI behaviour against temporary git repositories
+with committed and uncommitted changes. The test suite requires the `git` binary.
 
 ## Known limits
 
 - Flowcharts only, no sequence/class/ER diagrams yet.
-- Self-loops are shown as a `↻` marker on the node.
+- Self-loops are shown as a `↻` marker on the node; self-loop changes appear only in the diff summary and details.
+- Node ids are the identity; changing an id reads as a removal plus an addition.
+- Only the first mermaid block of a catalog flow file is compared. Prose, titles, direction and cluster membership are not diffed.
 - Edges to a subgraph id (`a --> mySubgraph`) treat the id as a node.
 - LR diagrams with many layers get wide; TD is the better default for big systems.
 - Edges entering a cluster cross its border wherever they arrive rather than at a dedicated gate.

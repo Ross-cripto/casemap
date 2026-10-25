@@ -17,3 +17,5 @@ cargo run -- --watch examples/architecture.mmd  # redraw on every save
 ## Code map
 
 `src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` is a thin CLI over `render_str`. The README's "How the layout works" explains each stage, and its roadmap (TUI viewer, code anchors, MCP server) is the next work.
+
+`markdown` (mermaid blocks in .md), `diff` (union diagram + marks), `flows` (catalog, compare, report), `git` (merge base and files at a commit via the git binary).

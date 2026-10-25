@@ -9,8 +9,16 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::canvas::{Canvas, Class, Owner, Pen};
 use crate::layout::{ItemKind, Layout};
-use crate::model::{Diagram, Direction, LineStyle, Node, Shape};
+use crate::model::{Diagram, Direction, LineStyle, Mark, Node, Shape};
 use crate::route::{Dest, Routing};
+
+pub fn bold_line(text: &str, color: bool) -> String {
+    if color {
+        format!("\x1b[1m{text}\x1b[0m\n")
+    } else {
+        format!("{text}\n")
+    }
+}
 
 pub struct Options {
     pub ascii: bool,
@@ -109,6 +117,7 @@ pub fn render(d: &Diagram, lay: &Layout, rt: &Routing, opts: &Options) -> String
         Direction::RightLeft => ('◀', '▶'),
     };
 
+    cv.set_ink(Mark::Same);
     // Cluster boxes.
     let mut titles = Vec::new();
     for c in 0..d.clusters.len() {
@@ -133,6 +142,7 @@ pub fn render(d: &Diagram, lay: &Layout, rt: &Routing, opts: &Options) -> String
         let ItemKind::Node(n) = it.kind else { continue };
         let r0 = rows.layer_start[it.rank];
         let (top, left, bottom, right) = rect(r0, r0 + it.ext_r - 1, it.pos, it.pos + it.ext_o - 1);
+        cv.set_ink(d.nodes[n].mark);
         draw_node(
             &mut cv,
             top,
@@ -146,6 +156,7 @@ pub fn render(d: &Diagram, lay: &Layout, rt: &Routing, opts: &Options) -> String
 
     // Edges.
     for (gi, g) in rt.groups.iter().enumerate() {
+        cv.set_ink(g.mark);
         let l = g.layer;
         let src = &lay.items[g.src];
         let src_r = match src.kind {
@@ -198,10 +209,16 @@ pub fn render(d: &Diagram, lay: &Layout, rt: &Routing, opts: &Options) -> String
     }
 
     // Edge labels.
-    for it in &lay.items {
+    for (i, it) in lay.items.iter().enumerate() {
         let ItemKind::Label(text) = &it.kind else {
             continue;
         };
+        cv.set_ink(
+            lay.in_segs[i]
+                .first()
+                .map(|&s| d.edges[lay.segs[s].edge].mark)
+                .unwrap_or_default(),
+        );
         let r0 = rows.layer_start[it.rank];
         let (top, left, _, right) = rect(r0, r0 + it.ext_r - 1, it.pos, it.pos + it.ext_o - 1);
         center_text(
@@ -214,6 +231,7 @@ pub fn render(d: &Diagram, lay: &Layout, rt: &Routing, opts: &Options) -> String
         );
     }
 
+    cv.set_ink(Mark::Same);
     // Cluster titles go last so they sit on top of their border but never over an edge.
     for (top, left, right, title) in titles {
         let avail = (right - left - 3).max(0) as usize;
