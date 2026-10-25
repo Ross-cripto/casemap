@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+assertion_line: 483
+expression: "cli(&[\"--flows\", \"tests/fixtures/flows/after\", \"--no-color\", \"flows\"], &[],\nNone)"
+---
+$ strata --flows tests/fixtures/flows/after --no-color flows
+[exit 0]
+--- stdout
+checkout  Checkout — A customer pays for the cart.
+login     Login — A returning customer signs in.
+refund    Refund — A customer asks for a refund and gets the money back or a reason why not.
+--- stderr
+[end]

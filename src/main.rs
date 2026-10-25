@@ -4,20 +4,21 @@
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::mpsc;
-use std::time::{Duration, SystemTime};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
 use strata::flows::Flow;
 use strata::markdown::is_markdown_path;
-use strata::{Direction, Options};
+use strata::{Direction, Options, ParseError};
 
 const DEFAULT_FLOWS_DIR: &str = "docs/flows";
 const DEFAULT_REF: &str = "HEAD";
 const WATCH_HEARTBEAT: Duration = Duration::from_secs(1);
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
+const WATCH_MAX_DRAIN: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -121,13 +122,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     if cli.command.is_some() && cli.file.is_some() {
         bail!("FILE cannot be combined with a subcommand");
     }
-    let color = if cli.no_color {
-        false
-    } else if cli.color {
-        true
-    } else {
-        io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-    };
+    let color = resolve_color(&cli);
     let opts = Options {
         color,
         ascii: cli.ascii,
@@ -143,35 +138,56 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Some(Commands::Flows { name }) => show_flows(directory, name.as_deref(), &opts),
         Some(Commands::Guide) => {
-            print!(
-                "{}",
-                GUIDE.replace(DEFAULT_FLOWS_DIR, &directory.to_string_lossy())
-            );
+            print_guide(directory);
             Ok(ExitCode::SUCCESS)
         }
         Some(Commands::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "strata", &mut io::stdout());
             Ok(ExitCode::SUCCESS)
         }
-        None => {
-            let file = cli.file.as_deref();
-            if cli.watch {
-                return match file {
-                    Some(path) if path != Path::new("-") => watch_file(path, &opts),
-                    _ => bail!("--watch needs a file path"),
-                };
-            }
-            let source = match file {
-                None => read_stdin()?,
-                Some(path) if path == Path::new("-") => read_stdin()?,
-                Some(path) => {
-                    std::fs::read_to_string(path).with_context(|| path.display().to_string())?
-                }
-            };
-            print!("{}", render_source(file, &source, &opts)?);
-            Ok(ExitCode::SUCCESS)
-        }
+        None => render_file(cli.file.as_deref(), cli.watch, &opts),
     }
+}
+
+fn resolve_color(cli: &Cli) -> bool {
+    if cli.no_color {
+        false
+    } else if cli.color {
+        true
+    } else {
+        io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    }
+}
+
+fn is_stdin(path: &Path) -> bool {
+    path == Path::new("-")
+}
+
+fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
+    match file {
+        None => read_stdin(),
+        Some(path) if is_stdin(path) => read_stdin(),
+        Some(path) => std::fs::read_to_string(path).with_context(|| path.display().to_string()),
+    }
+}
+
+fn render_file(file: Option<&Path>, watch: bool, opts: &Options) -> anyhow::Result<ExitCode> {
+    if watch {
+        return match file {
+            Some(path) if !is_stdin(path) => watch_file(path, opts),
+            _ => bail!("--watch needs a file path"),
+        };
+    }
+    let source = read_source(file)?;
+    print!("{}", render_source(file, &source, opts)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_guide(directory: &Path) {
+    print!(
+        "{}",
+        GUIDE.replace(DEFAULT_FLOWS_DIR, &directory.to_string_lossy())
+    );
 }
 
 fn read_stdin() -> anyhow::Result<String> {
@@ -184,24 +200,20 @@ fn read_stdin() -> anyhow::Result<String> {
 
 #[derive(Debug, thiserror::Error)]
 enum RenderError {
-    #[error("{0}")]
-    Parse(String),
-    #[error("{0}")]
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    #[error("{0}: no mermaid blocks")]
     NoBlocks(String),
 }
 
 fn render_source(path: Option<&Path>, src: &str, opts: &Options) -> Result<String, RenderError> {
     let Some(path) = path.filter(|path| is_markdown_path(path)) else {
-        return strata::render_str(src, opts)
-            .map_err(|error| RenderError::Parse(error.to_string()));
+        return Ok(strata::render_str(src, opts)?);
     };
     if strata::markdown::mermaid_blocks(src).is_empty() {
-        return Err(RenderError::NoBlocks(format!(
-            "{}: no mermaid blocks",
-            path.display()
-        )));
+        return Err(RenderError::NoBlocks(path.display().to_string()));
     }
-    strata::render_markdown(src, opts).map_err(|error| RenderError::Parse(error.to_string()))
+    Ok(strata::render_markdown(src, opts)?)
 }
 
 fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
@@ -264,14 +276,19 @@ fn show_flows(dir: &Path, name: Option<&str>, opts: &Options) -> anyhow::Result<
     Ok(ExitCode::SUCCESS)
 }
 
-fn frame(path: &Path, read: io::Result<String>, opts: &Options, last_good: &mut String) -> String {
+fn watch_frame(
+    path: &Path,
+    read: io::Result<String>,
+    opts: &Options,
+    last_good: &mut String,
+) -> String {
     let status = match read {
         Ok(source) => match render_source(Some(path), &source, opts) {
             Ok(output) => {
                 *last_good = output;
                 String::new()
             }
-            Err(RenderError::Parse(message)) => format!("parse error, {message}"),
+            Err(RenderError::Parse(error)) => format!("parse error, {error}"),
             Err(error @ RenderError::NoBlocks(_)) => error.to_string(),
         },
         Err(error) => format!("cannot read file: {error}"),
@@ -282,44 +299,101 @@ fn frame(path: &Path, read: io::Result<String>, opts: &Options, last_good: &mut 
     } else {
         ("", "", "")
     };
-    let mut frame = String::from("\x1b[2J\x1b[H");
-    frame.push_str(&format!("{dim}{header}{reset}\n\n"));
-    frame.push_str(last_good);
+    let mut screen_text = String::from("\x1b[2J\x1b[H");
+    screen_text.push_str(&format!("{dim}{header}{reset}\n\n"));
+    screen_text.push_str(last_good);
     if !status.is_empty() {
-        frame.push_str(&format!("\n{bold}{status}{reset}\n"));
+        screen_text.push_str(&format!("\n{bold}{status}{reset}\n"));
     }
-    frame
+    screen_text
+}
+
+type FileStamp = Option<(SystemTime, u64)>;
+
+fn file_stamp(path: &Path) -> FileStamp {
+    std::fs::metadata(path).ok().map(|metadata| {
+        (
+            metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            metadata.len(),
+        )
+    })
+}
+
+struct Screen {
+    last: String,
+}
+
+impl Screen {
+    fn show(&mut self, frame: &str, out: &mut impl Write) -> bool {
+        if frame == self.last {
+            return false;
+        }
+        let _ = out.write_all(frame.as_bytes());
+        let _ = out.flush();
+        self.last = frame.to_string();
+        true
+    }
+}
+
+enum Wake {
+    Events(Receiver<notify::Result<notify::Event>>),
+    Poll,
+}
+
+fn drain(receiver: &Receiver<notify::Result<notify::Event>>, debounce: Duration, max: Duration) {
+    let started = Instant::now();
+    while let Some(remaining) = max.checked_sub(started.elapsed()) {
+        if receiver.recv_timeout(debounce.min(remaining)).is_err() {
+            break;
+        }
+    }
+}
+
+fn wait(wake: &mut Wake) {
+    match wake {
+        Wake::Events(receiver) => match receiver.recv_timeout(WATCH_HEARTBEAT) {
+            Err(RecvTimeoutError::Disconnected) => *wake = Wake::Poll,
+            _ => drain(receiver, WATCH_DEBOUNCE, WATCH_MAX_DRAIN),
+        },
+        Wake::Poll => std::thread::sleep(WATCH_HEARTBEAT),
+    }
 }
 
 fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
     let (sender, receiver) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(sender)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
-    let mut last_seen = None;
+    let watcher = notify::recommended_watcher(sender).and_then(|mut watcher| {
+        watcher
+            .watch(parent, RecursiveMode::NonRecursive)
+            .map(|()| watcher)
+    });
+    let mut wake = match &watcher {
+        Ok(_) => Wake::Events(receiver),
+        Err(error) => {
+            eprintln!("strata: file events unavailable ({error}); checking every 1s");
+            Wake::Poll
+        }
+    };
+    let mut last_seen: Option<FileStamp> = None;
     let mut last_good = String::new();
+    let mut screen = Screen {
+        last: String::new(),
+    };
     let mut stdout = io::stdout();
     loop {
-        let stamp = std::fs::metadata(path).ok().map(|metadata| {
-            (
-                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                metadata.len(),
-            )
-        });
+        let stamp = file_stamp(path);
         if last_seen != Some(stamp) {
             let read = std::fs::read_to_string(path);
             if read.is_ok() {
                 last_seen = Some(stamp);
             }
-            let frame = frame(path, read, opts, &mut last_good);
-            let _ = stdout.write_all(frame.as_bytes());
-            let _ = stdout.flush();
+            let screen_text = watch_frame(path, read, opts, &mut last_good);
+            screen.show(&screen_text, &mut stdout);
         }
-        let _ = receiver.recv_timeout(WATCH_HEARTBEAT);
-        while receiver.recv_timeout(WATCH_DEBOUNCE).is_ok() {}
+        wait(&mut wake);
     }
 }
 
@@ -328,11 +402,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn screen_writes_only_changed_frames() {
+        let mut screen = Screen {
+            last: String::new(),
+        };
+        let mut output = Vec::new();
+        assert!(screen.show("first", &mut output));
+        assert!(!screen.show("first", &mut output));
+        assert_eq!(output, b"first");
+        assert!(screen.show("second", &mut output));
+        assert_eq!(output, b"firstsecond");
+    }
+
+    #[test]
+    fn drain_is_bounded() {
+        let (sender, receiver) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(3) {
+                let event = Ok(notify::Event::new(notify::EventKind::Any));
+                if sender.send(event).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let started = Instant::now();
+        drain(&receiver, WATCH_DEBOUNCE, WATCH_MAX_DRAIN);
+        let elapsed = started.elapsed();
+        drop(receiver);
+        producer.join().unwrap();
+        assert!(elapsed < Duration::from_millis(900), "{elapsed:?}");
+    }
+
+    #[test]
+    fn watch_loop_polls_without_watcher() {
+        let started = Instant::now();
+        wait(&mut Wake::Poll);
+        assert!(started.elapsed() >= Duration::from_millis(900));
+    }
+
+    #[test]
     fn watch_frame_keeps_last_good_on_error() {
         let path = Path::new("flow.mmd");
         let opts = Options::default();
         let mut last_good = String::new();
-        let good = frame(
+        let good = watch_frame(
             path,
             Ok("graph TD\na[Visible]\n".into()),
             &opts,
@@ -344,11 +459,11 @@ mod tests {
         );
         assert!(last_good.contains("Visible"));
         let diagram = last_good.clone();
-        let broken = frame(path, Ok("graph TD\na -->".into()), &opts, &mut last_good);
+        let broken = watch_frame(path, Ok("graph TD\na -->".into()), &opts, &mut last_good);
         assert_eq!(last_good, diagram);
         assert!(broken.starts_with(&good));
         assert!(broken.contains("\nparse error, line 2:"));
-        let unreadable = frame(
+        let unreadable = watch_frame(
             path,
             Err(io::Error::other("temporarily busy")),
             &opts,

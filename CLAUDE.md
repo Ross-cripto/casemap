@@ -3,7 +3,7 @@
 Rust CLI and library that renders Mermaid flowcharts as clean terminal diagrams, built to keep an architecture diagram open in a side pane while working on the code.
 
 - Type: my own open source project (MIT), in `~/Code/open-source-projects/strata`.
-- Stack: Rust 2024 (MSRV 1.85); library deps unicode-width + thiserror; CLI behind the `cli` feature (clap, clap_complete, anyhow, notify).
+- Stack: Rust 2024 (MSRV 1.88); library deps unicode-width + thiserror; CLI behind the `cli` feature (clap, clap_complete, anyhow, notify).
 
 ## Commands
 

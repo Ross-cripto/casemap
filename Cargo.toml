@@ -2,7 +2,7 @@
 name = "strata"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Render Mermaid flowcharts as clean, readable terminal diagrams"
 license = "MIT"
 
