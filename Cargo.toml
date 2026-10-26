@@ -1,6 +1,6 @@
 [package]
 name = "casemap"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.88"
 description = "The living map of your app's use cases: check, render and diff Mermaid flows"

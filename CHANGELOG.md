@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/Ross-cripto/casemap/compare/v0.5.0...v0.5.1) - 2026-10-26
+
+### Other
+
+- let a maintainer approve CI on the release PR
+- release from main with release-plz and dispatched cargo-dist builds
+
 ## [0.5.0] - 2026-10-26
 
 The first packaged release of casemap (developed as strata until now): the living map of your app's use cases. Each use case is one Mermaid flowchart in `docs/flows/`, your coding agent keeps them current, and casemap checks, renders and diffs them.
