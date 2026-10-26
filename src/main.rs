@@ -583,7 +583,7 @@ fn show_flows(
     if name.is_some() && matches!(format, Format::Json) {
         bail!("--format json lists the catalog; drop the flow name");
     }
-    let flows = load_catalog(dir)?;
+    let mut flows = load_catalog(dir)?;
     if matches!(format, Format::Json) {
         let entries: Vec<_> = flows
             .iter()
@@ -600,6 +600,7 @@ fn show_flows(
         println!("{}", serde_json::json!({"version": 1, "flows": entries}));
         return Ok(ExitCode::SUCCESS);
     }
+    flows.sort_by(casemap::flows::compare_titles);
     let Some(name) = name else {
         if flows.is_empty() {
             println!("no flows in {}", dir.display());

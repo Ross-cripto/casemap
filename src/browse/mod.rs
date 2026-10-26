@@ -293,12 +293,13 @@ fn expected_git_absence(error: &anyhow::Error) -> bool {
 
 fn build_loaded(
     dir: &Path,
-    current: Vec<Flow>,
+    mut current: Vec<Flow>,
     report: check::Report,
     reference: &str,
     base: Option<&BaseChanges>,
     opts: &Options,
 ) -> Loaded {
+    current.sort_by(flows::compare_titles);
     let mut entries = Vec::new();
     for flow in &current {
         entries.push(build_entry(dir, flow, &report, base, opts));
@@ -796,6 +797,42 @@ mod tests {
         assert_ne!(added, catalog_stamp(directory.path()).unwrap());
         fs::remove_file(directory.path().join("renamed.md")).unwrap();
         assert_eq!(initial, catalog_stamp(directory.path()).unwrap());
+    }
+
+    #[test]
+    fn list_order_is_by_title_on_initial_load_and_reload() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        for (name, title) in [
+            (
+                "add-a-bookmark-from-the-terminal",
+                "Add a bookmark from the terminal",
+            ),
+            ("add-a-bookmark", "Add a bookmark"),
+            ("z-first", "add a bookmark"),
+        ] {
+            fs::write(
+                directory.path().join(format!("{name}.md")),
+                flow_source(title, "Add bookmark"),
+            )
+            .unwrap();
+        }
+        let mut browser_base = base("HEAD");
+        for _ in 0..2 {
+            let loaded = load(directory.path(), &mut browser_base, &Options::default()).unwrap();
+            let names: Vec<_> = loaded
+                .flows
+                .iter()
+                .map(|entry| entry.flow.name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "add-a-bookmark",
+                    "z-first",
+                    "add-a-bookmark-from-the-terminal"
+                ]
+            );
+        }
     }
 
     #[test]

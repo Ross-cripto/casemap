@@ -6,6 +6,13 @@ use casemap::{
 #[test]
 fn code_path_classification() {
     for (path, expected) in [
+        ("app/migrations/0001_initial.py", false),
+        ("next.config.js", false),
+        ("tailwind.config.ts", false),
+        ("vite.config.ts", false),
+        ("src/types/api.d.ts", false),
+        ("app/views.py", true),
+        ("src/config.ts", true),
         ("src/a.rs", true),
         ("Tests/A.swift", false),
         ("Vendor/x.go", false),

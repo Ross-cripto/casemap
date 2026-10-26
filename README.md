@@ -237,13 +237,14 @@ By default code extensions are `rs`, `ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py
 `go`, `rb`, `java`, `kt`, `kts`, `swift`, `cs`, `php`, `ex`, `exs`, `scala`, `c`,
 `h`, `cc`, `cpp`, `hpp`, `m`, `mm`, `dart`, `lua`, `vue`, `svelte`, `elm`, `clj`,
 `fs`, `erl`, `hs`, `ml`, `zig` and `sh`. Paths under `test`, `tests`, `__tests__`,
-`spec`, `specs`, `vendor`, `node_modules`, `target`, `dist`, `build`, `.github`
+`spec`, `specs`, `migrations`, `vendor`, `node_modules`, `target`, `dist`, `build`, `.github`
 or `.git` are excluded, as are test names `*_test.*`, `*.test.*`, `*.spec.*`,
-`test_*.py` and `*_spec.rb`. Extensions and excluded folder names are matched
+`test_*.py` and `*_spec.rb`, config names `*.config.*`, and TypeScript declarations
+`*.d.ts`. Extensions and excluded folder names are matched
 case-insensitively. Test files named like `*Tests.swift` or `*Test.java` outside
 test folders count as code; use `--exclude` to remove them. Dotfile folders other
-than `.github` and `.git`, and root config files such as `jest.config.ts`, count
-as code by default.
+than `.github` and `.git` count as code by default. A module such as
+`src/config.ts` also counts; its name does not match `*.config.*`.
 
 Repeat `--include PATTERN` to replace those defaults with your own selection;
 repeat `--exclude PATTERN` to remove files. Patterns use the same repository-root
@@ -462,6 +463,7 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `missing-diagram` | error | No Mermaid block |
 | `not-a-flowchart` | error | The first Mermaid block does not start with a flowchart/graph header |
 | `parse-error` | error | The first diagram cannot be parsed |
+| `reserved-id` | error | A node id is a Mermaid keyword; rename it |
 | `empty-diagram` | error | The flowchart has no steps |
 | `unclosed-fence` | error | A code fence is never closed |
 | `duplicate-name` | error | Another file has the same stem |
@@ -476,6 +478,7 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `mmd-flow` | warning | A `.mmd` file lacks the Markdown title and description format |
 | `no-actor` | warning | No stadium-shaped actor or trigger |
 | `unlabelled-branch` | warning | A decision has an exit without a label |
+| `single-exit-decision` | warning | A decision has fewer than two exits; label both outcomes or make it a step |
 | `unlabelled-step` | warning | A step's label is just its id |
 | `too-many-steps` | warning | More than 15 steps |
 | `too-few-steps` | warning | Fewer than 3 steps |
@@ -493,7 +496,9 @@ Tools can read one-line JSON from `casemap check --format json`:
 `path` and `line` are `null` when absent. A missing catalog exits 1, reports the
 error on stderr, and leaves stdout empty, including in JSON mode.
 
-`casemap flows --format json` returns catalog metadata:
+`casemap flows` and the browser list sort by case-insensitive title, with file
+name as the tie-break. `casemap flows --format json` keeps file-name order for
+tools and returns catalog metadata:
 
 ```json
 {"version":1,"flows":[{"name":"checkout","path":"docs/flows/checkout.md","title":"Checkout","description":"A customer pays for the cart.","has_diagram":true}]}

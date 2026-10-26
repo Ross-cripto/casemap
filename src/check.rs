@@ -40,11 +40,13 @@ pub enum Code {
     AnchorSyntax,
     AnchorUnknownStep,
     AnchorNoMatch,
+    ReservedId,
+    SingleExitDecision,
 }
 
 impl Code {
     /// Must list every variant exactly once; the exhaustive test mapping enforces this.
-    pub const ALL: [Code; 26] = [
+    pub const ALL: [Code; 28] = [
         Self::MissingTitle,
         Self::MissingDescription,
         Self::MissingDiagram,
@@ -71,6 +73,8 @@ impl Code {
         Self::AnchorSyntax,
         Self::AnchorUnknownStep,
         Self::AnchorNoMatch,
+        Self::ReservedId,
+        Self::SingleExitDecision,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -101,6 +105,8 @@ impl Code {
             Self::AnchorSyntax => "anchor-syntax",
             Self::AnchorUnknownStep => "anchor-unknown-step",
             Self::AnchorNoMatch => "anchor-no-match",
+            Self::ReservedId => "reserved-id",
+            Self::SingleExitDecision => "single-exit-decision",
         }
     }
 
@@ -117,7 +123,8 @@ impl Code {
             | Self::Unreadable
             | Self::AnchorSyntax
             | Self::AnchorUnknownStep
-            | Self::AnchorNoMatch => Severity::Error,
+            | Self::AnchorNoMatch
+            | Self::ReservedId => Severity::Error,
             Self::ExtraDiagram
             | Self::DuplicateTitle
             | Self::EmptyCatalog
@@ -131,7 +138,8 @@ impl Code {
             | Self::Styling
             | Self::FileName
             | Self::LongLabel
-            | Self::EdgeIntoActor => Severity::Warning,
+            | Self::EdgeIntoActor
+            | Self::SingleExitDecision => Severity::Warning,
         }
     }
 }
@@ -471,6 +479,14 @@ fn check_diagram(
     }
 }
 
+fn outgoing_exit_count(diagram: &Diagram, node_index: usize) -> usize {
+    diagram
+        .edges
+        .iter()
+        .filter(|edge| edge.from == node_index || (edge.arrow_from && edge.to == node_index))
+        .count()
+}
+
 fn has_unlabelled_exit(diagram: &Diagram, node_index: usize) -> bool {
     diagram.edges.iter().any(|edge| {
         let outgoing = edge.from == node_index || (edge.arrow_from && edge.to == node_index);
@@ -533,6 +549,28 @@ fn check_nodes(
 ) {
     for (index, node) in diagram.nodes.iter().enumerate() {
         let line = node_file_line(source, offset, &node.id);
+        if parser::RESERVED_IDS
+            .iter()
+            .any(|keyword| keyword.eq_ignore_ascii_case(&node.id))
+        {
+            problems.push(problem(
+                file,
+                Some(line),
+                Code::ReservedId,
+                format!("node id \"{}\" is a Mermaid keyword; rename it", node.id),
+            ));
+        }
+        if node.shape == Shape::Diamond && outgoing_exit_count(diagram, index) < 2 {
+            problems.push(problem(
+                file,
+                Some(line),
+                Code::SingleExitDecision,
+                format!(
+                    "decision \"{}\" has one exit; label both outcomes or make it a step",
+                    node.label.join(" ")
+                ),
+            ));
+        }
         if node.shape == Shape::Diamond && has_unlabelled_exit(diagram, index) {
             problems.push(problem(
                 file,
@@ -808,7 +846,8 @@ mod tests {
             | Code::Unreadable
             | Code::AnchorSyntax
             | Code::AnchorUnknownStep
-            | Code::AnchorNoMatch => Severity::Error,
+            | Code::AnchorNoMatch
+            | Code::ReservedId => Severity::Error,
             Code::ExtraDiagram
             | Code::DuplicateTitle
             | Code::EmptyCatalog
@@ -822,12 +861,27 @@ mod tests {
             | Code::Styling
             | Code::FileName
             | Code::LongLabel
-            | Code::EdgeIntoActor => Severity::Warning,
+            | Code::EdgeIntoActor
+            | Code::SingleExitDecision => Severity::Warning,
         }
     }
 
     fn cases() -> Vec<Case> {
         vec![
+            single_flow_case(
+                Code::ReservedId,
+                "checkout.md",
+                Some(7),
+                &VALID.replace("pay", "click"),
+                &[Code::ReservedId],
+            ),
+            single_flow_case(
+                Code::SingleExitDecision,
+                "checkout.md",
+                Some(8),
+                &VALID.replace("ok -->|no| pay\n", ""),
+                &[Code::SingleExitDecision],
+            ),
             // Without a recognised title or a fence, both required elements are missing.
             single_flow_case(
                 Code::MissingTitle,
@@ -1077,6 +1131,8 @@ mod tests {
             Code::AnchorSyntax => 23,
             Code::AnchorUnknownStep => 24,
             Code::AnchorNoMatch => 25,
+            Code::ReservedId => 26,
+            Code::SingleExitDecision => 27,
         }
     }
 
@@ -1093,6 +1149,64 @@ mod tests {
                     case.code, case.file, case.problems
                 )
             })
+    }
+
+    #[test]
+    fn reserved_ids_are_reported() {
+        for id in [
+            "click",
+            "end",
+            "style",
+            "class",
+            "classDef",
+            "linkStyle",
+            "subgraph",
+            "graph",
+            "flowchart",
+            "direction",
+            "default",
+            "CLICK",
+        ] {
+            let text = format!("flowchart TD\n{id} --> b[B]\n{id} --> c[C]");
+            let problems = check_flow("flow.mmd", &text);
+            let reserved: Vec<_> = problems
+                .iter()
+                .filter(|problem| problem.code.as_str() == "reserved-id")
+                .collect();
+            assert_eq!(reserved.len(), 1, "{id}: {problems:?}");
+            assert_eq!(reserved[0].line, Some(2));
+            assert_eq!(reserved[0].code.severity(), Severity::Error);
+            assert!(reserved[0].message.contains(id));
+            assert!(reserved[0].message.contains("rename"));
+        }
+    }
+
+    #[test]
+    fn decisions_need_two_exits() {
+        for (exits, expected) in [
+            ("", true),
+            ("choice -->|yes| done[Done]", true),
+            (
+                "choice -->|yes| done[Done]\nchoice -->|no| retry[Retry]",
+                false,
+            ),
+        ] {
+            let text = format!("flowchart TD\nactor([Customer]) --> choice{{Accepted?}}\n{exits}");
+            let problems = check_flow("flow.mmd", &text);
+            let decisions: Vec<_> = problems
+                .iter()
+                .filter(|problem| problem.code.as_str() == "single-exit-decision")
+                .collect();
+            assert_eq!(decisions.len(), usize::from(expected), "{exits}");
+            if expected {
+                assert_eq!(decisions[0].line, Some(2));
+                assert_eq!(decisions[0].code.severity(), Severity::Warning);
+                assert_eq!(
+                    decisions[0].message,
+                    "decision \"Accepted?\" has one exit; label both outcomes or make it a step"
+                );
+            }
+        }
     }
 
     #[test]

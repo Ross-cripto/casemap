@@ -2480,3 +2480,52 @@ fn hook_memory_is_per_session() {
     }
     assert_silent_hook(&repo, r#"{"session_id":"A"}"#);
 }
+
+#[test]
+fn flows_list_by_title_but_json_keeps_file_order() {
+    let repo = TempRepo::new();
+    fs::create_dir_all(repo.file("docs/flows")).unwrap();
+    for (name, title) in [
+        (
+            "add-a-bookmark-from-the-terminal",
+            "Add a bookmark from the terminal",
+        ),
+        ("add-a-bookmark", "Add a bookmark"),
+        ("z-first", "add a bookmark"),
+    ] {
+        fs::write(
+            repo.file(&format!("docs/flows/{name}.md")),
+            format!("# {title}\n\nA user adds a bookmark.\n"),
+        )
+        .unwrap();
+    }
+    let text = stdout(&repo.casemap(&["flows"]));
+    let names: Vec<_> = text
+        .lines()
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "add-a-bookmark",
+            "z-first",
+            "add-a-bookmark-from-the-terminal"
+        ]
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&repo.casemap(&["flows", "--format", "json"]))).unwrap();
+    let names: Vec<_> = json["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|flow| flow["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "add-a-bookmark-from-the-terminal",
+            "add-a-bookmark",
+            "z-first"
+        ]
+    );
+}
