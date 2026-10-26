@@ -543,3 +543,27 @@ fn cli_diff_ascii() {
         repo_transcript(&repo, &["diff", "main", "--ascii", "--no-color"])
     );
 }
+
+fn catalog_with_check_problems() -> TempRepo {
+    let repo = TempRepo::new();
+    fs::write(repo.flow_path("Bad.md"), "# Checkout\n").unwrap();
+    repo
+}
+
+#[test]
+fn cli_check_text() {
+    let repo = catalog_with_check_problems();
+    insta::assert_snapshot!(
+        "cli__check_text",
+        repo_transcript(&repo, &["check", "--no-color"])
+    );
+}
+
+#[test]
+fn cli_check_json() {
+    let repo = catalog_with_check_problems();
+    insta::assert_snapshot!(
+        "cli__check_json",
+        repo_transcript(&repo, &["check", "--format", "json"])
+    );
+}

@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"check\", \"--format\", \"json\"])"
+---
+$ strata check --format json
+[exit 1]
+--- stdout
+{"catalog":"docs/flows","errors":2,"flows":1,"problems":[{"code":"file-name","line":null,"message":"name flow files in kebab-case","path":"docs/flows/Bad.md","severity":"warning"},{"code":"missing-description","line":1,"message":"no one-sentence description after the title","path":"docs/flows/Bad.md","severity":"error"},{"code":"missing-diagram","line":1,"message":"no mermaid flowchart block","path":"docs/flows/Bad.md","severity":"error"}],"version":1,"warnings":1}
+--- stderr
+[end]

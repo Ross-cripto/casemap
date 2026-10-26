@@ -215,3 +215,28 @@ fn load_dir_errors_name_the_file() {
     let error = flows::load_dir(repo.path()).unwrap_err();
     assert!(error.to_string().contains("bad.md"), "{error}");
 }
+
+#[test]
+fn read_catalog_classifies_entries() {
+    let repo = TempRepo::new();
+    fs::create_dir(repo.flow_path("nested")).unwrap();
+    for name in ["notes.txt", "README.md", "readme.MD", ".hidden.md"] {
+        fs::write(repo.flow_path(name), "ignored").unwrap();
+    }
+    fs::write(repo.flow_path("bad.md"), INVALID_UTF8).unwrap();
+    repo.add_fixture("after", "checkout.md");
+    let entries = flows::read_catalog(&repo.file(common::FLOWS_DIR)).unwrap();
+    assert_eq!(entries.len(), 4);
+    assert!(matches!(&entries[0], flows::Entry::Unreadable { name, .. } if name == "bad.md"));
+    assert!(
+        matches!(&entries[1], flows::Entry::Flow { name, text } if name == "checkout.md" && text.starts_with("# Checkout"))
+    );
+    assert!(matches!(&entries[2], flows::Entry::Ignored { name } if name == "nested"));
+    assert!(matches!(&entries[3], flows::Entry::Ignored { name } if name == "notes.txt"));
+    assert_eq!(
+        flows::load_dir(&repo.file(common::FLOWS_DIR))
+            .unwrap_err()
+            .path,
+        repo.flow_path("bad.md")
+    );
+}

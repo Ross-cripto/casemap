@@ -10,7 +10,7 @@ flowchart TD
     changed -->|yes| render[Render it]
     render --> ok{Valid?}
     ok -->|yes| show[Redraw the diagram]
-    ok -->|no| keep[Keep the last good diagram, error underneath]
+    ok -->|no| keep[Keep last drawing, show the error]
     show --> poll
     keep --> poll
 ```

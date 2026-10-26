@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +40,56 @@ fn output_text(output: std::process::Output, args: &[&str]) -> Result<String, Gi
 
 fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     output_text(run_output(dir, args)?, args)
+}
+
+#[derive(Debug, Clone)]
+pub enum Location {
+    Inside { root: PathBuf, prefix: String },
+    NotARepository,
+}
+
+/// NotARepository requires git to fail with "not a git repository"; all other failures are errors.
+pub fn locate(dir: &Path) -> Result<Location, GitError> {
+    let args = ["rev-parse", "--show-toplevel"];
+    let output = Command::new("git")
+        .env("LC_ALL", "C")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|error| GitError::Spawn { error })?;
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("not a git repository")
+    {
+        return Ok(Location::NotARepository);
+    }
+    let root = PathBuf::from(output_text(output, &args)?.trim_end_matches(['\r', '\n']));
+    Ok(Location::Inside {
+        root,
+        prefix: prefix(dir)?,
+    })
+}
+
+pub fn toplevel(dir: &Path) -> Result<PathBuf, GitError> {
+    Ok(PathBuf::from(
+        run(dir, &["rev-parse", "--show-toplevel"])?.trim_end_matches(['\r', '\n']),
+    ))
+}
+
+pub fn prefix(dir: &Path) -> Result<String, GitError> {
+    Ok(run(dir, &["rev-parse", "--show-prefix"])?
+        .trim_end_matches(['\r', '\n'])
+        .replace('\\', "/"))
+}
+
+pub fn is_ignored(root: &Path, path: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "-q", "--"])
+        .arg(path)
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 pub fn merge_base(dir: &Path, rev: &str) -> Result<String, GitError> {

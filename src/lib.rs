@@ -1,4 +1,4 @@
-//! strata — Mermaid flowcharts rendered as clean, readable terminal diagrams.
+//! strata: the living map of an app's use cases, checked, rendered and diffed in the terminal.
 //!
 //! The pipeline is `parser` → `layout` (layered, cluster-aware) → `route`
 //! (orthogonal edge routing) → `render` (box-drawing canvas). Each stage is a
@@ -12,6 +12,7 @@
 //! ```
 
 pub mod canvas;
+pub mod check;
 pub mod diff;
 pub mod flows;
 pub mod git;
@@ -22,6 +23,7 @@ pub mod parser;
 pub mod paths;
 pub mod render;
 pub mod route;
+pub mod skill;
 
 pub use model::{Diagram, Direction, Mark};
 pub use parser::ParseError;

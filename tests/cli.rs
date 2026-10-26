@@ -9,7 +9,7 @@ use std::process::{Child, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use strata::flows;
+use strata::{flows, skill};
 
 fn strata_command(repo: &TempRepo) -> Command {
     Command::from_std(common::strata_command(&repo.config_path()))
@@ -169,7 +169,7 @@ fn cli_guide_prints_convention() {
     assert!(output.contains("docs/flows/"));
     assert!(output.contains("strata diff main"));
     let output = stdout(&repo.strata(&["guide", "--flows", "flows"]));
-    assert!(output.contains("flows/checkout.md"));
+    assert!(output.contains("flows/check-out-a-cart.md"));
     assert!(!output.contains("docs/flows"));
 }
 
@@ -450,4 +450,607 @@ fn cli_watch_draws_missing_file_immediately() {
     let displayed = watch.wait_for("cannot read file:", || {});
     drop(watch);
     assert!(displayed, "watch did not display the missing-file error");
+}
+
+#[test]
+fn check_passes_on_a_valid_catalog() {
+    let repo = TempRepo::new();
+    repo.copy_catalog("after");
+    assert_eq!(
+        stdout(&repo.strata(&["check", "--no-color"])),
+        "checked 3 flows: ok\n"
+    );
+}
+
+#[test]
+fn check_exit_codes() {
+    check_exits_1_on_errors();
+    check_warnings_exit_0_unless_strict();
+    check_empty_catalog_warns();
+}
+
+fn write_valid_flow(repo: &TempRepo, name: &str) {
+    let fixture = fs::read_to_string("tests/fixtures/flows/after/checkout.md").unwrap();
+    fs::write(repo.flow_path(name), fixture).unwrap();
+}
+
+#[test]
+fn check_exits_1_on_errors() {
+    let repo = TempRepo::new();
+    write_valid_flow(&repo, "checkout.md");
+    let path = repo.flow_path("checkout.md");
+    let valid = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        valid.replace(
+            "cart([Customer opens cart]) --> pay{Payment ok?}",
+            "cart -->",
+        ),
+    )
+    .unwrap();
+    let output = repo.strata(&["check", "--no-color"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("[parse-error]"), "{text}");
+    assert!(text.contains("checked 1 flows: 1 error"), "{text}");
+}
+
+#[test]
+fn check_warnings_exit_0_unless_strict() {
+    let repo = TempRepo::new();
+    write_valid_flow(&repo, "checkout.md");
+    let path = repo.flow_path("checkout.md");
+    let valid = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{valid}```mermaid\nflowchart TD\n```\n")).unwrap();
+    let report = stdout(&repo.strata(&["check", "--no-color"]));
+    assert!(report.contains("[extra-diagram]"), "{report}");
+    assert!(report.ends_with("checked 1 flows: 1 warning\n"), "{report}");
+    let strict = repo.strata(&["check", "--strict", "--no-color"]);
+    assert_eq!(strict.status.code(), Some(1));
+    assert!(strict.stderr.is_empty());
+    assert_eq!(String::from_utf8(strict.stdout).unwrap(), report);
+}
+
+#[test]
+fn check_empty_catalog_warns() {
+    let repo = TempRepo::new();
+    assert_eq!(
+        stdout(&repo.strata(&["check", "--no-color"])),
+        "docs/flows: warning: no flows yet [empty-catalog]\nchecked 0 flows: 1 warning\n"
+    );
+    let strict = repo.strata(&["check", "--strict"]);
+    assert_eq!(strict.status.code(), Some(1));
+    assert!(strict.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&strict.stdout).contains("[empty-catalog]"));
+}
+
+#[test]
+fn check_json_shape() {
+    let repo = TempRepo::new();
+    fs::write(
+        repo.flow_path("checkout.md"),
+        "# Checkout\n\nDescription.\n```mermaid\nflowchart TD\na -->\n```\n",
+    )
+    .unwrap();
+    let output = repo.strata(&["check", "--format", "json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "version": 1, "catalog": "docs/flows", "flows": 1, "errors": 1, "warnings": 0,
+            "problems": [{"path": "docs/flows/checkout.md", "line": 6, "severity": "error", "code": "parse-error", "message": "link has no target node"}]
+        })
+    );
+    fs::remove_file(repo.flow_path("checkout.md")).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout(&repo.strata(&["check", "--format", "json"]))).unwrap();
+    assert!(value["problems"][0]["path"].is_null());
+    assert!(value["problems"][0]["line"].is_null());
+    assert_eq!(value["problems"][0]["severity"], "warning");
+}
+
+#[test]
+fn check_text_points_at_file_and_line() {
+    let repo = TempRepo::new();
+    fs::write(
+        repo.flow_path("checkout.md"),
+        "# Checkout\n\n```mermaid\ngraph TD\na -->\n```\n",
+    )
+    .unwrap();
+    let output = repo.strata(&["check", "--no-color"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("docs/flows/checkout.md:5: error: link has no target node [parse-error]\n")
+    );
+    let output = repo.strata(&["check", "--color", "--flows", "docs/flows/"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("docs/flows/checkout.md:5: \x1b[31merror\x1b[0m:"));
+    assert!(!text.contains("flows//"));
+}
+
+#[test]
+fn flows_json_lists_the_catalog() {
+    let repo = TempRepo::new();
+    repo.copy_catalog("after");
+    let output = stdout(&repo.strata(&["flows", "--format", "json"]));
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 2);
+    assert_eq!(value["version"], 1);
+    let entries = value["flows"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(
+        entries[0],
+        serde_json::json!({"name": "checkout", "path": "docs/flows/checkout.md", "title": "Checkout", "description": "A customer pays for the cart.", "has_diagram": true})
+    );
+    let output = repo.strata(&["flows", "checkout", "--format", "json"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--format json lists the catalog; drop the flow name")
+    );
+}
+
+#[test]
+fn check_this_repository_strictly() {
+    let repo = TempRepo::new();
+    strata_command(&repo)
+        .args(["check", "--strict"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("checked ").and(predicate::str::ends_with(": ok\n")));
+}
+
+#[test]
+fn json_commands_reject_missing_catalog_without_stdout() {
+    let repo = TempRepo::new();
+    for command in ["check", "flows"] {
+        let output = repo.strata(&[command, "--flows", "absent", "--format", "json"]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "strata: no flow catalog at absent (create it or pass --flows <dir>)\n"
+        );
+    }
+}
+
+fn skill_paths() -> Vec<String> {
+    skill::INSTALL_DIRS
+        .iter()
+        .map(|(directory, _)| format!("{directory}/{}/SKILL.md", skill::SKILL_NAME))
+        .collect()
+}
+
+fn init_repo() -> TempRepo {
+    let repo = TempRepo::new();
+    fs::remove_dir_all(repo.file(skill::DEFAULT_CATALOG)).unwrap();
+    fs::remove_dir(repo.file("docs")).unwrap();
+    repo.git(&["init", "-q"]);
+    repo
+}
+
+fn installed_skills(repo: &TempRepo) -> Vec<String> {
+    skill_paths()
+        .iter()
+        .map(|path| fs::read_to_string(repo.file(path)).unwrap())
+        .collect()
+}
+
+#[test]
+fn init_creates_catalog_and_installs_skill() {
+    let repo = init_repo();
+    let output = stdout(&repo.strata(&["init"]));
+    assert!(
+        output.starts_with(&format!("created {}/\n", skill::DEFAULT_CATALOG)),
+        "{output}"
+    );
+    assert!(repo.flow_path(".gitkeep").is_file());
+    for (directory, agent_label) in skill::INSTALL_DIRS {
+        let path = format!("{directory}/{}/SKILL.md", skill::SKILL_NAME);
+        assert!(repo.file(&path).is_file());
+        assert!(
+            output.contains(&format!("installed {path} ({agent_label})")),
+            "{output}"
+        );
+    }
+    assert!(output.contains(&format!(
+        "Use-case flows live in {}/ (strata-flows skill)",
+        skill::DEFAULT_CATALOG
+    )));
+}
+
+#[test]
+fn init_installs_the_rendered_skill() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
+    }
+}
+
+#[test]
+fn init_renders_a_custom_catalog() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init", "--flows", "flows"]));
+    assert!(repo.file("flows/.gitkeep").is_file());
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render("flows"));
+        assert!(!text.contains(skill::DEFAULT_CATALOG));
+    }
+}
+
+#[test]
+fn init_is_idempotent() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    let output = stdout(&repo.strata(&["init"]));
+    assert!(output.starts_with(&format!("exists {}/\n", skill::DEFAULT_CATALOG)));
+    assert_eq!(output.matches("up to date ").count(), 2);
+}
+
+#[test]
+fn init_keeps_differing_files_without_force() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    for path in skill_paths() {
+        fs::write(repo.file(&path), "custom skill\n").unwrap();
+    }
+    let output = stdout(&repo.strata(&["init"]));
+    for path in skill_paths() {
+        assert_eq!(
+            fs::read_to_string(repo.file(&path)).unwrap(),
+            "custom skill\n"
+        );
+        assert!(output.contains(&format!(
+            "kept {path} (differs from this strata version; use --force to update)"
+        )));
+    }
+}
+
+#[test]
+fn init_force_overwrites_only_skill_files() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    fs::write(repo.flow_path("custom.md"), "my flow\n").unwrap();
+    fs::write(repo.file("AGENTS.md"), "my rules\n").unwrap();
+    for path in skill_paths() {
+        fs::write(repo.file(&path), "custom skill\n").unwrap();
+    }
+    let output = stdout(&repo.strata(&["init", "--force"]));
+    assert_eq!(output.matches("updated ").count(), 2);
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
+    }
+    assert_eq!(
+        fs::read_to_string(repo.flow_path("custom.md")).unwrap(),
+        "my flow\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.file("AGENTS.md")).unwrap(),
+        "my rules\n"
+    );
+}
+
+fn files_under(directory: &std::path::Path, root: &std::path::Path) -> Vec<String> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap() == ".git" {
+            continue;
+        }
+        if path.is_dir() {
+            files.extend(files_under(&path, root));
+        } else {
+            files.push(
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn init_writes_only_its_targets() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    let mut expected = skill_paths();
+    expected.push(format!("{}/.gitkeep", skill::DEFAULT_CATALOG));
+    expected.sort();
+    assert_eq!(files_under(repo.path(), repo.path()), expected);
+}
+
+#[test]
+fn init_treats_crlf_copy_as_up_to_date() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    let crlf = format!(
+        "\u{feff}{}",
+        skill::render(skill::DEFAULT_CATALOG).replace('\n', "\r\n")
+    );
+    for path in skill_paths() {
+        fs::write(repo.file(&path), &crlf).unwrap();
+    }
+    let output = stdout(&repo.strata(&["init", "--force"]));
+    assert_eq!(output.matches("up to date ").count(), 2);
+    for text in installed_skills(&repo) {
+        assert_eq!(text, crlf);
+    }
+}
+
+#[test]
+fn init_from_a_subdirectory_installs_at_the_root() {
+    let repo = init_repo();
+    fs::create_dir(repo.file("web")).unwrap();
+    let output = strata_command(&repo)
+        .arg("init")
+        .current_dir(repo.file("web"))
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    let catalog = format!("web/{}", skill::DEFAULT_CATALOG);
+    assert!(text.contains(&format!("created {catalog}/")), "{text}");
+    assert!(repo.file(&format!("{catalog}/.gitkeep")).is_file());
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render(&catalog));
+        assert!(text.contains(&format!(" pass `--flows {catalog}` ")));
+    }
+    assert!(!repo.file("web/.agents").exists());
+}
+
+#[test]
+fn init_warns_when_skill_is_gitignored() {
+    let repo = init_repo();
+    fs::write(repo.file(".gitignore"), ".agents/\n.claude/\n").unwrap();
+    let output = stdout(&repo.strata(&["init"]));
+    for path in skill_paths() {
+        assert!(
+            output.contains(&format!(
+                "warning: {path} is gitignored; teammates will not get the skill"
+            )),
+            "{output}"
+        );
+    }
+}
+
+#[test]
+fn init_rejects_absolute_flows_dir() {
+    let repo = init_repo();
+    let path = repo.file("catalog");
+    let output = repo.strata(&["init", "--flows", path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--flows must stay inside the repository")
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn init_rejects_a_file_as_catalog() {
+    let repo = init_repo();
+    fs::write(repo.file("flows"), "keep me\n").unwrap();
+    let output = repo.strata(&["init", "--flows", "flows"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("flows exists and is not a directory")
+    );
+    assert_eq!(fs::read_to_string(repo.file("flows")).unwrap(), "keep me\n");
+}
+
+#[test]
+fn init_continues_after_failed_writes() {
+    let repo = init_repo();
+    fs::write(repo.file(".claude"), "block skill directory").unwrap();
+    let output = repo.strata(&["init"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("error: .claude/skills/strata-flows/SKILL.md:")
+    );
+    assert!(repo.file(&skill_paths()[1]).is_file());
+    assert!(repo.flow_path(".gitkeep").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_writes_through_symlinked_skills() {
+    let repo = init_repo();
+    let shared = repo.file("shared-skill");
+    fs::create_dir(&shared).unwrap();
+    fs::create_dir_all(repo.file(".agents/skills")).unwrap();
+    std::os::unix::fs::symlink(&shared, repo.file(".agents/skills/strata-flows")).unwrap();
+    stdout(&repo.strata(&["init"]));
+    assert!(repo.file(".agents/skills/strata-flows").is_symlink());
+    assert_eq!(
+        fs::read_to_string(shared.join("SKILL.md")).unwrap(),
+        skill::render(skill::DEFAULT_CATALOG)
+    );
+}
+
+#[test]
+fn init_keeps_non_utf8_skills_until_forced() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    for path in skill_paths() {
+        fs::write(repo.file(&path), [0xff, 0xfe]).unwrap();
+    }
+    let output = stdout(&repo.strata(&["init"]));
+    assert_eq!(output.matches("kept ").count(), 2);
+    for path in skill_paths() {
+        assert_eq!(fs::read(repo.file(&path)).unwrap(), [0xff, 0xfe]);
+    }
+    let output = stdout(&repo.strata(&["init", "--force"]));
+    assert_eq!(output.matches("updated ").count(), 2);
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
+    }
+}
+
+#[test]
+fn init_outside_git_sets_up_the_current_directory() {
+    let repo = TempRepo::new();
+    let mut git = common::git_command(&repo.config_path());
+    let location = git
+        .args(["rev-parse", "--show-toplevel"])
+        .env("GIT_CEILING_DIRECTORIES", repo.path().parent().unwrap())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(!location.status.success());
+    let output = strata_command(&repo)
+        .arg("init")
+        .env("GIT_CEILING_DIRECTORIES", repo.path().parent().unwrap())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(stdout(&output).starts_with("note: not a git repository; strata diff needs git\n"));
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn init_reports_the_failed_catalog_file_and_continues() {
+    let repo = init_repo();
+    fs::write(repo.file("docs"), "block catalog directory").unwrap();
+    let output = repo.strata(&["init"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains(&format!("error: {}:", skill::DEFAULT_CATALOG))
+    );
+    assert_eq!(
+        fs::read_to_string(repo.file("docs")).unwrap(),
+        "block catalog directory"
+    );
+    for path in skill_paths() {
+        assert!(repo.file(&path).is_file());
+    }
+}
+
+#[test]
+fn init_rejects_paths_outside_the_repo() {
+    let repo = init_repo();
+    for path in ["../x", "/x"] {
+        let output = repo.strata(&["init", "--flows", path]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--flows must stay inside the repository")
+        );
+        assert!(output.stdout.is_empty());
+    }
+    assert!(!repo.file(".agents").exists());
+}
+
+#[test]
+fn init_normalises_catalog_path() {
+    let repo = init_repo();
+    fs::create_dir(repo.file("web")).unwrap();
+    let output = strata_command(&repo)
+        .args(["init", "--flows", "./flows"])
+        .current_dir(repo.file("web"))
+        .output()
+        .unwrap();
+    assert!(stdout(&output).starts_with("created web/flows/\n"));
+    for text in installed_skills(&repo) {
+        assert_eq!(text, skill::render("web/flows"));
+    }
+    let output = strata_command(&repo)
+        .args(["init", "--flows", "../docs/./flows"])
+        .current_dir(repo.file("web"))
+        .output()
+        .unwrap();
+    assert!(stdout(&output).starts_with(&format!("created {}/\n", skill::DEFAULT_CATALOG)));
+}
+
+#[cfg(unix)]
+fn relative_skill_link(repo: &TempRepo) {
+    fs::create_dir_all(repo.file(".claude/skills")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../.agents/skills/strata-flows",
+        repo.file(".claude/skills/strata-flows"),
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn init_reports_dangling_skill_symlink() {
+    let repo = init_repo();
+    relative_skill_link(&repo);
+    let output = repo.strata(&["init"]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("error: .claude/skills/strata-flows/SKILL.md:"),
+        "{error}"
+    );
+    assert!(
+        error.contains(".claude/skills/strata-flows is a symlink to a missing path"),
+        "{error}"
+    );
+    assert!(repo.file(".agents/skills/strata-flows/SKILL.md").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_writes_through_relative_skill_symlink() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.file(".agents/skills/strata-flows")).unwrap();
+    relative_skill_link(&repo);
+    stdout(&repo.strata(&["init"]));
+    assert_eq!(
+        stdout(&repo.strata(&["init"]))
+            .matches("up to date ")
+            .count(),
+        2
+    );
+    assert!(repo.file(".claude/skills/strata-flows").is_symlink());
+}
+
+#[test]
+fn init_fails_when_git_errors() {
+    let repo = init_repo();
+    let output = strata_command(&repo)
+        .arg("init")
+        .env("PATH", repo.file("no-git"))
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: cannot run git"));
+    assert!(output.stdout.is_empty());
+    assert!(!repo.file(".agents").exists());
+}
+
+#[test]
+fn init_leaves_populated_catalog_alone() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.file(skill::DEFAULT_CATALOG)).unwrap();
+    fs::write(repo.flow_path("a.md"), "existing flow").unwrap();
+    stdout(&repo.strata(&["init"]));
+    assert!(!repo.flow_path(".gitkeep").exists());
+    assert_eq!(
+        fs::read_to_string(repo.flow_path("a.md")).unwrap(),
+        "existing flow"
+    );
+}
+
+#[test]
+fn guide_trims_trailing_slash() {
+    let repo = TempRepo::new();
+    let text = stdout(&repo.strata(&["guide", "--flows", "flows/"]));
+    assert!(text.contains("flows/check-out-a-cart.md"));
+    assert!(!text.contains("flows//"));
 }

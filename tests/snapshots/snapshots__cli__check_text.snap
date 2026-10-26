@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"check\", \"--no-color\"])"
+---
+$ strata check --no-color
+[exit 1]
+--- stdout
+docs/flows/Bad.md: warning: name flow files in kebab-case [file-name]
+docs/flows/Bad.md:1: error: no one-sentence description after the title [missing-description]
+docs/flows/Bad.md:1: error: no mermaid flowchart block [missing-diagram]
+checked 1 flows: 2 errors, 1 warning
+--- stderr
+[end]
