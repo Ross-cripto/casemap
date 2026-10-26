@@ -24,6 +24,8 @@ pub mod mermaid;
 pub mod model;
 pub mod parser;
 pub mod paths;
+#[doc(hidden)]
+pub mod quality;
 pub mod render;
 pub mod route;
 pub mod skill;

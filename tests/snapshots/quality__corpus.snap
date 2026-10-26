@@ -1,0 +1,47 @@
+---
+source: tests/quality.rs
+expression: report
+---
+path                                                                        width height crossings bends label_gap max_label_gap extra_layers back_edges
+docs/flows/browse-the-catalog.md                                              111     53         1    28         3             2           20          3
+docs/flows/check-the-catalog.md                                                76     34         0     8         0             0            4          0
+docs/flows/keep-the-map-true.md                                                68     42         0    14         3             2           13          0
+docs/flows/map-a-new-repository.md                                             92     55         0    18         5             4           19          0
+docs/flows/measure-coverage.md                                                 99     37         0    12         0             0            6          0
+docs/flows/render-a-diagram.md                                                 66     34         0    10         0             0            5          0
+docs/flows/review-a-pull-request.md                                           107     55         0    18         0             0           10          0
+docs/flows/review-flow-changes.md                                              70     36         0     4         0             0            2          0
+docs/flows/set-up-a-catalog.md                                                 78     43         1    24         1             1           12          0
+docs/flows/watch-a-diagram.md                                                  64     39         1    10         0             0           17          3
+examples/architecture.mmd                                                     134     78         2    46         2             2           23          1
+examples/simple.mmd                                                            44     22         0     8         0             0            2          0
+tests/fixtures/corpus/commerce/add-an-item-to-the-cart.md                     107     42         0    12         0             0            6          0
+tests/fixtures/corpus/commerce/browse-a-collection.md                          81     35         0    10         0             0            6          1
+tests/fixtures/corpus/commerce/browse-the-storefront.md                        48     31         0     4         0             0            2          0
+tests/fixtures/corpus/commerce/check-out-a-cart.md                             64     26         0     4         0             0            2          0
+tests/fixtures/corpus/commerce/manage-the-cart.md                              77     53         1    16         1             1            9          0
+tests/fixtures/corpus/commerce/read-a-store-page.md                            59     21         0     4         0             0            2          0
+tests/fixtures/corpus/commerce/refresh-the-catalogue-after-a-store-edit.md     76     24         0     8         0             0            4          0
+tests/fixtures/corpus/commerce/search-for-products.md                         121     32         0    10         0             0            5          1
+tests/fixtures/corpus/commerce/view-a-product.md                               87     52         0    12         2             2           10          0
+tests/fixtures/corpus/healthchecks/add-a-check.md                             103     37         0    14         1             1            8          0
+tests/fixtures/corpus/healthchecks/change-a-check-schedule.md                 119     42         0    18         0             0            7          0
+tests/fixtures/corpus/healthchecks/create-a-check-by-ping-url.md              155     50         0    18         3             2           15          0
+tests/fixtures/corpus/healthchecks/get-alerted-when-a-check-goes-down.md       80     49         1    20         4             3           18          1
+tests/fixtures/corpus/healthchecks/manage-checks-through-the-api.md            94     53         0    22         4             3           19          0
+tests/fixtures/corpus/healthchecks/pause-and-resume-a-check.md                138     29         0    18         0             0            7          0
+tests/fixtures/corpus/healthchecks/send-a-ping-from-a-job.md                   97     37         0    12         0             0            6          0
+tests/fixtures/corpus/healthchecks/sign-in-with-an-email-link.md              115     62         1    22         0             0           11          1
+tests/fixtures/corpus/healthchecks/sign-up-for-an-account.md                   64     42         0    12         0             0            7          0
+tests/fixtures/corpus/healthchecks/test-a-notification-channel.md              81     39         0    14         0             0            5          0
+tests/fixtures/corpus/shiori/add-a-bookmark-from-the-terminal.md              181     50         0    18         2             2           12          0
+tests/fixtures/corpus/shiori/add-a-bookmark.md                                144     44         2    20         0             0           12          2
+tests/fixtures/corpus/shiori/find-and-open-bookmarks-in-the-terminal.md       132     37         0    14         0             0            7          0
+tests/fixtures/corpus/shiori/import-and-export-bookmarks.md                   137     37         0    16         0             0            8          0
+tests/fixtures/corpus/shiori/manage-my-bookmarks.md                           150     49         3    24         3             3           25          5
+tests/fixtures/corpus/shiori/manage-tags.md                                   103     45         2    22         2             2           19          4
+tests/fixtures/corpus/shiori/manage-user-accounts.md                          108     41         1    22         2             1           12          3
+tests/fixtures/corpus/shiori/read-a-saved-page.md                             106     40         0    16         0             0            8          0
+tests/fixtures/corpus/shiori/sign-in-to-the-web-ui.md                          56     35         0     8         2             2           10          1
+tests/fixtures/corpus/shiori/update-or-delete-bookmarks-in-the-terminal.md    117     42         0    16         1             1           10          0
+TOTAL                                                                        4009   1704        16   626        41             4          405         26
