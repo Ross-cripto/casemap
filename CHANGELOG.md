@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0
+## [0.5.0] - 2026-10-26
 
 The first packaged release of casemap (developed as strata until now): the living map of your app's use cases. Each use case is one Mermaid flowchart in `docs/flows/`, your coding agent keeps them current, and casemap checks, renders and diffs them.
 

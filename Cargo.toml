@@ -10,7 +10,7 @@ homepage = "https://github.com/Ross-cripto/casemap"
 readme = "README.md"
 keywords = ["mermaid", "flowchart", "documentation", "cli", "tui"]
 categories = ["command-line-utilities", "development-tools", "visualization"]
-exclude = [".claude/", ".agents/", ".github/"]
+exclude = [".claude/", ".agents/", ".github/", "CLAUDE.md", "dist-workspace.toml", "release-plz.toml"]
 
 [dependencies]
 anyhow = { version = "1.0.104", optional = true }
