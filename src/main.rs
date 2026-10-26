@@ -463,24 +463,44 @@ fn write_skill(path: &Path, desired: &str) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    if metadata.is_some_and(|metadata| metadata.is_file() && !metadata.is_symlink()) {
-        let mut temporary_name = path.as_os_str().to_os_string();
-        temporary_name.push(".strata-tmp");
-        let temporary = PathBuf::from(temporary_name);
-        std::fs::write(&temporary, desired)?;
+    if metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.is_symlink())
+    {
+        return std::fs::write(path, desired);
+    }
+    let mut temporary_name = path.as_os_str().to_os_string();
+    temporary_name.push(".strata-tmp");
+    let temporary = PathBuf::from(temporary_name);
+    if std::fs::symlink_metadata(&temporary).is_ok() {
+        std::fs::remove_file(&temporary)?;
+    }
+    let mut temporary_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| {
+        temporary_file.write_all(desired.as_bytes())?;
+        temporary_file.sync_all()?;
+        if let Some(metadata) = metadata {
+            std::fs::set_permissions(&temporary, metadata.permissions())?;
+        }
+        drop(temporary_file);
         if let Err(error) = std::fs::rename(&temporary, path) {
             eprintln!(
                 "warning: {}: cannot rename temporary skill: {error}; writing directly",
                 path.display()
             );
             let result = std::fs::write(path, desired);
-            std::fs::remove_file(&temporary)?;
+            let _ = std::fs::remove_file(&temporary);
             return result;
         }
         Ok(())
-    } else {
-        std::fs::write(path, desired)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
+    result
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -595,11 +615,29 @@ fn normalise_catalog_path(prefix: &str, dir: &Path) -> anyhow::Result<PathBuf> {
             }
         }
     }
+    if normalised.as_os_str().is_empty() {
+        bail!("--flows must name a directory inside the repository");
+    }
     Ok(normalised)
+}
+
+fn ensure_inside_root(root: &Path, relative: &Path) -> anyhow::Result<()> {
+    let canonical_root = root.canonicalize()?;
+    let mut ancestor = root.join(relative);
+    while !ancestor.exists() {
+        if !ancestor.pop() {
+            bail!("--flows must stay inside the repository");
+        }
+    }
+    if !ancestor.canonicalize()?.starts_with(canonical_root) {
+        bail!("--flows must stay inside the repository");
+    }
+    Ok(())
 }
 
 fn install_all_skills(root: &Path, desired: &str, force: bool) -> bool {
     let mut failed = false;
+    // Users may symlink skill directories outside the repository; catalog containment does not apply.
     for (directory, agent_label) in skill::INSTALL_DIRS {
         let relative = Path::new(directory)
             .join(skill::SKILL_NAME)
@@ -632,6 +670,7 @@ fn init_catalog(dir: &Path, force: bool) -> anyhow::Result<ExitCode> {
     let cwd = std::env::current_dir().context("reading the current directory")?;
     let (root, prefix) = locate_install_root(&cwd)?;
     let relative_catalog = normalise_catalog_path(&prefix, dir)?;
+    ensure_inside_root(&root, &relative_catalog)?;
     let catalog = root.join(&relative_catalog);
     let display = catalog_path(&relative_catalog);
     if catalog.exists() && !catalog.is_dir() {

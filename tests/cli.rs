@@ -1054,3 +1054,86 @@ fn guide_trims_trailing_slash() {
     assert!(text.contains("flows/check-out-a-cart.md"));
     assert!(!text.contains("flows//"));
 }
+
+#[cfg(unix)]
+#[test]
+fn init_rejects_catalog_through_outside_symlink() {
+    let repo = init_repo();
+    let outside = assert_fs::TempDir::new().unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.file("out")).unwrap();
+    let output = repo.strata(&["init", "--flows", "out/x"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--flows must stay inside the repository")
+    );
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    assert!(!repo.file(".agents").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_accepts_catalog_through_inside_symlink() {
+    let repo = init_repo();
+    fs::create_dir(repo.file("real-docs")).unwrap();
+    std::os::unix::fs::symlink("real-docs", repo.file("docs")).unwrap();
+    stdout(&repo.strata(&["init"]));
+    assert!(repo.file("real-docs/flows/.gitkeep").is_file());
+}
+
+#[test]
+fn init_rejects_repo_root_as_catalog() {
+    for catalog in [".", "a/.."] {
+        let repo = init_repo();
+        let output = repo.strata(&["init", "--flows", catalog]);
+        assert_eq!(output.status.code(), Some(1), "{catalog}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--flows must name a directory inside the repository")
+        );
+        assert!(!repo.file(".gitkeep").exists());
+        assert!(!repo.file(".agents").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn init_ignores_planted_temp_symlink() {
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    let outside = assert_fs::TempDir::new().unwrap();
+    let outside_file = outside.path().join("untouched");
+    fs::write(&outside_file, "keep outside").unwrap();
+    let skill_path = repo.file(&skill_paths()[0]);
+    fs::write(&skill_path, "old skill").unwrap();
+    let temporary = skill_path.with_file_name("SKILL.md.strata-tmp");
+    std::os::unix::fs::symlink(&outside_file, &temporary).unwrap();
+    let output = repo.strata(&["init", "--force"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&outside_file).unwrap(), "keep outside");
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_to_string(&skill_path).unwrap(),
+        skill::render(skill::DEFAULT_CATALOG)
+    );
+    assert!(fs::symlink_metadata(temporary).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_keeps_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = init_repo();
+    stdout(&repo.strata(&["init"]));
+    let skill_path = repo.file(&skill_paths()[0]);
+    fs::write(&skill_path, "old skill").unwrap();
+    fs::set_permissions(&skill_path, fs::Permissions::from_mode(0o640)).unwrap();
+    stdout(&repo.strata(&["init", "--force"]));
+    assert_eq!(
+        fs::metadata(&skill_path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert_eq!(
+        fs::read_to_string(skill_path).unwrap(),
+        skill::render(skill::DEFAULT_CATALOG)
+    );
+}
