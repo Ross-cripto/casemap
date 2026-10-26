@@ -10,20 +10,37 @@ pub(crate) enum BareMode {
     ReadStdin,
 }
 
-pub(crate) fn bare_mode(
-    stdin_tty: bool,
-    stdout_tty: bool,
-    ci: bool,
-    term_dumb: bool,
-    catalog_exists: bool,
-    watch: bool,
-    has_file: bool,
-) -> BareMode {
-    if stdin_tty && stdout_tty && !ci && !term_dumb && catalog_exists && !watch && !has_file {
+pub(crate) struct BareModeInputs {
+    pub stdin_tty: bool,
+    pub stdout_tty: bool,
+    pub ci: bool,
+    pub term_dumb: bool,
+    pub catalog_exists: bool,
+    pub watch: bool,
+    pub has_file: bool,
+}
+
+impl BareModeInputs {
+    fn is_interactive_session(&self) -> bool {
+        self.stdin_tty && self.stdout_tty && !self.ci && !self.term_dumb
+    }
+}
+
+pub(crate) fn bare_mode(inputs: &BareModeInputs) -> BareMode {
+    if inputs.is_interactive_session() && inputs.catalog_exists && !inputs.watch && !inputs.has_file
+    {
         BareMode::Browse
     } else {
         BareMode::ReadStdin
     }
+}
+
+pub(super) const FAST_PAN: u16 = 10;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Offset {
+    pub rows: u16,
+    pub columns: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,11 +114,6 @@ pub(super) enum Focus {
     List,
     Diagram,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NarrowView {
-    List,
-    Diagram,
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Search {
     Off,
@@ -120,14 +132,14 @@ pub(super) struct App {
     pub view: Vec<usize>,
     pub list_state: ListState,
     pub focus: Focus,
-    pub narrow_view: NarrowView,
-    pub pan: (u16, u16),
-    pub viewport: (u16, u16),
+    pub pan: Offset,
+    pub viewport: Offset,
     pub search: Search,
     pub diff_mode: bool,
     pub panel: bool,
     pub help: bool,
     pub status: Option<String>,
+    pub reloading: bool,
     pub base: Option<BaseInfo>,
     pub ascii: bool,
     pub color: bool,
@@ -142,14 +154,14 @@ impl App {
             view: Vec::new(),
             list_state: ListState::default(),
             focus: Focus::List,
-            narrow_view: NarrowView::List,
-            pan: (0, 0),
-            viewport: (0, 0),
+            pan: Offset::default(),
+            viewport: Offset::default(),
             search: Search::Off,
             diff_mode: false,
             panel: false,
             help: false,
             status: None,
+            reloading: false,
             base: None,
             ascii,
             color,
@@ -159,74 +171,51 @@ impl App {
         app.apply(loaded);
         app
     }
-    pub(super) fn handle(&mut self, event: KeyEvent) -> Action {
-        if event.kind != KeyEventKind::Press {
+    pub(super) fn handle(&mut self, key: KeyEvent) -> Action {
+        if key.kind != KeyEventKind::Press {
             return Action::None;
         }
         self.status = None;
-        if event.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(event.code, KeyCode::Char('c' | 'C'))
-        {
-            return Action::Quit;
-        }
-        if event.code == KeyCode::Esc {
+        if key.code == KeyCode::Esc {
             return self.escape();
         }
-        if self.help {
-            return match event.code {
-                KeyCode::Char('q') => Action::Quit,
-                KeyCode::Char('?') => {
-                    self.help = false;
-                    Action::None
-                }
-                _ => Action::None,
-            };
-        }
-        if matches!(self.search, Search::Typing(_)) {
-            self.search_key(event);
+        if matches!(self.search, Search::Typing(_)) && !self.help && !is_quit_shortcut(key) {
+            self.search_key(key);
             return Action::None;
         }
-        let action = match event.code {
-            KeyCode::Char('q') => Action::Quit,
-            KeyCode::Char('r') => Action::Reload,
-            KeyCode::Char('/') => {
-                let query = self.query().to_owned();
-                self.search = Search::Typing(query);
-                Action::None
-            }
-            KeyCode::Char('?') => {
-                self.help = true;
-                Action::None
-            }
-            KeyCode::Char('p') => {
-                self.panel = !self.panel;
-                Action::None
-            }
+        let action = if let Some(action) = self.global_key(key) {
+            action
+        } else {
+            self.navigate(key.code);
+            Action::None
+        };
+        self.resize(self.area.width, self.area.height);
+        action
+    }
+
+    fn global_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if is_quit_shortcut(key) {
+            return Some(Action::Quit);
+        }
+        if self.help && !matches!(key.code, KeyCode::Char('q' | '?')) {
+            return Some(Action::None);
+        }
+        match key.code {
+            KeyCode::Char('q') => return Some(Action::Quit),
+            KeyCode::Char('r') => return Some(Action::Reload),
+            KeyCode::Char('?') => self.help = !self.help,
+            KeyCode::Char('p') => self.panel = !self.panel,
             KeyCode::Char('d') => {
                 if self.base.is_some() {
                     self.diff_mode = !self.diff_mode;
                 } else {
                     self.status = Some("diff mode needs git".into());
                 }
-                Action::None
             }
-            KeyCode::Tab => {
-                self.toggle_focus();
-                Action::None
-            }
-            KeyCode::Enter
-                if self.area.width < super::layout::WIDE_WIDTH && self.focus == Focus::List =>
-            {
-                self.toggle_focus();
-                Action::None
-            }
-            code => {
-                self.navigate(code);
-                Action::None
-            }
-        };
-        self.resize(self.area.width, self.area.height);
-        action
+            KeyCode::Char('/') => self.search = Search::Typing(self.query().to_owned()),
+            _ => return None,
+        }
+        Some(Action::None)
     }
 
     fn escape(&mut self) -> Action {
@@ -246,7 +235,7 @@ impl App {
             }
             Search::Off => {}
         }
-        if self.area.width < super::layout::WIDE_WIDTH && self.narrow_view == NarrowView::Diagram {
+        if self.area.width < super::layout::WIDE_WIDTH && self.focus == Focus::Diagram {
             self.toggle_focus();
             self.resize(self.area.width, self.area.height);
             return Action::None;
@@ -277,20 +266,24 @@ impl App {
     }
 
     fn toggle_focus(&mut self) {
-        match self.focus {
-            Focus::List => {
-                self.focus = Focus::Diagram;
-                self.narrow_view = NarrowView::Diagram;
-            }
-            Focus::Diagram => {
-                self.focus = Focus::List;
-                self.narrow_view = NarrowView::List;
-            }
-        }
+        self.focus = match self.focus {
+            Focus::List => Focus::Diagram,
+            Focus::Diagram => Focus::List,
+        };
+    }
+
+    fn opens_narrow_diagram(&self, code: KeyCode) -> bool {
+        code == KeyCode::Enter
+            && self.area.width < super::layout::WIDE_WIDTH
+            && self.focus == Focus::List
     }
 
     fn navigate(&mut self, code: KeyCode) {
         use KeyCode::*;
+        if code == Tab || self.opens_narrow_diagram(code) {
+            self.toggle_focus();
+            return;
+        }
         if self.focus == Focus::List {
             let areas = super::layout::layout(self.area, self);
             let page = i32::from(areas.list.height.saturating_sub(2).max(1));
@@ -304,19 +297,18 @@ impl App {
             }
             return;
         }
-        const FAST_PAN: u16 = 10;
         match code {
-            Up | Char('k') => self.pan.0 = self.pan.0.saturating_sub(1),
-            Down | Char('j') => self.pan.0 = self.pan.0.saturating_add(1),
-            Left | Char('h') => self.pan.1 = self.pan.1.saturating_sub(1),
-            Right | Char('l') => self.pan.1 = self.pan.1.saturating_add(1),
-            Char('K') => self.pan.0 = self.pan.0.saturating_sub(FAST_PAN),
-            Char('J') => self.pan.0 = self.pan.0.saturating_add(FAST_PAN),
-            Char('H') => self.pan.1 = self.pan.1.saturating_sub(FAST_PAN),
-            Char('L') => self.pan.1 = self.pan.1.saturating_add(FAST_PAN),
-            PageUp => self.pan.0 = self.pan.0.saturating_sub(self.viewport.0),
-            PageDown => self.pan.0 = self.pan.0.saturating_add(self.viewport.0),
-            Home => self.pan = (0, 0),
+            Up | Char('k') => self.pan.rows = self.pan.rows.saturating_sub(1),
+            Down | Char('j') => self.pan.rows = self.pan.rows.saturating_add(1),
+            Left | Char('h') => self.pan.columns = self.pan.columns.saturating_sub(1),
+            Right | Char('l') => self.pan.columns = self.pan.columns.saturating_add(1),
+            Char('K') => self.pan.rows = self.pan.rows.saturating_sub(FAST_PAN),
+            Char('J') => self.pan.rows = self.pan.rows.saturating_add(FAST_PAN),
+            Char('H') => self.pan.columns = self.pan.columns.saturating_sub(FAST_PAN),
+            Char('L') => self.pan.columns = self.pan.columns.saturating_add(FAST_PAN),
+            PageUp => self.pan.rows = self.pan.rows.saturating_sub(self.viewport.rows),
+            PageDown => self.pan.rows = self.pan.rows.saturating_add(self.viewport.rows),
+            Home => self.pan = Offset::default(),
             _ => {}
         }
     }
@@ -324,7 +316,7 @@ impl App {
     fn select(&mut self, position: usize) {
         let selection = (!self.view.is_empty()).then(|| position.min(self.view.len() - 1));
         if selection != self.list_state.selected() {
-            self.pan = (0, 0);
+            self.pan = Offset::default();
         }
         self.list_state.select(selection);
     }
@@ -338,10 +330,10 @@ impl App {
         self.area = Rect::new(0, 0, cols, rows);
         let diagram = super::layout::layout(self.area, self).diagram;
         if diagram.width > 0 && diagram.height > 0 {
-            self.viewport = (
-                diagram.height.saturating_sub(2),
-                diagram.width.saturating_sub(2),
-            );
+            self.viewport = Offset {
+                rows: diagram.height.saturating_sub(2),
+                columns: diagram.width.saturating_sub(2),
+            };
         }
         self.clamp_pan();
     }
@@ -353,8 +345,11 @@ impl App {
                 dimension(diagram.text.width()),
             )
         });
-        self.pan.0 = self.pan.0.min(height.saturating_sub(self.viewport.0));
-        self.pan.1 = self.pan.1.min(width.saturating_sub(self.viewport.1));
+        self.pan.rows = self.pan.rows.min(height.saturating_sub(self.viewport.rows));
+        self.pan.columns = self
+            .pan
+            .columns
+            .min(width.saturating_sub(self.viewport.columns));
     }
 
     pub(super) fn apply(&mut self, loaded: Loaded) {
@@ -395,7 +390,7 @@ impl App {
         });
         let position = same_path.unwrap_or_else(|| self.list_state.selected().unwrap_or(0));
         if same_path.is_none() {
-            self.pan = (0, 0);
+            self.pan = Offset::default();
         }
         let pan = self.pan;
         self.select(position);
@@ -419,19 +414,38 @@ impl App {
             }
         })
     }
+    pub(super) fn panel_line_count(&self) -> usize {
+        let Some(entry) = self.selected() else {
+            return 0;
+        };
+        let mut count = entry.problems.len() + 1 + entry.footer.len();
+        if self.diff_mode {
+            count += entry.difference.details.len() + entry.stale.len();
+        }
+        count
+    }
+
     pub(super) fn panel_lines(&self) -> Vec<String> {
         let Some(entry) = self.selected() else {
             return Vec::new();
         };
         let mut lines = entry.problems.clone();
-        lines.push("Code:".into());
-        lines.extend(entry.footer.iter().cloned());
+        if entry.footer.is_empty() {
+            lines.push("no anchors".into());
+        } else {
+            lines.push("Code:".into());
+            lines.extend(entry.footer.iter().cloned());
+        }
         if self.diff_mode {
             lines.extend(entry.difference.details.iter().cloned());
             lines.extend(entry.stale.iter().cloned());
         }
         lines
     }
+}
+
+fn is_quit_shortcut(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
 }
 
 fn matches_query(flow: &Flow, query: &str) -> bool {
@@ -460,32 +474,76 @@ mod state_tests {
     use super::*;
     #[test]
     fn bare_mode_table() {
-        for inputs in 0u8..128 {
-            let stdin_tty = inputs & 1 != 0;
-            let stdout_tty = inputs & 2 != 0;
-            let ci = inputs & 4 != 0;
-            let term_dumb = inputs & 8 != 0;
-            let catalog_exists = inputs & 16 != 0;
-            let watch = inputs & 32 != 0;
-            let has_file = inputs & 64 != 0;
-            let expected = if inputs == 19 {
-                BareMode::Browse
-            } else {
-                BareMode::ReadStdin
-            };
-            assert_eq!(
-                bare_mode(
-                    stdin_tty,
-                    stdout_tty,
-                    ci,
-                    term_dumb,
-                    catalog_exists,
-                    watch,
-                    has_file
-                ),
-                expected,
-                "inputs: {inputs:07b}"
-            );
+        let interactive = || BareModeInputs {
+            stdin_tty: true,
+            stdout_tty: true,
+            ci: false,
+            term_dumb: false,
+            catalog_exists: true,
+            watch: false,
+            has_file: false,
+        };
+        let cases = [
+            ("interactive catalog", interactive(), BareMode::Browse),
+            (
+                "piped stdin",
+                BareModeInputs {
+                    stdin_tty: false,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+            (
+                "piped stdout",
+                BareModeInputs {
+                    stdout_tty: false,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+            (
+                "CI session",
+                BareModeInputs {
+                    ci: true,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+            (
+                "dumb terminal",
+                BareModeInputs {
+                    term_dumb: true,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+            (
+                "missing catalog",
+                BareModeInputs {
+                    catalog_exists: false,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+            (
+                "watch requested",
+                BareModeInputs {
+                    watch: true,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+            (
+                "file supplied",
+                BareModeInputs {
+                    has_file: true,
+                    ..interactive()
+                },
+                BareMode::ReadStdin,
+            ),
+        ];
+        for (reason, inputs, expected) in cases {
+            assert_eq!(bare_mode(&inputs), expected, "{reason}");
         }
     }
     fn entry(name: &str) -> Entry {
@@ -512,7 +570,7 @@ mod state_tests {
             stale: vec![],
         }
     }
-    fn loaded(names: &[&str]) -> Loaded {
+    fn loaded_with_flows(names: &[&str]) -> Loaded {
         Loaded {
             flows: names.iter().map(|name| entry(name)).collect(),
             base: Some(BaseInfo {
@@ -524,85 +582,261 @@ mod state_tests {
         }
     }
     fn app() -> App {
-        let mut app = App::new(loaded(&["Alpha", "Beta", "Gamma"]), false, true);
+        let mut app = App::new(loaded_with_flows(&["Alpha", "Beta", "Gamma"]), false, true);
         app.resize(120, 30);
         app
     }
-    fn key(app: &mut App, code: KeyCode) -> Action {
+    fn press(app: &mut App, code: KeyCode) -> Action {
         app.handle(KeyEvent::new(code, KeyModifiers::NONE))
     }
     #[test]
+    fn quit_and_reload_keys() {
+        for focus in [Focus::List, Focus::Diagram] {
+            let mut app = app();
+            app.focus = focus;
+            assert_eq!(press(&mut app, KeyCode::Char('q')), Action::Quit);
+            assert_eq!(press(&mut app, KeyCode::Char('r')), Action::Reload);
+            let original_panel = app.panel;
+            press(&mut app, KeyCode::Char('p'));
+            assert_ne!(app.panel, original_panel);
+            press(&mut app, KeyCode::Char('p'));
+            assert_eq!(app.panel, original_panel);
+            press(&mut app, KeyCode::Char('?'));
+            assert!(app.help);
+            assert_eq!(press(&mut app, KeyCode::Char('q')), Action::Quit);
+            press(&mut app, KeyCode::Char('?'));
+            assert!(!app.help);
+            assert_eq!(app.focus, focus);
+        }
+        let mut app = app();
+        app.focus = Focus::Diagram;
+        for (letter, expected) in [
+            (
+                'J',
+                Offset {
+                    rows: FAST_PAN,
+                    columns: 0,
+                },
+            ),
+            (
+                'L',
+                Offset {
+                    rows: FAST_PAN,
+                    columns: FAST_PAN,
+                },
+            ),
+            (
+                'K',
+                Offset {
+                    rows: 0,
+                    columns: FAST_PAN,
+                },
+            ),
+            ('H', Offset::default()),
+        ] {
+            assert_eq!(
+                app.handle(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT)),
+                Action::None
+            );
+            assert_eq!(app.pan, expected, "SHIFT+{letter}");
+        }
+        press(&mut app, KeyCode::Char('/'));
+        for letter in "QJKDPRHL".chars() {
+            assert_eq!(
+                app.handle(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT)),
+                Action::None
+            );
+        }
+        assert_eq!(app.search, Search::Typing("QJKDPRHL".into()));
+    }
+
+    #[test]
+    fn resize_reclamps_both_axes() {
+        let mut app = app();
+        app.pan = Offset {
+            rows: u16::MAX,
+            columns: u16::MAX,
+        };
+        app.resize(120, 30);
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 76,
+                columns: 128
+            }
+        );
+        app.resize(118, 28);
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 76,
+                columns: 128
+            }
+        );
+        app.resize(122, 32);
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 74,
+                columns: 126
+            }
+        );
+    }
+
+    #[test]
+    fn search_matches_names_and_keeps_selection_by_path() {
+        let mut loaded = loaded_with_flows(&["Other", "pay-for-an-order", "pay-for-a-friend"]);
+        loaded.flows[1].flow.title = "Pay for an order".into();
+        loaded.flows[2].flow.title = "Pay for a friend".into();
+        let mut app = App::new(loaded, false, false);
+        app.resize(120, 30);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('/'));
+        for letter in "pay-for".chars() {
+            press(&mut app, KeyCode::Char(letter));
+        }
+        assert_eq!(app.view, [1, 2]);
+        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.selected().unwrap().flow.path, "pay-for-an-order.md");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected().unwrap().flow.path, "pay-for-a-friend.md");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected().unwrap().flow.path, "pay-for-an-order.md");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.view, [0, 1, 2]);
+        assert_eq!(app.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn empty_search_escape_and_empty_view_navigation() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.search, Search::Typing(String::new()));
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert_eq!(app.search, Search::Off);
+        app.apply(loaded_with_flows(&[]));
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+        ] {
+            assert_eq!(press(&mut app, code), Action::None);
+            assert!(app.selected().is_none());
+            assert_eq!(app.pan, Offset::default());
+        }
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        assert!(app.selected().is_none());
+    }
+
+    #[test]
     fn keys_move_selection_and_pan() {
         let mut app = app();
-        key(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
         assert_eq!(app.list_state.selected(), Some(1));
-        key(&mut app, KeyCode::Tab);
-        key(&mut app, KeyCode::Char('J'));
-        key(&mut app, KeyCode::Char('L'));
-        assert_eq!(app.pan, (10, 10));
-        key(&mut app, KeyCode::Char('k'));
-        key(&mut app, KeyCode::Char('h'));
-        assert_eq!(app.pan, (9, 9));
-        key(&mut app, KeyCode::PageDown);
-        assert_eq!(app.pan.0, 9 + app.viewport.0);
-        key(&mut app, KeyCode::Home);
-        assert_eq!(app.pan, (0, 0));
-        key(&mut app, KeyCode::Tab);
-        key(&mut app, KeyCode::PageDown);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('J'));
+        press(&mut app, KeyCode::Char('L'));
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 10,
+                columns: 10
+            }
+        );
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 9,
+                columns: 9
+            }
+        );
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.pan.rows, 9 + app.viewport.rows);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 0,
+                columns: 0
+            }
+        );
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::PageDown);
         assert_eq!(app.list_state.selected(), Some(2));
-        key(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Home);
         assert_eq!(app.list_state.selected(), Some(0));
     }
     #[test]
     fn pan_is_clamped_to_the_diagram() {
         let mut app = app();
-        key(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
         for _ in 0..100 {
-            key(&mut app, KeyCode::Char('J'));
-            key(&mut app, KeyCode::Char('L'));
+            press(&mut app, KeyCode::Char('J'));
+            press(&mut app, KeyCode::Char('L'));
         }
         let text = &app.diagram().unwrap().text;
         assert_eq!(
             app.pan,
-            (
-                (text.height() as u16).saturating_sub(app.viewport.0),
-                (text.width() as u16).saturating_sub(app.viewport.1)
-            )
+            Offset {
+                rows: (text.height() as u16).saturating_sub(app.viewport.rows),
+                columns: (text.width() as u16).saturating_sub(app.viewport.columns),
+            }
         );
         app.resize(300, 200);
-        assert_eq!(app.pan, (0, 0));
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 0,
+                columns: 0
+            }
+        );
         app.resize(120, 30);
-        key(&mut app, KeyCode::Char('J'));
-        key(&mut app, KeyCode::Tab);
-        key(&mut app, KeyCode::Down);
-        assert_eq!(app.pan, (0, 0));
+        press(&mut app, KeyCode::Char('J'));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 0,
+                columns: 0
+            }
+        );
     }
     #[test]
     fn search_filters_and_esc_clears() {
         let mut app = app();
-        key(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('/'));
         for letter in "bEtA".chars() {
-            key(&mut app, KeyCode::Char(letter));
+            press(&mut app, KeyCode::Char(letter));
         }
         assert_eq!(app.view, [1]);
-        key(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
         assert_eq!(app.search, Search::Kept("bEtA".into()));
-        key(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         assert_eq!(app.view.len(), 3);
         assert_eq!(app.search, Search::Off);
-        key(&mut app, KeyCode::Char('/'));
-        key(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('z'));
         assert!(app.view.is_empty());
-        key(&mut app, KeyCode::Backspace);
-        key(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Enter);
         assert_eq!(app.search, Search::Off);
     }
     #[test]
     fn search_captures_command_letters() {
         let mut app = app();
-        key(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('/'));
         for letter in "qjkd p?".chars() {
-            assert_eq!(key(&mut app, KeyCode::Char(letter)), Action::None);
+            assert_eq!(press(&mut app, KeyCode::Char(letter)), Action::None);
         }
         assert_eq!(app.search, Search::Typing("qjkd p?".into()));
         assert!(!app.help);
@@ -613,18 +847,18 @@ mod state_tests {
     fn esc_chain_order() {
         let mut app = app();
         app.resize(60, 20);
-        key(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
         app.search = Search::Typing("Alpha".into());
         app.help = true;
-        assert_eq!(key(&mut app, KeyCode::Esc), Action::None);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
         assert!(!app.help);
-        key(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         assert_eq!(app.search, Search::Kept("Alpha".into()));
-        key(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         assert_eq!(app.search, Search::Off);
-        key(&mut app, KeyCode::Esc);
-        assert_eq!(app.narrow_view, NarrowView::List);
-        assert_eq!(key(&mut app, KeyCode::Esc), Action::Quit);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Focus::List);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Quit);
     }
     #[test]
     fn release_events_are_ignored() {
@@ -646,10 +880,12 @@ mod state_tests {
                 let mut app = app();
                 app.search = search.clone();
                 app.help = help;
-                assert_eq!(
-                    app.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-                    Action::Quit
-                );
+                for letter in ['c', 'C'] {
+                    assert_eq!(
+                        app.handle(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL)),
+                        Action::Quit
+                    );
+                }
             }
         }
     }
@@ -657,59 +893,81 @@ mod state_tests {
     fn narrow_enter_and_tab() {
         let mut app = app();
         app.resize(60, 20);
-        assert_eq!(app.narrow_view, NarrowView::List);
-        key(&mut app, KeyCode::Enter);
-        assert_eq!(app.narrow_view, NarrowView::Diagram);
-        assert_eq!(app.focus, Focus::Diagram);
-        key(&mut app, KeyCode::Tab);
-        assert_eq!(app.narrow_view, NarrowView::List);
         assert_eq!(app.focus, Focus::List);
-        key(&mut app, KeyCode::Tab);
-        assert_eq!(app.narrow_view, NarrowView::Diagram);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Diagram);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::List);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Diagram);
     }
     #[test]
     fn diff_toggle_without_git_reports_status() {
         let mut app = app();
         app.base = None;
-        key(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('d'));
         assert!(!app.diff_mode);
         assert_eq!(app.status.as_deref(), Some("diff mode needs git"));
-        key(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
         assert!(app.status.is_none());
     }
     #[test]
     fn diff_on_broken_flow_shows_the_error() {
         let mut app = app();
         app.flows[0].difference.text = Text::raw("parse error, line 4: expected a step");
-        key(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('d'));
         assert!(app.diff_mode);
         assert_eq!(
             app.diagram().unwrap().text.lines[0].spans[0].content,
             "parse error, line 4: expected a step"
         );
-        app.pan = (90, 90);
-        key(&mut app, KeyCode::Char('d'));
-        assert!(app.pan.0 <= 100 - app.viewport.0);
+        app.pan = Offset {
+            rows: 90,
+            columns: 90,
+        };
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 76,
+                columns: 90
+            }
+        );
     }
     #[test]
     fn reload_keeps_selection_by_path() {
         let mut app = app();
-        key(&mut app, KeyCode::Down);
-        app.pan = (10, 10);
-        app.apply(loaded(&["Added", "Alpha", "Beta", "Gamma"]));
+        press(&mut app, KeyCode::Down);
+        app.pan = Offset {
+            rows: 10,
+            columns: 10,
+        };
+        app.apply(loaded_with_flows(&["Added", "Alpha", "Beta", "Gamma"]));
         assert_eq!(app.list_state.selected(), Some(2));
         assert_eq!(app.selected().unwrap().flow.name, "Beta");
-        assert_eq!(app.pan, (10, 10));
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 10,
+                columns: 10
+            }
+        );
     }
     #[test]
     fn reload_clamps_when_selected_flow_disappears() {
         let mut app = app();
-        key(&mut app, KeyCode::Down);
-        key(&mut app, KeyCode::Down);
-        app.apply(loaded(&["Alpha"]));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        app.apply(loaded_with_flows(&["Alpha"]));
         assert_eq!(app.list_state.selected(), Some(0));
-        assert_eq!(app.pan, (0, 0));
-        app.apply(loaded(&[]));
+        assert_eq!(
+            app.pan,
+            Offset {
+                rows: 0,
+                columns: 0
+            }
+        );
+        app.apply(loaded_with_flows(&[]));
         assert_eq!(app.list_state.selected(), None);
     }
     #[test]

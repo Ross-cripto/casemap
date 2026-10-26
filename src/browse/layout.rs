@@ -1,4 +1,4 @@
-use super::app::{App, NarrowView};
+use super::app::{App, Focus};
 use ratatui::layout::{Constraint, Layout, Rect};
 
 pub(super) const WIDE_WIDTH: u16 = 80;
@@ -24,7 +24,7 @@ pub(super) fn layout(area: Rect, app: &App) -> Areas {
             Layout::horizontal([Constraint::Length(LIST_WIDTH), Constraint::Fill(1)]).areas(body);
         areas.list = list;
         right
-    } else if app.narrow_view == NarrowView::List {
+    } else if app.focus == Focus::List {
         areas.list = body;
         return areas;
     } else {
@@ -32,7 +32,7 @@ pub(super) fn layout(area: Rect, app: &App) -> Areas {
     };
     let header_height = if app.diff_mode { 4 } else { 3 };
     let panel_height = if app.panel {
-        super::app::dimension(app.panel_lines().len().saturating_add(2)).min(right.height / 3)
+        super::app::dimension(app.panel_line_count().saturating_add(2)).min(right.height / 3)
     } else {
         0
     };
@@ -77,7 +77,7 @@ mod tests {
         let narrow = layout(Rect::new(0, 0, 60, 20), &app);
         assert_eq!(narrow.list.width, 60);
         assert_eq!(narrow.diagram, Rect::default());
-        app.narrow_view = NarrowView::Diagram;
+        app.focus = Focus::Diagram;
         let narrow = layout(Rect::new(0, 0, 60, 20), &app);
         assert_eq!(narrow.list, Rect::default());
         assert_eq!(narrow.diagram.width, 60);

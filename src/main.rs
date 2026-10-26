@@ -189,15 +189,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         None => {
             #[cfg(feature = "tui")]
-            if browse::app::bare_mode(
-                io::stdin().is_terminal(),
-                io::stdout().is_terminal(),
-                std::env::var_os("CI").is_some(),
-                std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
-                directory.is_dir(),
-                cli.watch,
-                cli.file.is_some(),
-            ) == browse::app::BareMode::Browse
+            if browse::app::bare_mode(&browse::app::BareModeInputs {
+                stdin_tty: io::stdin().is_terminal(),
+                stdout_tty: io::stdout().is_terminal(),
+                ci: std::env::var_os("CI").is_some(),
+                term_dumb: std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
+                catalog_exists: directory.is_dir(),
+                watch: cli.watch,
+                has_file: cli.file.is_some(),
+            }) == browse::app::BareMode::Browse
             {
                 return browse::run(directory, None, &browse_opts);
             }
@@ -441,22 +441,20 @@ impl LazyCodeIndex {
     }
 
     fn root(&mut self) -> anyhow::Result<&Path> {
-        self.ensure_location()?;
-        Ok(&self.location.as_ref().expect("location was resolved").0)
+        Ok(&self.ensure_location()?.0)
     }
 
-    fn ensure_location(&mut self) -> anyhow::Result<()> {
-        if self.location.is_none() {
-            let (root, source, _) = code_root(&self.catalog_dir)?;
-            self.location = Some((root, source));
+    fn ensure_location(&mut self) -> anyhow::Result<&(PathBuf, FileSource)> {
+        if let Some(ref location) = self.location {
+            return Ok(location);
         }
-        Ok(())
+        let (root, source, _) = code_root(&self.catalog_dir)?;
+        Ok(self.location.insert((root, source)))
     }
 
     fn files(&mut self) -> anyhow::Result<&[String]> {
         if self.files.is_none() {
-            self.ensure_location()?;
-            let (root, source) = self.location.as_ref().expect("location was resolved");
+            let (root, source) = self.ensure_location()?;
             self.files = Some(code_files(root, *source)?);
         }
         Ok(self.files.as_deref().unwrap_or_default())
@@ -730,14 +728,23 @@ fn check_catalog(
     Ok(check_exit_code(&report, strict))
 }
 
+fn problem_line(problem: &check::Problem, prefix: &str, severity: &str) -> String {
+    format!(
+        "{prefix}{severity}: {} [{}]",
+        problem.message,
+        problem.code.as_str()
+    )
+}
+
 fn print_check_text(dir: &Path, report: &check::Report, color: bool) {
     for problem in &report.problems {
         println!(
-            "{}: {}: {} [{}]",
-            problem_location(dir, problem),
-            coloured_severity(problem.code.severity(), color),
-            problem.message,
-            problem.code.as_str()
+            "{}",
+            problem_line(
+                problem,
+                &format!("{}: ", problem_location(dir, problem)),
+                &coloured_severity(problem.code.severity(), color)
+            )
         );
     }
     println!("{}", check_summary(report));

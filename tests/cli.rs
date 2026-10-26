@@ -1547,6 +1547,7 @@ fn browse_missing_catalog_fails_like_flows() {
     let browse = repo.strata(&["browse"]);
     let flows = repo.strata(&["flows"]);
     assert_eq!(browse.status.code(), Some(1));
+    assert!(!browse.stderr.is_empty());
     assert_eq!(browse.stderr, flows.stderr);
 }
 
@@ -1557,6 +1558,7 @@ fn browse_invalid_base_fails_like_diff() {
     let browse = repo.strata(&["browse", "--base", "missing-ref"]);
     let diff = repo.strata(&["diff", "missing-ref"]);
     assert_eq!(browse.status.code(), Some(1));
+    assert!(!browse.stderr.is_empty());
     assert_eq!(browse.stderr, diff.stderr);
 }
 
