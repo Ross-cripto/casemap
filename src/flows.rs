@@ -703,7 +703,7 @@ fn markdown_change(change: &FlowChange, catalog: &str, since: &str) -> String {
     }
 }
 
-fn describe_stale_hit(hit: &StaleHit) -> String {
+pub fn describe_stale_hit(hit: &StaleHit) -> String {
     let listed = hit
         .files
         .iter()

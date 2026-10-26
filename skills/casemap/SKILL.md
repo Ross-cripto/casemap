@@ -110,6 +110,8 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 
    If `casemap diff` lists flows as "possibly stale", open each one. Update it if the behaviour changed. If it still holds, say so in your final message; never make a cosmetic edit just to silence the warning.
 
+If a casemap hook stops you with warnings, act on each one: update the flow, anchor the code, or say in your reply why it still holds. The same warnings will not stop you twice.
+
 ## Commands
 
 | Command | What it does |

@@ -22,7 +22,7 @@ Release: automatic. main only takes PRs with green CI; each merge updates the re
 
 ## Code map
 
-`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing and rendering. The binary-only `onboard` module handles the first-run menu, agent detection and launch. The README's "The renderer" explains each layout stage. The binary-only `src/browse/` TUI (behind the default-on `tui` feature) handles interactive browsing with pure app state, layout, widgets and ANSI conversion.
+`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing and rendering. The binary-only `hook` module handles agent Stop checks, warning memory and project hook configuration. The binary-only `onboard` module handles the first-run menu, agent detection and launch. The README's "The renderer" explains each layout stage. The binary-only `src/browse/` TUI (behind the default-on `tui` feature) handles interactive browsing with pure app state, layout, widgets and ANSI conversion.
 
 `anchors` (anchor syntax, matcher, file walk), `markdown` (mermaid blocks in .md), `diff` (union diagram + marks), `mermaid` (Mermaid writer), `flows` (catalog, compare, report), `git` (repository paths, ignore checks, merge base and files at a commit via the git binary), `coverage` (code classification, repository coverage and uncovered changes), `check` (catalog validation), `skill` (embedded casemap skill, source `skills/casemap/SKILL.md`).
 

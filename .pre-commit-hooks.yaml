@@ -1,0 +1,7 @@
+- id: casemap-check
+  name: casemap check
+  description: Validate the use-case flows before committing
+  entry: casemap check
+  language: system
+  pass_filenames: false
+  always_run: true

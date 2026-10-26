@@ -2147,3 +2147,336 @@ fn coverage_aligns_unicode_directory_columns() {
     assert!(output.contains("  é/      0%"), "{output}");
     assert!(output.contains("  界/     0%"), "{output}");
 }
+
+fn assert_silent_hook_output(output: &Output) {
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+fn assert_silent_hook(repo: &TempRepo, input: &str) {
+    assert_silent_hook_output(&repo.casemap_stdin(&["hook", "stop"], input));
+}
+
+#[test]
+fn hook_never_blocks_when_it_should_not() {
+    let repo = common::anchored_catalog();
+    assert_silent_hook(&repo, "{}");
+    assert_silent_hook(&repo, "malformed");
+    for args in [
+        vec!["hook", "stop", "--flows"],
+        vec!["hook", "stop", "--bogus"],
+    ] {
+        let output = repo.casemap(&args);
+        assert_silent_hook_output(&output);
+    }
+    let output = casemap_command(&repo)
+        .args(["hook", "stop"])
+        .env("CASEMAP_HOOK_TEST_PANIC", "1")
+        .write_stdin("{}")
+        .output()
+        .unwrap();
+    assert_silent_hook_output(&output);
+    fs::write(repo.file("README.md"), "documentation only\n").unwrap();
+    assert_silent_hook(&repo, "{}");
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    assert_silent_hook(&repo, r#"{"stop_hook_active":true}"#);
+    assert_silent_hook(&repo, &"x".repeat((1 << 20) + 1));
+    let outside = TempRepo::new();
+    assert_silent_hook(&outside, "{}");
+    let missing = init_repo();
+    assert_silent_hook(&missing, "{}");
+    let unborn = TempRepo::new();
+    unborn.git(&["init", "-q"]);
+    assert_silent_hook(&unborn, "{}");
+    fs::write(repo.file(".git/index"), "broken index").unwrap();
+    assert_silent_hook(&repo, "{}");
+}
+
+#[test]
+fn hook_blocks_once_per_warning_set() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    let first = stdout(&repo.casemap_stdin(&["hook", "stop"], "{}"));
+    let decision: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(decision["decision"], "block");
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("Pay for an order (docs/flows/pay.md)"),
+        "{reason}"
+    );
+    assert!(reason.contains("src/pay.rs"));
+    assert_silent_hook(&repo, "{}");
+    fs::write(repo.file("src/new.rs"), "fn new() {}\n").unwrap();
+    let next = stdout(&repo.casemap_stdin(&["hook", "stop"], "{}"));
+    let decision: serde_json::Value = serde_json::from_str(&next).unwrap();
+    let reason = decision["reason"].as_str().unwrap();
+    assert!(reason.contains("Pay for an order"));
+    assert!(reason.contains("- src/new.rs"));
+    let memory = repo.file(".git/casemap/stop-hook-default");
+    assert_eq!(
+        fs::read_to_string(&memory).unwrap(),
+        "stale:pay.md:pay:src/pay.rs\nuncovered:src/new.rs"
+    );
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "changes"]);
+    assert_silent_hook(&repo, "{}");
+    assert!(!memory.exists());
+}
+
+#[test]
+fn init_hooks_installs_both_agents() {
+    let repo = init_repo();
+    let output = stdout(&repo.casemap(&["init", "--hooks"]));
+    for path in [".claude/settings.json", ".codex/hooks.json"] {
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(repo.file(path)).unwrap()).unwrap();
+        assert_eq!(
+            value["hooks"]["Stop"][0]["hooks"][0],
+            serde_json::json!({"type":"command", "command":"casemap hook stop", "timeout":30})
+        );
+    }
+    assert!(output.contains("(Claude Code hook)"));
+    assert!(output.contains("(Codex hook)"));
+    assert!(output.contains("run /hooks in Codex"));
+}
+
+#[test]
+fn init_hooks_merges_existing_settings() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.file(".claude")).unwrap();
+    fs::create_dir_all(repo.file(".codex")).unwrap();
+    let claude = r#"{"permissions":{"allow":["Read"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"other"}]}]}}"#;
+    let codex = r#"{"hooks":{"PreToolUse":[{"hooks":[{"command":"before"}]}]}}"#;
+    fs::write(repo.file(".claude/settings.json"), claude).unwrap();
+    fs::write(repo.file(".codex/hooks.json"), codex).unwrap();
+    stdout(&repo.casemap(&["init", "--hooks"]));
+    let merged = fs::read_to_string(repo.file(".claude/settings.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+    assert_eq!(value["permissions"]["allow"][0], "Read");
+    assert_eq!(value["hooks"]["Stop"][0]["hooks"][0]["command"], "other");
+    assert_eq!(value["hooks"]["Stop"].as_array().unwrap().len(), 2);
+    let codex_merged = fs::read_to_string(repo.file(".codex/hooks.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&codex_merged).unwrap();
+    assert_eq!(
+        value["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "before"
+    );
+    assert!(
+        stdout(&repo.casemap(&["init", "--hooks"])).contains("up to date .claude/settings.json")
+    );
+    assert_eq!(
+        fs::read_to_string(repo.file(".claude/settings.json")).unwrap(),
+        merged
+    );
+    assert_eq!(
+        fs::read_to_string(repo.file(".codex/hooks.json")).unwrap(),
+        codex_merged
+    );
+    fs::write(repo.file(".claude/settings.json"), "invalid").unwrap();
+    let output = repo.casemap(&["init", "--hooks", "--force"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("error: .claude/settings.json:"));
+    assert_eq!(
+        fs::read_to_string(repo.file(".claude/settings.json")).unwrap(),
+        "invalid"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn init_hooks_rejects_outside_symlinks() {
+    for path in [".claude/settings.json", ".codex/hooks.json"] {
+        let repo = init_repo();
+        let outside = assert_fs::TempDir::new().unwrap();
+        let target = outside.path().join("settings.json");
+        fs::write(&target, "{}").unwrap();
+        fs::create_dir_all(repo.file(path).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, repo.file(path)).unwrap();
+        let output = repo.casemap(&["init", "--hooks"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
+            "refusing to write {path} through a symlink outside the repository"
+        )));
+        assert_eq!(fs::read_to_string(target).unwrap(), "{}");
+    }
+}
+
+#[test]
+fn hook_uses_input_cwd_and_custom_catalog() {
+    let repo = common::anchored_catalog();
+    repo.git(&["mv", "docs/flows", "docs/journeys"]);
+    repo.git(&["commit", "-qm", "move catalog"]);
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    let launcher = TempRepo::new();
+    let input = serde_json::json!({"cwd": repo.path()}).to_string();
+    let output =
+        stdout(&launcher.casemap_stdin(&["hook", "stop", "--flows", "docs/journeys"], &input));
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(
+        value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("docs/journeys/pay.md")
+    );
+    assert!(repo.file(".git/casemap/stop-hook-default").exists());
+    assert!(!launcher.file(".git/casemap/stop-hook-default").exists());
+}
+
+#[test]
+fn hook_ignores_check_warnings_uncovered_deletions_and_unanchored_catalogs() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/removed.rs"), "fn removed() {}\n").unwrap();
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "uncovered code"]);
+    fs::remove_file(repo.file("src/removed.rs")).unwrap();
+    assert_silent_hook(&repo, "{}");
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", ""),
+    )
+    .unwrap();
+    fs::write(repo.file("src/new.rs"), "fn new() {}\n").unwrap();
+    assert_silent_hook(&repo, "{}");
+    fs::remove_file(repo.flow_path("pay.md")).unwrap();
+    assert_silent_hook(&repo, "{}");
+}
+
+#[test]
+fn hook_reports_check_errors_and_blocks_when_memory_cannot_be_written() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.flow_path("pay.md"), "# Pay\n\nPay an order.\n").unwrap();
+    fs::write(repo.file(".git/casemap"), "prevents directory creation").unwrap();
+    let output = stdout(&repo.casemap_stdin(&["hook", "stop"], "{}"));
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["decision"], "block");
+    assert!(
+        value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("[missing-diagram]")
+    );
+    assert!(!value["reason"].as_str().unwrap().contains("Changed code"));
+}
+
+#[test]
+fn hook_clears_memory_when_warnings_are_resolved_in_a_dirty_tree() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    assert!(!stdout(&repo.casemap_stdin(&["hook", "stop"], "{}")).is_empty());
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("Show result", "Show payment result"),
+    )
+    .unwrap();
+    assert_silent_hook(&repo, "{}");
+    assert!(!repo.file(".git/casemap/stop-hook-default").exists());
+}
+
+#[test]
+fn init_hooks_quotes_catalog_and_force_replaces_only_casemap_commands() {
+    let repo = init_repo();
+    let catalog = "docs/customer's journeys";
+    stdout(&repo.casemap(&["init", "--hooks", "--flows", catalog]));
+    let path = repo.file(".codex/hooks.json");
+    let original = fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(
+        value["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "casemap hook stop --flows 'docs/customer'\\''s journeys'"
+    );
+    stdout(&repo.casemap(&["init", "--hooks"]));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    stdout(&repo.casemap(&["init", "--hooks", "--force"]));
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        value["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "casemap hook stop"
+    );
+}
+
+#[test]
+fn hook_stores_memory_in_the_worktree_git_directory() {
+    let repo = common::anchored_catalog();
+    let worktree = repo.file("../linked-worktree");
+    repo.git(&[
+        "worktree",
+        "add",
+        "-qb",
+        "linked",
+        worktree.to_str().unwrap(),
+    ]);
+    fs::write(worktree.join("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    let input = serde_json::json!({"cwd": worktree}).to_string();
+    let output = stdout(&repo.casemap_stdin(&["hook", "stop"], &input));
+    assert!(!output.is_empty());
+    let output = repo.casemap_stdin(&["hook", "stop"], &input);
+    assert!(output.stdout.is_empty());
+    assert!(output.status.success());
+    assert!(!repo.file(".git/casemap/stop-hook-default").exists());
+    assert!(
+        repo.file(".git/worktrees/linked-worktree/casemap/stop-hook-default")
+            .exists()
+    );
+}
+
+#[test]
+fn hook_finds_the_catalog_from_a_subdirectory() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    let input = serde_json::json!({"cwd": repo.file("src")}).to_string();
+    let output = repo.casemap_stdin(&["hook", "stop"], &input);
+    let decision: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(decision["decision"], "block");
+    assert!(
+        decision["reason"]
+            .as_str()
+            .unwrap()
+            .contains("docs/flows/pay.md")
+    );
+}
+
+#[test]
+fn hook_reason_is_bounded() {
+    let repo = common::anchored_catalog();
+    for index in 0..100 {
+        fs::write(repo.file(&format!("src/new{index:03}.rs")), "fn new() {}\n").unwrap();
+    }
+    let output = repo.casemap_stdin(&["hook", "stop"], "{}");
+    let decision: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let reason = decision["reason"].as_str().unwrap();
+    assert_eq!(
+        reason
+            .lines()
+            .filter(|line| line.starts_with("- src/"))
+            .count(),
+        15
+    );
+    assert!(reason.contains("- … and 85 more"));
+    fs::write(repo.file("src/new099.rs"), "different content\n").unwrap();
+    assert_silent_hook(&repo, "{}");
+    fs::write(repo.file("src/new100.rs"), "fn new() {}\n").unwrap();
+    let output = repo.casemap_stdin(&["hook", "stop"], "{}");
+    let decision: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(decision["decision"], "block");
+    assert!(
+        decision["reason"]
+            .as_str()
+            .unwrap()
+            .contains("- … and 86 more")
+    );
+}
+
+#[test]
+fn hook_memory_is_per_session() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    for session in ["A", "B"] {
+        let input = serde_json::json!({"session_id": session}).to_string();
+        let output = repo.casemap_stdin(&["hook", "stop"], &input);
+        let decision: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+        assert_eq!(decision["decision"], "block");
+    }
+    assert_silent_hook(&repo, r#"{"session_id":"A"}"#);
+}
