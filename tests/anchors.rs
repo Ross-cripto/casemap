@@ -178,7 +178,7 @@ fn repo_files_lists_tracked_and_untracked_but_not_ignored() {
     fs::write(repo.file("ignored"), "").unwrap();
     fs::write(repo.file("new file.rs"), "").unwrap();
     fs::remove_file(repo.flow_path("login.md")).unwrap();
-    let files = git::repo_files(&repo.file("docs/flows")).unwrap();
+    let files = git::repo_files(repo.path()).unwrap();
     assert!(files.contains(&"docs/flows/checkout.md".into()));
     assert!(files.contains(&"new file.rs".into()));
     assert!(!files.contains(&"ignored".into()));
@@ -186,6 +186,22 @@ fn repo_files_lists_tracked_and_untracked_but_not_ignored() {
     let mut sorted = files.clone();
     sorted.sort();
     assert_eq!(files, sorted);
+}
+
+const WHOLE_FLOW_ANCHOR: &str = "%% @code * src/**\n";
+
+fn insert_anchor_in_every_block(source: &str) -> String {
+    let mut updated = source.to_owned();
+    let blocks = strata::markdown::mermaid_blocks(source);
+    for block in blocks.into_iter().rev() {
+        let content_start: usize = source
+            .split_inclusive('\n')
+            .take(block.line)
+            .map(str::len)
+            .sum();
+        updated.insert_str(content_start + block.source.len(), WHOLE_FLOW_ANCHOR);
+    }
+    updated
 }
 
 #[test]
@@ -211,23 +227,18 @@ fn anchors_do_not_change_rendering() {
         let source = fs::read_to_string(&path).unwrap();
         let is_markdown = path.extension().unwrap() == "md";
         let anchored = if is_markdown {
-            let mut updated = source.clone();
-            let mut offset = 0;
-            for block in strata::markdown::mermaid_blocks(&source) {
-                let start = source
-                    .lines()
-                    .take(block.line)
-                    .map(|line| line.len() + 1)
-                    .sum::<usize>();
-                let position = start + block.source.len() + offset;
-                let anchor = "%% @code * src/**\n";
-                updated.insert_str(position, anchor);
-                offset += anchor.len();
-            }
-            updated
+            insert_anchor_in_every_block(&source)
         } else {
-            format!("{source}\n%% @code * src/**\n")
+            format!("{source}\n{WHOLE_FLOW_ANCHOR}")
         };
+        assert_ne!(anchored, source);
+        if is_markdown {
+            assert!(
+                anchored.contains(&format!("{WHOLE_FLOW_ANCHOR}```")),
+                "{}",
+                path.display()
+            );
+        }
         for direction in [
             Direction::TopDown,
             Direction::BottomUp,
@@ -303,7 +314,7 @@ fn changed_files_includes_deleted_untracked_and_both_sides_of_renames() {
     fs::write(repo.file(".gitignore"), "ignored\n").unwrap();
     fs::write(repo.file("ignored"), "").unwrap();
     assert_eq!(
-        git::changed_files(&repo.file("docs/flows"), "HEAD").unwrap(),
+        git::changed_files(repo.path(), "HEAD").unwrap(),
         [
             ".gitignore",
             "docs/flows/login.md",
@@ -374,4 +385,58 @@ fn whole_flow_anchors_remain_queryable_when_the_diagram_is_broken() {
     assert_eq!(matches.len(), 1);
     assert!(matches[0].whole_flow);
     assert!(matches[0].steps.is_empty());
+}
+
+#[test]
+fn matcher_handles_pathological_globstars() {
+    let path = vec!["a"; 40].join("/");
+    let started = std::time::Instant::now();
+    assert!(!pattern_matches("**/a/**/a/**/a/**/a/**/a/**/b", &path));
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+}
+
+#[test]
+fn drive_prefix_only_in_first_segment() {
+    assert_eq!(normalise_pattern("docs/a:b.md").unwrap(), "docs/a:b.md");
+    assert_eq!(normalise_pattern("docs/C:/x").unwrap(), "docs/C:/x");
+    assert!(normalise_pattern("C:").is_err());
+    assert!(normalise_pattern("c:/x").is_err());
+    assert_eq!(normalise_pattern("**/**/a/**/**").unwrap(), "**/a/**");
+}
+
+#[cfg(unix)]
+#[test]
+fn walk_files_skips_unreadable_directories() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = assert_fs::TempDir::new().unwrap();
+    let unreadable = directory.path().join("private");
+    fs::create_dir(&unreadable).unwrap();
+    fs::write(unreadable.join("hidden.rs"), "").unwrap();
+    fs::write(directory.path().join("visible.rs"), "").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o0)).unwrap();
+    let denied = fs::read_dir(&unreadable).is_err();
+    let result = anchors::walk_files(directory.path());
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+    if denied {
+        assert_eq!(result.unwrap(), ["visible.rs"]);
+    }
+}
+
+#[test]
+fn stale_report_cap_boundaries() {
+    for (count, suffix) in [
+        (flows::MAX_STALE_FILES, ""),
+        (flows::MAX_STALE_FILES + 1, ", … (+1 more)"),
+    ] {
+        let flow = flows::parse_flow("pay.mmd", "flowchart TD\npay[Pay]\n%% @code * src\n");
+        let changed: Vec<_> = (0..count).map(|index| format!("src/{index}.rs")).collect();
+        let stale = flows::stale_flows(&[flow], "", &changed);
+        let report = flows::render_report(&[], &stale, "HEAD", "123456789", &Options::default());
+        assert!(
+            report.ends_with(&format!(
+                "    whole flow: src/0.rs, src/1.rs, src/2.rs, src/3.rs, src/4.rs{suffix}\n"
+            )),
+            "{report}"
+        );
+    }
 }

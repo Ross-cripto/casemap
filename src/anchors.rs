@@ -10,6 +10,7 @@ pub enum Target {
 }
 
 impl Target {
+    /// Display name shared by anchor reports and footers.
     pub fn label(&self) -> &str {
         match self {
             Self::Flow => "whole flow",
@@ -18,6 +19,7 @@ impl Target {
     }
 }
 
+/// A source-located target with its valid repository-relative patterns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Anchor {
     pub target: Target,
@@ -25,6 +27,7 @@ pub struct Anchor {
     pub line: usize,
 }
 
+/// An anchor syntax error at a file line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorError {
     pub line: usize,
@@ -50,13 +53,20 @@ pub fn parse_anchors(block_source: &str, offset: usize) -> (Vec<Anchor>, Vec<Anc
         let line = offset + index + 1;
         let target = tokens.next();
         let raw_patterns: Vec<_> = tokens.collect();
-        let Some(target) = target.filter(|_| !raw_patterns.is_empty()) else {
+        let Some(target) = target else {
             errors.push(AnchorError {
                 line,
                 message: "@code needs a target and at least one path".into(),
             });
             continue;
         };
+        if raw_patterns.is_empty() {
+            errors.push(AnchorError {
+                line,
+                message: "@code needs a target and at least one path".into(),
+            });
+            continue;
+        }
         let target = if target == "*" {
             Target::Flow
         } else {
@@ -101,17 +111,30 @@ pub fn normalise_pattern(raw: &str) -> Result<String, String> {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
-    if segments.is_empty() || segments.iter().any(|segment| invalid_segment(segment)) {
+    if segments.is_empty()
+        || segments.first().is_some_and(|first| is_drive_prefix(first))
+        || segments.iter().any(|segment| invalid_segment(segment))
+    {
         return Err(relative_error());
     }
-    Ok(segments.join("/"))
+    let mut collapsed = Vec::new();
+    for segment in segments {
+        if segment == "**" && collapsed.last() == Some(&"**") {
+            continue;
+        }
+        collapsed.push(segment);
+    }
+    Ok(collapsed.join("/"))
 }
 
 fn invalid_segment(segment: &str) -> bool {
+    segment == "." || segment == ".."
+}
+
+/// A Windows drive such as `C:`; only meaningful as the first segment, since `docs/a:b.md` is a valid name.
+fn is_drive_prefix(segment: &str) -> bool {
     let bytes = segment.as_bytes();
-    segment == "."
-        || segment == ".."
-        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// True when `pattern` (already normalised) matches the root-relative `/` path.
@@ -129,17 +152,50 @@ pub fn pattern_matches(pattern: &str, path: &str) -> bool {
 }
 
 fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
-    let Some((segment, remaining_pattern)) = pattern.split_first() else {
-        return path.is_empty();
-    };
-    if *segment == "**" {
-        return (0..=path.len())
-            .any(|consumed| match_segments(remaining_pattern, &path[consumed..]));
+    let mut memo = vec![None; (pattern.len() + 1) * (path.len() + 1)];
+    match_segments_at(pattern, path, 0, 0, &mut memo)
+}
+
+fn match_segments_at(
+    pattern: &[&str],
+    path: &[&str],
+    pattern_index: usize,
+    path_index: usize,
+    memo: &mut [Option<bool>],
+) -> bool {
+    let memo_index = pattern_index * (path.len() + 1) + path_index;
+    if let Some(result) = memo[memo_index] {
+        return result;
     }
-    let Some((name, remaining_path)) = path.split_first() else {
-        return false;
+    let result = match pattern.get(pattern_index) {
+        None => path_index == path.len(),
+        Some(&"**") => {
+            match_segments_at(pattern, path, pattern_index + 1, path_index, memo)
+                || (path_index < path.len()
+                    && match_segments_at(pattern, path, pattern_index, path_index + 1, memo))
+        }
+        Some(segment) => {
+            path.get(path_index)
+                .is_some_and(|name| segment_matches(segment, name))
+                && match_segments_at(pattern, path, pattern_index + 1, path_index + 1, memo)
+        }
     };
-    segment_matches(segment, name) && match_segments(remaining_pattern, remaining_path)
+    memo[memo_index] = Some(result);
+    result
+}
+
+/// Whether any valid anchor pattern covers a root-relative path.
+pub fn any_pattern_matches(patterns: &[String], path: &str) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| pattern_matches(pattern, path))
+}
+
+pub(crate) fn anchor_step_exists(diagram: &crate::Diagram, target: &Target) -> bool {
+    match target {
+        Target::Flow => true,
+        Target::Step(id) => diagram.nodes.iter().any(|node| node.id == *id),
+    }
 }
 
 fn segment_matches(pattern: &str, name: &str) -> bool {
@@ -148,12 +204,12 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
     let mut pattern_index = 0;
     let mut name_index = 0;
     let mut last_star = None;
-    let mut star_consumed = 0;
+    let mut star_resume_index = 0;
     while name_index < name.len() {
         if pattern.get(pattern_index) == Some(&'*') {
             last_star = Some(pattern_index);
             pattern_index += 1;
-            star_consumed = name_index;
+            star_resume_index = name_index;
         } else if pattern
             .get(pattern_index)
             .is_some_and(|character| *character == '?' || *character == name[name_index])
@@ -161,8 +217,8 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
             pattern_index += 1;
             name_index += 1;
         } else if let Some(star_index) = last_star {
-            star_consumed += 1;
-            name_index = star_consumed;
+            star_resume_index += 1;
+            name_index = star_resume_index;
             pattern_index = star_index + 1;
         } else {
             return false;
@@ -173,6 +229,7 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
         .all(|character| *character == '*')
 }
 
+/// Sorted root-relative files, excluding .git and directory symlink traversal.
 pub fn walk_files(root: &Path) -> std::io::Result<Vec<String>> {
     let mut files = Vec::new();
     walk_directory(root, root, &mut files)?;
@@ -181,7 +238,14 @@ pub fn walk_files(root: &Path) -> std::io::Result<Vec<String>> {
 }
 
 fn walk_directory(root: &Path, directory: &Path, files: &mut Vec<String>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(directory)? {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if directory != root && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let kind = entry.file_type()?;
@@ -217,6 +281,7 @@ pub(crate) fn grouped_anchors(flow: &Flow) -> Vec<Anchor> {
     grouped
 }
 
+/// Code anchors grouped by target in first-appearance order.
 pub fn render_footer(flow: &Flow) -> String {
     let anchors = grouped_anchors(flow);
     if anchors.is_empty() {

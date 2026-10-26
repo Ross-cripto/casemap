@@ -1,7 +1,7 @@
 //! strata CLI: adopt, validate, render and compare a catalog of use-case flows.
 
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
@@ -260,9 +260,9 @@ fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::
         .iter()
         .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
     {
-        let (root, _) = code_root(dir)?;
+        let (root, _, prefix) = code_root(dir)?;
         let changed = git::changed_files(&root, &base)?;
-        strata::flows::stale_flows(&new, &git::prefix(dir)?, &changed)
+        strata::flows::stale_flows(&new, &prefix, &changed)
     } else {
         Vec::new()
     };
@@ -340,14 +340,70 @@ enum FileSource {
     Walk,
 }
 
-fn code_root(catalog_dir: &Path) -> anyhow::Result<(PathBuf, FileSource)> {
+fn falls_back_to_walk(error: &git::GitError) -> bool {
+    matches!(error, git::GitError::Spawn { error } if error.kind() == io::ErrorKind::NotFound)
+}
+
+fn walk_root() -> anyhow::Result<(PathBuf, FileSource, String)> {
+    Ok((
+        std::env::current_dir().context("reading the current directory")?,
+        FileSource::Walk,
+        String::new(),
+    ))
+}
+
+fn code_root(catalog_dir: &Path) -> anyhow::Result<(PathBuf, FileSource, String)> {
     match git::locate(catalog_dir) {
-        Ok(git::Location::Inside { root, .. }) => Ok((root, FileSource::Git)),
-        Ok(git::Location::NotARepository) | Err(git::GitError::Spawn { .. }) => Ok((
-            std::env::current_dir().context("reading the current directory")?,
-            FileSource::Walk,
-        )),
+        Ok(git::Location::Inside { root, prefix }) => Ok((root, FileSource::Git, prefix)),
+        Ok(git::Location::NotARepository) => walk_root(),
+        Err(error) if falls_back_to_walk(&error) => walk_root(),
         Err(error) => Err(error.into()),
+    }
+}
+
+struct LazyCodeIndex {
+    root: PathBuf,
+    source: FileSource,
+    files: Option<Vec<String>>,
+    error: Option<anyhow::Error>,
+}
+
+impl LazyCodeIndex {
+    fn new(catalog_dir: &Path) -> anyhow::Result<Self> {
+        let (root, source, _) = code_root(catalog_dir)?;
+        Ok(Self {
+            root,
+            source,
+            files: None,
+            error: None,
+        })
+    }
+
+    fn files(&mut self) -> anyhow::Result<&[String]> {
+        if self.files.is_none() {
+            self.files = Some(code_files(&self.root, self.source)?);
+        }
+        Ok(self.files.as_deref().unwrap_or_default())
+    }
+
+    fn has_match(&mut self, pattern: &str) -> bool {
+        if self.error.is_some() {
+            return true;
+        }
+        let patterns = [pattern.to_owned()];
+        match self.files() {
+            Ok(files) => files
+                .iter()
+                .any(|path| anchors::any_pattern_matches(&patterns, path)),
+            Err(error) => {
+                self.error = Some(error);
+                true
+            }
+        }
+    }
+
+    fn take_error(&mut self) -> Option<anyhow::Error> {
+        self.error.take()
     }
 }
 
@@ -359,32 +415,42 @@ fn code_files(root: &Path, source: FileSource) -> anyhow::Result<Vec<String>> {
     }
 }
 
-fn root_relative_path(path: &Path, root: &Path) -> anyhow::Result<String> {
-    let absolute = std::env::current_dir()
-        .context("reading the current directory")?
-        .join(path);
-    let mut ancestor = absolute.as_path();
+fn deepest_existing_ancestor(path: &Path) -> anyhow::Result<(PathBuf, Vec<Component<'_>>)> {
+    let mut ancestor = path;
     while std::fs::symlink_metadata(ancestor).is_err() {
         ancestor = ancestor
             .parent()
             .with_context(|| format!("resolving {}", path.display()))?;
     }
-    let canonical_root = root
-        .canonicalize()
-        .with_context(|| format!("resolving {}", root.display()))?;
-    let mut resolved = ancestor
-        .canonicalize()
-        .with_context(|| format!("resolving {}", ancestor.display()))?;
-    let tail = absolute.strip_prefix(ancestor)?;
-    for component in tail.components() {
+    let tail = path.strip_prefix(ancestor)?.components().collect();
+    Ok((ancestor.to_path_buf(), tail))
+}
+
+fn replay_tail(mut resolved: PathBuf, tail: Vec<Component<'_>>) -> PathBuf {
+    for component in tail {
         match component {
-            std::path::Component::ParentDir => {
+            Component::ParentDir => {
                 resolved.pop();
             }
-            std::path::Component::CurDir => {}
+            Component::CurDir => {}
             _ => resolved.push(component),
         }
     }
+    resolved
+}
+
+fn root_relative_path(path: &Path, root: &Path) -> anyhow::Result<String> {
+    let absolute = std::env::current_dir()
+        .context("reading the current directory")?
+        .join(path);
+    let (ancestor, tail) = deepest_existing_ancestor(&absolute)?;
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("resolving {}", root.display()))?;
+    let resolved = ancestor
+        .canonicalize()
+        .with_context(|| format!("resolving {}", ancestor.display()))?;
+    let resolved = replay_tail(resolved, tail);
     let Ok(relative) = resolved.strip_prefix(&canonical_root) else {
         bail!("{} is outside the repository", path.display());
     };
@@ -398,18 +464,14 @@ struct WhichPath<'a> {
 
 fn which_flows(dir: &Path, paths: &[PathBuf], format: Format) -> anyhow::Result<ExitCode> {
     let flows = load_catalog(dir)?;
-    let (root, source) = code_root(dir)?;
-    let mut index = None;
+    let mut index = LazyCodeIndex::new(dir)?;
+    let root = index.root.clone();
     let mut results = Vec::new();
     for path in paths {
         let relative = root_relative_path(path, &root)?;
         let files = if root.join(&relative).is_dir() {
-            if index.is_none() {
-                index = Some(code_files(&root, source)?);
-            }
             index
-                .as_deref()
-                .unwrap_or_default()
+                .files()?
                 .iter()
                 .filter(|file| file_is_under_directory(file, &relative))
                 .cloned()
@@ -570,23 +632,19 @@ fn check_catalog(
     color: bool,
 ) -> anyhow::Result<ExitCode> {
     require_catalog(dir)?;
-    let mut files = None;
-    let mut index_error = None;
-    let report = check::check_catalog_with(dir, &mut |pattern| {
-        if files.is_none() && index_error.is_none() {
-            match code_root(dir).and_then(|(root, source)| code_files(&root, source)) {
-                Ok(index) => files = Some(index),
-                Err(error) => index_error = Some(error),
-            }
-        }
-        files.as_ref().is_none_or(|index: &Vec<String>| {
-            index
-                .iter()
-                .any(|path| anchors::pattern_matches(pattern, path))
-        })
+    let mut index = None;
+    // the catalog error is more fundamental than an index error
+    let report = check::check_catalog_with(dir, &mut |pattern| match index
+        .get_or_insert_with(|| LazyCodeIndex::new(dir))
+    {
+        Ok(index) => index.has_match(pattern),
+        Err(_) => true,
     })?;
-    if let Some(error) = index_error {
-        return Err(error);
+    if let Some(index) = index {
+        let mut index = index?;
+        if let Some(error) = index.take_error() {
+            return Err(error);
+        }
     }
     match format {
         Format::Text => print_check_text(dir, &report, color),
@@ -1076,6 +1134,25 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_root_fallback_only_when_git_is_missing() {
+        for (kind, expected) in [
+            (io::ErrorKind::NotFound, true),
+            (io::ErrorKind::PermissionDenied, false),
+            (io::ErrorKind::Other, false),
+        ] {
+            let error = git::GitError::Spawn {
+                error: io::Error::from(kind),
+            };
+            assert_eq!(falls_back_to_walk(&error), expected);
+        }
+        let error = git::GitError::Failed {
+            args: "rev-parse".into(),
+            reason: "broken config".into(),
+        };
+        assert!(!falls_back_to_walk(&error));
+    }
 
     #[test]
     fn screen_writes_only_changed_frames() {

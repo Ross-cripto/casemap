@@ -145,10 +145,10 @@ pub fn files_at(dir: &Path, commit: &str) -> Result<Vec<(String, String)>, GitEr
     Ok(files)
 }
 
-pub fn repo_files(dir: &Path) -> Result<Vec<String>, GitError> {
-    let root = toplevel(dir)?;
+/// Existing tracked and untracked files relative to the supplied repository root.
+pub fn repo_files(root: &Path) -> Result<Vec<String>, GitError> {
     let listing = run(
-        &root,
+        root,
         &[
             "ls-files",
             "-z",
@@ -162,10 +162,10 @@ pub fn repo_files(dir: &Path) -> Result<Vec<String>, GitError> {
     Ok(files)
 }
 
-pub fn changed_files(dir: &Path, base: &str) -> Result<Vec<String>, GitError> {
-    let root = toplevel(dir)?;
+/// Changed and untracked paths relative to the supplied repository root.
+pub fn changed_files(root: &Path, base: &str) -> Result<Vec<String>, GitError> {
     let mut listing = run(
-        &root,
+        root,
         &[
             "diff",
             "--no-renames",
@@ -177,7 +177,7 @@ pub fn changed_files(dir: &Path, base: &str) -> Result<Vec<String>, GitError> {
         ],
     )?;
     listing.push_str(&run(
-        &root,
+        root,
         &["ls-files", "--others", "--exclude-standard", "-z"],
     )?);
     Ok(listed_paths(&listing))
@@ -198,6 +198,24 @@ fn listed_paths(listing: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn repo_files_errors_outside_a_repository() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        assert!(matches!(
+            repo_files(directory.path()),
+            Err(GitError::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn changed_files_errors_outside_a_repository() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        assert!(matches!(
+            changed_files(directory.path(), "HEAD"),
+            Err(GitError::Failed { .. })
+        ));
+    }
 
     #[test]
     fn rejects_option_like_revisions() {
