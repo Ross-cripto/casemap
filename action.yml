@@ -1,0 +1,118 @@
+# Linux and macOS runners are supported; Windows runners are not supported.
+name: casemap flow changes
+description: Draw changed use-case flows on pull requests and report stale flows and check results.
+branding:
+  icon: map
+  color: green
+
+inputs:
+  version:
+    description: casemap release version to install, without the v prefix.
+    default: latest
+  casemap:
+    description: Path to an existing casemap binary; skips installation.
+    default: ''
+  flows:
+    description: Flow catalog directory.
+    default: docs/flows
+  base:
+    description: Base revision to compare with; checkout must use fetch-depth 0.
+    default: origin/${{ github.base_ref }}
+  comment:
+    description: Create or update the pull request comment.
+    default: 'true'
+  bot-login:
+    description: Login of the bot or user that owns comments posted with the token.
+    default: github-actions[bot]
+  token:
+    description: GitHub token used to comment on the pull request.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install casemap
+      if: inputs.casemap == ''
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        if [[ ! "$VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?)$ ]]; then
+          echo '::error::invalid casemap version' >&2
+          exit 1
+        fi
+        if [ "$VERSION" = latest ]; then
+          url=https://github.com/Ross-cripto/casemap/releases/latest/download/casemap-installer.sh
+        else
+          url="https://github.com/Ross-cripto/casemap/releases/download/v${VERSION}/casemap-installer.sh"
+        fi
+        curl --proto '=https' --tlsv1.2 -LsSf "$url" | sh
+        binary_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
+        echo "$binary_dir" >> "$GITHUB_PATH"
+        export PATH="$binary_dir:$PATH"
+        casemap --version
+
+    - name: Report flow changes
+      id: report
+      shell: bash
+      env:
+        BIN: ${{ inputs.casemap }}
+        BASE: ${{ inputs.base }}
+        FLOWS: ${{ inputs.flows }}
+      run: |
+        set +e
+        "${BIN:-casemap}" diff "$BASE" --flows "$FLOWS" --format markdown > "$RUNNER_TEMP/casemap.md"
+        status=$?
+        set -e
+        echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+        cat "$RUNNER_TEMP/casemap.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Update pull request comment
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        BOT_LOGIN: ${{ inputs.bot-login }}
+      run: |
+        marker='<!-- casemap:pr-comment -->'
+        if [ ! -s "$RUNNER_TEMP/casemap.md" ] || [ "$(head -n 1 "$RUNNER_TEMP/casemap.md")" != "$marker" ]; then
+          exit 0
+        fi
+        comment_api() {
+          local method="$1"
+          shift
+          if gh api -X "$method" "$@" 2> "$RUNNER_TEMP/casemap-api-error"; then
+            return 0
+          else
+            status=$?
+          fi
+          if [[ "$method" = GET || "$method" = POST ]] && grep -Eq 'HTTP (403|404)' "$RUNNER_TEMP/casemap-api-error"; then
+            echo '::notice::casemap could not comment (read-only token); see the job summary' >&2
+            exit 0
+          fi
+          cat "$RUNNER_TEMP/casemap-api-error" >&2
+          exit "$status"
+        }
+        comment_api GET --paginate "repos/$REPO/issues/$PR/comments" > "$RUNNER_TEMP/casemap-comments"
+        jq -r --arg login "$BOT_LOGIN" --arg marker "$marker" \
+          '.[] | select(.user.login == $login and ((.body // "" | split("\n")[0]) == $marker)) | .id' \
+          "$RUNNER_TEMP/casemap-comments" > "$RUNNER_TEMP/casemap-comment-ids"
+        comment_id=$(head -n 1 "$RUNNER_TEMP/casemap-comment-ids")
+        if [ -z "$comment_id" ] && grep -qx '<!-- casemap:quiet -->' "$RUNNER_TEMP/casemap.md"; then
+          exit 0
+        fi
+        jq -Rs '{body: .}' "$RUNNER_TEMP/casemap.md" > "$RUNNER_TEMP/casemap-comment.json"
+        if [ -n "$comment_id" ]; then
+          comment_api PATCH "repos/$REPO/issues/comments/$comment_id" --input "$RUNNER_TEMP/casemap-comment.json"
+        else
+          comment_api POST "repos/$REPO/issues/$PR/comments" --input "$RUNNER_TEMP/casemap-comment.json"
+        fi
+
+    - name: Return check result
+      if: always() && steps.report.outcome == 'success'
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.report.outputs.exit-code }}
+      run: exit "$EXIT_CODE"

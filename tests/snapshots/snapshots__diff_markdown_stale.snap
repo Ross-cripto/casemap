@@ -1,0 +1,20 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"diff\", \"--format\", \"markdown\"])"
+---
+$ casemap diff --format markdown
+[exit 0]
+--- stdout
+<!-- casemap:pr-comment -->
+### 🗺️ casemap · 0 use cases changed · 1 possibly stale · check ok
+Compared with `HEAD` ([SHA]).
+
+#### ⚠️ Possibly stale
+
+- **Pay for an order** (`docs/flows/pay.md`): pay: src/pay.rs
+
+#### Check
+
+ok
+--- stderr
+[end]

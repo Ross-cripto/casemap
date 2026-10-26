@@ -586,3 +586,45 @@ fn cli_which() {
         repo_transcript(&repo, &["which", "src/pay.rs", "src/other.rs"])
     );
 }
+
+#[test]
+fn diff_markdown() {
+    let repo = divergent_catalog();
+    insta::assert_snapshot!(
+        "diff_markdown",
+        repo_transcript(&repo, &["diff", "main", "--format", "markdown"])
+    );
+}
+
+#[test]
+fn diff_markdown_stale() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    insta::assert_snapshot!(
+        "diff_markdown_stale",
+        repo_transcript(&repo, &["diff", "--format", "markdown"])
+    );
+}
+
+#[test]
+fn diff_markdown_quiet() {
+    let repo = common::anchored_catalog();
+    insta::assert_snapshot!(
+        "diff_markdown_quiet",
+        repo_transcript(&repo, &["diff", "--format", "markdown"])
+    );
+}
+
+#[test]
+fn diff_markdown_broken() {
+    let repo = common::anchored_catalog();
+    fs::write(
+        repo.flow_path("broken.md"),
+        "# Broken\n\nDescription.\n\n```mermaid\ngraph TD\na -->\n```\n",
+    )
+    .unwrap();
+    insta::assert_snapshot!(
+        "diff_markdown_broken",
+        repo_transcript(&repo, &["diff", "--format", "markdown"])
+    );
+}

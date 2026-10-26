@@ -1608,3 +1608,248 @@ fn init_agent_flag_needs_a_terminal() {
         .stderr(predicate::str::contains("needs a terminal"));
     assert!(!repo.file("docs/flows").exists());
 }
+
+const CI_WORKFLOW: &str = ".github/workflows/casemap.yml";
+
+#[test]
+fn init_ci_writes_the_workflow() {
+    let repo = init_repo();
+    let output = stdout(&repo.casemap(&["init", "--ci"]));
+    let workflow = fs::read_to_string(repo.file(CI_WORKFLOW)).unwrap();
+    assert!(output.contains("installed .github/workflows/casemap.yml (GitHub pull requests)"));
+    assert!(workflow.contains("pull_request:"));
+    assert!(workflow.contains("pull-requests: write"));
+    assert!(workflow.contains("fetch-depth: 0"));
+    assert!(workflow.contains("uses: Ross-cripto/casemap@v0"));
+    assert!(workflow.contains("flows: 'docs/flows'"));
+    assert_eq!(installed_skills(&repo).len(), 2);
+}
+
+#[test]
+fn init_ci_is_idempotent() {
+    let repo = init_repo();
+    stdout(&repo.casemap(&["init", "--ci"]));
+    let before = fs::read(repo.file(CI_WORKFLOW)).unwrap();
+    let output = stdout(&repo.casemap(&["init", "--ci"]));
+    assert!(output.contains("up to date .github/workflows/casemap.yml"));
+    assert_eq!(fs::read(repo.file(CI_WORKFLOW)).unwrap(), before);
+}
+
+#[test]
+fn init_ci_keeps_a_differing_workflow_without_force() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.file(".github/workflows")).unwrap();
+    fs::write(repo.file(CI_WORKFLOW), "name: custom\n").unwrap();
+    let output = stdout(&repo.casemap(&["init", "--ci"]));
+    assert!(output.contains("kept .github/workflows/casemap.yml (differs from this casemap version; use --force to update)"));
+    assert_eq!(
+        fs::read_to_string(repo.file(CI_WORKFLOW)).unwrap(),
+        "name: custom\n"
+    );
+}
+
+#[test]
+fn init_ci_force_updates_only_the_workflow() {
+    let repo = init_repo();
+    stdout(&repo.casemap(&["init", "--ci"]));
+    let expected = fs::read(repo.file(CI_WORKFLOW)).unwrap();
+    fs::write(repo.file(CI_WORKFLOW), "name: custom\n").unwrap();
+    fs::write(repo.file(".github/workflows/other.yml"), "name: other\n").unwrap();
+    fs::write(repo.flow_path("custom.md"), "my flow\n").unwrap();
+    let skills = installed_skills(&repo);
+    let output = stdout(&repo.casemap(&["init", "--ci", "--force"]));
+    assert!(output.contains("updated .github/workflows/casemap.yml"));
+    assert_eq!(fs::read(repo.file(CI_WORKFLOW)).unwrap(), expected);
+    assert_eq!(
+        fs::read_to_string(repo.file(".github/workflows/other.yml")).unwrap(),
+        "name: other\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.flow_path("custom.md")).unwrap(),
+        "my flow\n"
+    );
+    assert_eq!(installed_skills(&repo), skills);
+}
+
+#[test]
+fn init_ci_uses_root_relative_catalog_from_a_subdirectory() {
+    let repo = init_repo();
+    fs::create_dir(repo.file("app")).unwrap();
+    let output = casemap_command(&repo)
+        .current_dir(repo.file("app"))
+        .args(["init", "--ci", "--flows", "flows"])
+        .output()
+        .unwrap();
+    stdout(&output);
+    assert!(
+        fs::read_to_string(repo.file(CI_WORKFLOW))
+            .unwrap()
+            .contains("flows: 'app/flows'")
+    );
+    assert!(!repo.file("app/.github").exists());
+}
+
+#[test]
+fn init_without_ci_does_not_write_a_workflow() {
+    let repo = init_repo();
+    stdout(&repo.casemap(&["init"]));
+    assert!(!repo.file(CI_WORKFLOW).exists());
+}
+
+#[test]
+fn diff_markdown_quiet_has_no_colour() {
+    let repo = common::anchored_catalog();
+    let quiet = stdout(&repo.casemap(&["diff", "--format", "markdown", "--color"]));
+    assert!(quiet.contains(flows::QUIET_MARKER));
+    assert!(!quiet.contains('\x1b'));
+}
+
+#[test]
+fn diff_markdown_ignores_color() {
+    let repo = common::anchored_catalog();
+    fs::write(
+        repo.flow_path("new.md"),
+        "# New\n\nDescription.\n\n```mermaid\ngraph TD\na[Added] --> b[Done]\n```\n",
+    )
+    .unwrap();
+    let output = stdout(&repo.casemap(&["diff", "--format", "markdown", "--color"]));
+    assert!(output.contains("```mermaid"));
+    assert!(output.contains("class n0,n1 added"));
+    assert!(!output.contains('\x1b'));
+}
+
+#[test]
+fn diff_markdown_stale_fails_only_with_strict() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    let stale = stdout(&repo.casemap(&["diff", "--format", "markdown"]));
+    assert!(stale.contains("#### ⚠️ Possibly stale"));
+    assert_eq!(
+        repo.casemap(&["diff", "--format", "markdown", "--strict"])
+            .status
+            .code(),
+        Some(1)
+    );
+}
+
+#[test]
+fn diff_markdown_broken_flow_fails() {
+    let repo = common::anchored_catalog();
+    fs::write(
+        repo.flow_path("broken.md"),
+        "# Broken\n\nDescription.\n\n```mermaid\nflowchart TD\na -->\n```\n",
+    )
+    .unwrap();
+    let broken = repo.casemap(&["diff", "--format", "markdown"]);
+    assert_eq!(broken.status.code(), Some(1));
+    let body = String::from_utf8(broken.stdout).unwrap();
+    assert!(body.contains("(parse error)"));
+    assert!(body.contains("[parse-error]"));
+}
+
+#[test]
+fn diff_markdown_bad_base_prints_no_comment() {
+    let repo = common::anchored_catalog();
+    let output = repo.casemap(&["diff", "invalid-ref", "--format", "markdown"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(!output.stderr.is_empty());
+}
+
+#[test]
+fn diff_markdown_fails_check_errors_even_without_diagram_changes() {
+    let repo = common::anchored_catalog();
+    let path = repo.flow_path("pay.md");
+    let original = fs::read_to_string(&path).unwrap();
+    let without_title = original.lines().skip(1).collect::<Vec<_>>().join("\n");
+    fs::write(path, without_title).unwrap();
+    let output = repo.casemap(&["diff", "--format", "markdown"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("[missing-title]")
+    );
+    assert_eq!(repo.casemap(&["diff"]).status.code(), Some(0));
+}
+
+#[test]
+fn diff_markdown_warnings_do_not_fail_even_with_strict() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.flow_path("warning.mmd"), "flowchart TD\na[A]").unwrap();
+    let output = stdout(&repo.casemap(&["diff", "--format", "markdown", "--strict"]));
+    assert!(output.contains("[mmd-flow]"));
+    assert!(!output.contains(flows::QUIET_MARKER));
+}
+
+#[test]
+fn diff_markdown_draws_old_diagram_when_block_is_deleted() {
+    let repo = TempRepo::committed_before();
+    fs::write(
+        repo.flow_path("login.md"),
+        "# Login\n\nA person signs in.\n",
+    )
+    .unwrap();
+    let output = repo.casemap(&["diff", "--format", "markdown"]);
+    assert_eq!(output.status.code(), Some(1));
+    let body = String::from_utf8(output.stdout).unwrap();
+    assert!(body.contains("#### − Login · `docs/flows/login.md` (removed)"));
+    assert!(body.contains("class "));
+    assert!(body.contains(" removed"));
+    assert!(body.contains("[missing-diagram]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn init_ci_rejects_workflows_dir_symlinked_outside() {
+    for component in [".github", ".github/workflows"] {
+        let repo = init_repo();
+        let outside = assert_fs::TempDir::new().unwrap();
+        if component == ".github/workflows" {
+            fs::create_dir(repo.file(".github")).unwrap();
+        }
+        std::os::unix::fs::symlink(outside.path(), repo.file(component)).unwrap();
+        let output = repo.casemap(&["init", "--ci", "--force"]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("error:"));
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn init_ci_reports_dangling_workflow_symlink() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.file(".github/workflows")).unwrap();
+    std::os::unix::fs::symlink(repo.file("missing.yml"), repo.file(CI_WORKFLOW)).unwrap();
+    let output = repo.casemap(&["init", "--ci", "--force"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("symlink to a missing path"));
+    assert!(!repo.file("missing.yml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_ci_writes_through_a_workflow_file_symlink_inside_the_repo() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.file(".github/workflows")).unwrap();
+    fs::write(repo.file("shared-workflow.yml"), "name: custom\n").unwrap();
+    std::os::unix::fs::symlink(repo.file("shared-workflow.yml"), repo.file(CI_WORKFLOW)).unwrap();
+    stdout(&repo.casemap(&["init", "--ci", "--force"]));
+    assert!(repo.file(CI_WORKFLOW).is_symlink());
+    assert!(
+        fs::read_to_string(repo.file("shared-workflow.yml"))
+            .unwrap()
+            .contains("flows: 'docs/flows'")
+    );
+}
+
+#[test]
+fn init_ci_warns_when_workflow_is_gitignored() {
+    let repo = init_repo();
+    fs::write(repo.file(".gitignore"), ".github/\n").unwrap();
+    let output = stdout(&repo.casemap(&["init", "--ci"]));
+    assert!(output.contains(
+        "warning: .github/workflows/casemap.yml is gitignored; teammates will not get the workflow"
+    ));
+}

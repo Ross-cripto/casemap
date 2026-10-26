@@ -229,16 +229,43 @@ fn apply_markers(union: &mut Diagram) {
     }
 }
 
-/// A missing base flow is compared against an empty diagram in the same direction.
-pub fn all_added(diagram: &Diagram) -> DiagramDiff {
-    let empty = Diagram {
+/// Remove terminal label prefixes while retaining marks for Mermaid styling.
+pub fn unmarked(diagram: &Diagram) -> Diagram {
+    let mut unmarked = diagram.clone();
+    for node in &mut unmarked.nodes {
+        let (Some(symbol), Some(label)) = (node.mark.symbol(), node.label.first_mut()) else {
+            continue;
+        };
+        if let Some(text) = label.strip_prefix(&format!("{symbol} ")) {
+            *label = text.to_string();
+        }
+    }
+    for edge in &mut unmarked.edges {
+        let (Some(symbol), Some(label)) = (edge.mark.symbol(), edge.label.as_deref()) else {
+            continue;
+        };
+        if label == symbol.to_string() {
+            edge.label = None;
+        } else if let Some(text) = label.strip_prefix(&format!("{symbol} ")) {
+            edge.label = Some(text.to_string());
+        }
+    }
+    unmarked
+}
+
+pub(crate) fn empty_like(diagram: &Diagram) -> Diagram {
+    Diagram {
         direction: diagram.direction,
         nodes: Vec::new(),
         edges: Vec::new(),
         clusters: Vec::new(),
         node_cluster: Vec::new(),
-    };
-    diff(&empty, diagram)
+    }
+}
+
+/// A missing base flow is compared against an empty diagram in the same direction.
+pub fn all_added(diagram: &Diagram) -> DiagramDiff {
+    diff(&empty_like(diagram), diagram)
 }
 
 fn quote(text: &str) -> String {
@@ -385,6 +412,32 @@ mod tests {
             flows::diagram(&old).unwrap().unwrap(),
             flows::diagram(&new).unwrap().unwrap(),
         )
+    }
+
+    #[test]
+    fn unmarked_inverts_apply_markers() {
+        let before = flows::load_dir(std::path::Path::new("tests/fixtures/flows/before")).unwrap();
+        let after = flows::load_dir(std::path::Path::new("tests/fixtures/flows/after")).unwrap();
+        let mut unions = 0;
+        for change in flows::compare(&before, &after) {
+            let union = match change {
+                flows::FlowChange::Modified { diff, .. } | flows::FlowChange::New { diff, .. } => {
+                    diff.union
+                }
+                flows::FlowChange::Removed { flow } => {
+                    let old = flows::diagram(&flow).unwrap().unwrap();
+                    let empty = empty_like(&old);
+                    diff(&old, &empty).union
+                }
+                flows::FlowChange::Unchanged { .. } => continue,
+                flows::FlowChange::Broken { error, .. } => panic!("{error}"),
+            };
+            let mut restored = unmarked(&union);
+            apply_markers(&mut restored);
+            assert_eq!(format!("{restored:?}"), format!("{union:?}"));
+            unions += 1;
+        }
+        assert!(unions >= 3);
     }
 
     #[test]

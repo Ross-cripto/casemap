@@ -1,0 +1,22 @@
+name: Flow changes
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency: { group: "casemap-${{ github.event.pull_request.number }}", cancel-in-progress: true }
+jobs:
+  flows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked
+      - uses: ./
+        with:
+          casemap: target/debug/casemap

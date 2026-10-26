@@ -68,10 +68,18 @@ enum Format {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum DiffFormat {
+    Text,
+    Markdown,
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Create the flow catalog and install the casemap agent skill.
     Init {
+        #[arg(long)]
+        ci: bool,
         #[arg(long)]
         force: bool,
         #[arg(long, value_enum)]
@@ -98,6 +106,8 @@ enum Commands {
     /// Show catalog changes since REF (default HEAD), including uncommitted edits.
     Diff {
         rev: Option<String>,
+        #[arg(long, value_enum, default_value_t = DiffFormat::Text)]
+        format: DiffFormat,
         /// Also exit 1 when flows are possibly stale (for local agent runs).
         #[arg(long)]
         strict: bool,
@@ -163,10 +173,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     #[cfg(not(feature = "tui"))]
     let onboarding_opts = &opts;
     match cli.command {
-        Some(Commands::Diff { rev, strict }) => diff_catalog(
+        Some(Commands::Diff {
+            rev,
+            strict,
+            format,
+        }) => diff_catalog(
             directory,
             rev.as_deref().unwrap_or(DEFAULT_REF),
             strict,
+            format,
             &opts,
         ),
         #[cfg(feature = "tui")]
@@ -174,8 +189,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         #[cfg(not(feature = "tui"))]
         Some(Commands::Browse { .. }) => bail!("casemap was built without the tui feature"),
         Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
-        Some(Commands::Init { force, agent }) => {
-            let outcome = init_catalog(directory, force, agent)?;
+        Some(Commands::Init { force, agent, ci }) => {
+            let outcome = init_catalog(directory, force, agent, ci)?;
             finish_onboarding(outcome, onboarding_opts)
         }
         Some(Commands::Flows { name, format }) => {
@@ -388,7 +403,16 @@ fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseC
     })
 }
 
-fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::Result<ExitCode> {
+fn diff_catalog(
+    dir: &Path,
+    rev: &str,
+    strict: bool,
+    format: DiffFormat,
+    opts: &Options,
+) -> anyhow::Result<ExitCode> {
+    if matches!(format, DiffFormat::Markdown) {
+        return diff_catalog_markdown(dir, rev, strict);
+    }
     let new = load_catalog(dir)?;
     let BaseChanges {
         base,
@@ -408,6 +432,61 @@ fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+fn diff_catalog_markdown(dir: &Path, rev: &str, strict: bool) -> anyhow::Result<ExitCode> {
+    let current = load_catalog(dir)?;
+    let mut compared = base_changes(dir, rev, &current)?;
+    for change in &mut compared.changes {
+        restore_removed_flow(change, &compared.old);
+    }
+    let report = check_report(dir)?;
+    print!(
+        "{}",
+        casemap::flows::render_markdown(
+            &compared.changes,
+            &compared.stale,
+            rev,
+            &compared.base,
+            &report,
+            &catalog_path(dir),
+        )
+    );
+    Ok(markdown_exit_code(
+        &report,
+        &compared.changes,
+        &compared.stale,
+        strict,
+    ))
+}
+
+fn restore_removed_flow(change: &mut FlowChange, old: &[Flow]) {
+    let FlowChange::Removed { flow } = change else {
+        return;
+    };
+    if flow.source.is_some() {
+        return;
+    }
+    let Some(previous) = old.iter().find(|previous| previous.path == flow.path) else {
+        return;
+    };
+    *flow = previous.clone();
+}
+
+fn markdown_exit_code(
+    report: &check::Report,
+    changes: &[FlowChange],
+    stale: &[Stale],
+    strict: bool,
+) -> ExitCode {
+    let broken = changes
+        .iter()
+        .any(|change| matches!(change, FlowChange::Broken { .. }));
+    if report.errors() > 0 || broken || (strict && !stale.is_empty()) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -1004,6 +1083,7 @@ fn install_skill(
     desired: &str,
     force: bool,
     agent_label: &str,
+    what: &str,
 ) -> io::Result<()> {
     check_skill_symlinks(root, relative)?;
     let path = root.join(relative);
@@ -1028,7 +1108,7 @@ fn install_skill(
         }
     }
     if git::is_ignored(root, relative) {
-        println!("warning: {display} is gitignored; teammates will not get the skill");
+        println!("warning: {display} is gitignored; teammates will not get {what}");
     }
     Ok(())
 }
@@ -1099,7 +1179,8 @@ fn install_all_skills(root: &Path, desired: &str, force: bool) -> bool {
         let relative = Path::new(directory)
             .join(skill::SKILL_NAME)
             .join("SKILL.md");
-        if let Err(error) = install_skill(root, &relative, desired, force, agent_label) {
+        if let Err(error) = install_skill(root, &relative, desired, force, agent_label, "the skill")
+        {
             eprintln!("error: {}: {error}", slash_path(&relative));
             failed = true;
         }
@@ -1131,6 +1212,7 @@ fn init_catalog(
     dir: &Path,
     force: bool,
     agent: Option<onboard::Agent>,
+    ci: bool,
 ) -> anyhow::Result<onboard::Outcome> {
     let interactive = interactive_session();
     let agents = if interactive {
@@ -1140,7 +1222,14 @@ fn init_catalog(
     };
     let chosen_agent = onboard::preflight(agent, interactive, &agents)?;
     let cwd = std::env::current_dir().context("reading the current directory")?;
-    let initialized = init_core(&cwd, dir, force)?;
+    let mut initialized = init_core(&cwd, dir, force)?;
+    if ci {
+        let relative = Path::new(".github/workflows/casemap.yml");
+        if let Err(error) = install_ci_workflow(&initialized.root, &initialized.display, force) {
+            eprintln!("error: {}: {error}", slash_path(relative));
+            initialized.failed = true;
+        }
+    }
     if chosen_agent.is_none() {
         print_next_steps(&initialized.display);
     }
@@ -1174,6 +1263,50 @@ fn init_catalog(
             Ok(onboard::Outcome::Exit(ExitCode::SUCCESS))
         },
     )
+}
+
+const CI_WORKFLOW_TEMPLATE: &str = r#"name: casemap
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  flows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: Ross-cripto/casemap@v0
+        with:
+          flows: {catalog}
+"#;
+
+fn yaml_string(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+fn ci_workflow(catalog: &str) -> String {
+    CI_WORKFLOW_TEMPLATE.replace("{catalog}", &yaml_string(catalog))
+}
+
+fn install_ci_workflow(root: &Path, catalog: &str, force: bool) -> anyhow::Result<()> {
+    let relative = Path::new(".github/workflows/casemap.yml");
+    check_skill_symlinks(root, relative)?;
+    ensure_inside_root(root, relative)?;
+    install_skill(
+        root,
+        relative,
+        &ci_workflow(catalog),
+        force,
+        "GitHub pull requests",
+        "the workflow",
+    )?;
+    Ok(())
 }
 
 fn init_core(cwd: &Path, dir: &Path, force: bool) -> anyhow::Result<InitOutcome> {
@@ -1359,6 +1492,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn yaml_string_cases() {
+        for (input, expected) in [
+            ("docs/flows", "'docs/flows'"),
+            ("my flows", "'my flows'"),
+            ("it's", "'it''s'"),
+            ("true", "'true'"),
+        ] {
+            assert_eq!(yaml_string(input), expected);
+        }
+    }
+
+    #[test]
     fn code_root_fallback_only_when_git_is_missing() {
         for (kind, expected) in [
             (io::ErrorKind::NotFound, true),
@@ -1489,7 +1634,8 @@ mod tests {
                 cli.command,
                 Some(Commands::Diff {
                     rev: None,
-                    strict: false
+                    strict: false,
+                    format: DiffFormat::Text
                 })
             ));
         }
