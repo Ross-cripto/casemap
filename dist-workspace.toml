@@ -19,3 +19,5 @@ hosting = "github"
 install-updater = false
 # A homebrew tap to publish the formula to
 tap = "Ross-cripto/homebrew-tap"
+# Start releases with a workflow_dispatch (from release-plz) instead of a tag push
+dispatch-releases = true

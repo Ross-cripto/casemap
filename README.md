@@ -432,12 +432,13 @@ with committed and uncommitted changes. The test suite requires the `git` binary
 
 ### Releasing
 
-Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) from `.github/workflows/release.yml`:
+Releases are automatic from `main`, which only accepts pull requests with green CI:
 
-1. Bump `version` in `Cargo.toml` and add its section to `CHANGELOG.md`, then merge to `main`.
-2. Tag the merge and push the tag: `git tag v0.6.0 && git push origin v0.6.0`.
+1. Every merge to `main` updates a **release PR** opened by [release-plz](https://release-plz.dev). It bumps `version` from the conventional commits since the last release (`fix` bumps the patch, `feat` the patch while the version is 0.x, a breaking change the minor), and adds their entries to `CHANGELOG.md`. Edit the PR if the notes need it.
+2. Merging the release PR publishes the crate to crates.io (trusted publishing, no stored token) and tags `vX.Y.Z`.
+3. The tag starts the [cargo-dist](https://github.com/axodotdev/cargo-dist) workflow (`.github/workflows/release.yml`). It builds the binaries, the shell and PowerShell installers and the Homebrew formula, and publishes the GitHub release with the changelog section as its notes.
 
-The workflow builds the binaries, the shell and PowerShell installers and the Homebrew formula, and publishes them as a GitHub release with the changelog section as its notes. The tap [Ross-cripto/homebrew-tap](https://github.com/Ross-cripto/homebrew-tap) copies the new formula with its daily Sync workflow; run it by hand (`gh workflow run sync.yml -R Ross-cripto/homebrew-tap`) to publish at once. After editing `dist-workspace.toml`, run `dist generate` to refresh the workflow.
+The tap [Ross-cripto/homebrew-tap](https://github.com/Ross-cripto/homebrew-tap) copies the new formula with its daily Sync workflow; run it by hand (`gh workflow run sync.yml -R Ross-cripto/homebrew-tap`) to publish at once. After editing `dist-workspace.toml`, run `dist generate` to refresh the release workflow. Configuration: `release-plz.toml`, `.github/workflows/release-plz.yml`.
 
 ## Known limits
 

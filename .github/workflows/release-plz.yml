@@ -1,0 +1,77 @@
+name: Release-plz
+
+# Every push to main updates the release PR (version bump and changelog from the
+# conventional commits). Merging that PR publishes the crate to crates.io, tags
+# the release and starts the cargo-dist workflow for binaries and installers.
+#
+# Workflows started by GITHUB_TOKEN events do not run, except workflow_dispatch,
+# so CI on the release PR and the binary release are dispatched explicitly.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    name: Publish unreleased versions
+    if: github.repository_owner == 'Ross-cripto'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      # crates.io trusted publishing: release-plz exchanges this for a short-lived token.
+      id-token: write
+      # Dispatch release.yml.
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build the binaries, installers and Homebrew formula
+        if: steps.release-plz.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ fromJSON(steps.release-plz.outputs.releases)[0].tag }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f tag="$TAG"
+
+  release-pr:
+    name: Update the release PR
+    if: github.repository_owner == 'Ross-cripto'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # Dispatch ci.yml on the release PR branch.
+      actions: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run CI on the release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch=$(gh pr list --repo "$GITHUB_REPOSITORY" --label release --state open --json headRefName --jq '.[0].headRefName // empty')
+          if [ -z "$branch" ]; then
+            echo "No open release PR"
+            exit 0
+          fi
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"

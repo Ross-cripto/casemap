@@ -18,7 +18,7 @@ cargo run -- examples/simple.mmd                # render once
 cargo run -- --watch examples/architecture.mmd  # redraw on every save
 ```
 
-Release: bump `version` and `CHANGELOG.md`, merge, then push a `vX.Y.Z` tag; cargo-dist (`dist-workspace.toml`, `.github/workflows/release.yml`) builds and publishes it, and the tap `Ross-cripto/homebrew-tap` syncs the formula. Run `dist generate` after editing the dist config.
+Release: automatic. main only takes PRs with green CI; each merge updates the release-plz PR (version + CHANGELOG from conventional commits), and merging it publishes to crates.io, tags `vX.Y.Z` and dispatches cargo-dist (`release.yml`) for binaries, installers and the Homebrew formula. Commit messages must be conventional (`feat:`, `fix:`, `chore:` …). Run `dist generate` after editing `dist-workspace.toml`.
 
 ## Code map
 
