@@ -191,7 +191,9 @@ pub fn render(d: &Diagram, lay: &Layout, rt: &Routing, opts: &Options) -> String
             Some(t) => {
                 let tr = rows.track_start[l] + rows.track_off[l] + t as i32;
                 let (lo, hi) = g.span();
-                seg(src_r, g.src_o, tr, g.src_o);
+                if !matches!(src.kind, ItemKind::LoopTurn) {
+                    seg(src_r, g.src_o, tr, g.src_o);
+                }
                 seg(tr, lo, tr, hi);
                 for dst in &g.dests {
                     seg(tr, dst.o, dest_r(dst), dst.o);

@@ -4,7 +4,7 @@
 
 use std::cmp::Ordering;
 
-use super::{ItemKind, Layout, position};
+use super::{Item, ItemKind, Layout, position};
 use crate::{model::Diagram, route};
 
 pub fn minimize(lay: &mut Layout) {
@@ -17,6 +17,7 @@ enum Discovery {
     BackEdgesFirst,
     BackEdgesLast,
     Reverse,
+    Branches(usize),
 }
 
 fn minimize_with_discovery(lay: &mut Layout, discovery: Discovery) {
@@ -63,18 +64,41 @@ fn minimize_with_discovery(lay: &mut Layout, discovery: Discovery) {
 /// threads them through forward branches.
 fn discovery_children(lay: &Layout, down: &[Vec<usize>], discovery: Discovery) -> Vec<Vec<usize>> {
     let mut children = down.to_vec();
+    for (turn, item) in lay.items.iter().enumerate() {
+        if !matches!(item.kind, ItemKind::LoopTurn) {
+            continue;
+        }
+        let target = lay.out_segs[turn]
+            .iter()
+            .map(|&segment| &lay.segs[segment])
+            .find(|segment| segment.last && !segment.first)
+            .map(|segment| segment.to)
+            .expect("loop turn has a target branch");
+        children[turn].retain(|&child| child != target);
+        children[target].push(turn);
+    }
+    let mut branch = 0;
     for (item, neighbours) in children.iter_mut().enumerate() {
         match discovery {
             Discovery::Declaration => {}
             Discovery::BackEdgesFirst | Discovery::BackEdgesLast => {
                 neighbours.sort_by_key(|&child| {
-                    let reversed = lay.out_segs[item].iter().any(|&segment| {
-                        lay.segs[segment].to == child && lay.reversed[lay.segs[segment].edge]
-                    });
+                    let reversed = matches!(lay.items[child].kind, ItemKind::LoopTurn)
+                        || lay.out_segs[item].iter().any(|&segment| {
+                            lay.segs[segment].to == child && lay.reversed[lay.segs[segment].edge]
+                        });
                     matches!(discovery, Discovery::BackEdgesFirst) != reversed
                 });
             }
             Discovery::Reverse => neighbours.reverse(),
+            Discovery::Branches(choices) => {
+                if neighbours.len() > 1 && lay.items[item].is_node() {
+                    if choices.checked_shr(branch).unwrap_or(0) & 1 != 0 {
+                        neighbours.reverse();
+                    }
+                    branch += 1;
+                }
+            }
         }
     }
     children
@@ -271,11 +295,167 @@ struct RoutedScore {
     tracks: usize,
 }
 
+struct LoopChain {
+    items: Vec<usize>,
+    source_rank: usize,
+}
+
+struct RoutedCandidate {
+    score: RoutedScore,
+    items: Vec<Item>,
+    layers: Vec<Vec<usize>>,
+}
+
+impl RoutedCandidate {
+    fn capture(diagram: &Diagram, layout: &Layout) -> Self {
+        Self {
+            score: RoutedScore::measure(diagram, layout),
+            items: layout.items.clone(),
+            layers: layout.layers.clone(),
+        }
+    }
+
+    fn consider(&mut self, diagram: &Diagram, layout: &Layout) {
+        let score = RoutedScore::measure(diagram, layout);
+        if score.improves_loop_order(&self.score) {
+            self.score = score;
+            self.items = layout.items.clone();
+            self.layers = layout.layers.clone();
+        }
+    }
+
+    fn restore(self, layout: &mut Layout) {
+        layout.items = self.items;
+        layout.layers = self.layers;
+    }
+}
+
+/// Keeps the entire return path outside forward branches, comparing both sides
+/// with routed crossings before using width and track count to break ties.
+pub(super) fn place_loops_outside(diagram: &Diagram, layout: &mut Layout) {
+    let chains = loop_chains(layout);
+    if chains.is_empty() {
+        return;
+    }
+    let mut best = RoutedCandidate::capture(diagram, layout);
+    compare_branch_orders(diagram, layout, &mut best);
+    compare_loop_sides(diagram, layout, &chains, &mut best);
+    layout.items = best.items.clone();
+    layout.layers = best.layers.clone();
+    mirror_order(layout);
+    position::assign(layout, diagram);
+    best.consider(diagram, layout);
+    best.restore(layout);
+}
+
+/// A forward branch may have to move inward to expose a face for its return.
+fn compare_branch_orders(diagram: &Diagram, layout: &mut Layout, best: &mut RoutedCandidate) {
+    const MAXIMUM_BRANCH_CHOICES: usize = 8;
+    let original_items = layout.items.clone();
+    let down: Vec<Vec<usize>> = layout
+        .out_segs
+        .iter()
+        .map(|segments| {
+            segments
+                .iter()
+                .map(|&segment| layout.segs[segment].to)
+                .collect()
+        })
+        .collect();
+    let children = discovery_children(layout, &down, Discovery::Declaration);
+    let branches = children
+        .iter()
+        .enumerate()
+        .filter(|(item, neighbours)| layout.items[*item].is_node() && neighbours.len() > 1)
+        .count();
+    for choices in 0..1usize << branches.min(MAXIMUM_BRANCH_CHOICES) {
+        layout.items = original_items.clone();
+        minimize_with_discovery(layout, Discovery::Branches(choices));
+        position::assign(layout, diagram);
+        best.consider(diagram, layout);
+    }
+}
+
+/// Side choices move whole return chains so one trial cannot thread a loop
+/// between forward branches in only part of its span.
+fn compare_loop_sides(
+    diagram: &Diagram,
+    layout: &mut Layout,
+    chains: &[LoopChain],
+    best: &mut RoutedCandidate,
+) {
+    const MAXIMUM_EXHAUSTIVE_LOOPS: usize = 6;
+    let original_items = best.items.clone();
+    let original_layers = best.layers.clone();
+    let candidates = 1usize << chains.len().min(MAXIMUM_EXHAUSTIVE_LOOPS);
+    for sides in 0..candidates {
+        layout.items = original_items.clone();
+        layout.layers = original_layers.clone();
+        order_loop_sides(layout, chains, sides);
+        position::assign(layout, diagram);
+        best.consider(diagram, layout);
+    }
+}
+
+/// Reflection exposes the other outside face without changing cluster borders.
+fn mirror_order(layout: &mut Layout) {
+    let keys: Vec<f64> = index_map(layout)
+        .iter()
+        .map(|&index| -(index as f64))
+        .collect();
+    for rank in 0..layout.layers.len() {
+        layout.layers[rank] = sort_level(layout, &layout.layers[rank], 0, &keys);
+    }
+}
+
+/// The turn and pass-throughs must choose one side together to avoid zig-zags.
+fn loop_chains(layout: &Layout) -> Vec<LoopChain> {
+    let mut chains = Vec::new();
+    for (turn, item) in layout.items.iter().enumerate() {
+        if !matches!(item.kind, ItemKind::LoopTurn) {
+            continue;
+        }
+        let edge = layout.segs[layout.out_segs[turn][0]].edge;
+        let mut items = vec![turn];
+        let mut source_rank = item.rank;
+        for segment in &layout.segs {
+            if segment.edge != edge {
+                continue;
+            }
+            if layout.items[segment.to].is_node() {
+                source_rank = source_rank.max(layout.items[segment.to].rank);
+            } else {
+                items.push(segment.to);
+            }
+        }
+        chains.push(LoopChain { items, source_rank });
+    }
+    chains
+}
+
+/// Longer returns sit outside shorter ones so their top turns can nest.
+fn order_loop_sides(layout: &mut Layout, chains: &[LoopChain], sides: usize) {
+    let indices = index_map(layout);
+    let mut keys: Vec<f64> = indices.iter().map(|&index| index as f64).collect();
+    let outside = layout.items.len() as f64;
+    for (index, chain) in chains.iter().enumerate() {
+        let distance = outside + chain.source_rank as f64 + index as f64 / chains.len() as f64;
+        let right = sides.checked_shr(index as u32).unwrap_or(0) & 1 != 0;
+        let key = if right { distance } else { -distance };
+        for &item in &chain.items {
+            keys[item] = key;
+        }
+    }
+    for rank in 0..layout.layers.len() {
+        layout.layers[rank] = sort_level(layout, &layout.layers[rank], 0, &keys);
+    }
+}
+
 impl RoutedScore {
     fn measure(diagram: &Diagram, layout: &Layout) -> Self {
         let routing = route::route(diagram, layout);
         Self {
-            crossings: route::count_crossings(&routing),
+            crossings: route::count_crossings(&routing, layout),
             order_extent: layout
                 .items
                 .iter()
@@ -284,6 +464,11 @@ impl RoutedScore {
                 .unwrap_or(0),
             tracks: routing.tracks.iter().sum(),
         }
+    }
+
+    fn improves_loop_order(&self, best: &Self) -> bool {
+        (self.crossings, self.order_extent, self.tracks)
+            < (best.crossings, best.order_extent, best.tracks)
     }
 
     fn improves(&self, best: &Self) -> bool {
@@ -315,7 +500,12 @@ pub(super) fn refine_routed(diagram: &Diagram, layout: &mut Layout) {
         minimize_with_discovery(layout, discovery);
         position::assign(layout, diagram);
         let score = RoutedScore::measure(diagram, layout);
-        if score.improves(&best_score) {
+        let improves = if layout.reversed.iter().any(|&reversed| reversed) {
+            score.improves_loop_order(&best_score)
+        } else {
+            score.improves(&best_score)
+        };
+        if improves {
             best_score = score;
             best_items = layout.items.clone();
             best_layers = layout.layers.clone();
