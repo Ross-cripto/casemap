@@ -2,7 +2,7 @@
 name: strata-flows
 description: Document and maintain this repository's use-case flows as Mermaid flowcharts in docs/flows/, checked and diffed with the strata CLI. Use when asked to document, map or explain what users can do in the app, and whenever a task adds, changes, fixes or removes user-facing behaviour (commands, routes, screens, jobs) so the affected flows are updated in the same change. Also use when asked which flows exist or what a change did to them.
 license: MIT
-compatibility: Requires the strata CLI 0.3 or newer and git.
+compatibility: Requires the strata CLI 0.4 or newer and git.
 ---
 
 # strata flows
@@ -43,6 +43,8 @@ flowchart TD
     ok -->|yes| confirm[Show the order confirmation]
     ok -->|no| error[Show the payment error]
     error --> pay
+    %% @code pay src/checkout/payment.ts
+    %% @code confirm src/checkout/confirmation.ts
 ```
 ````
 <!-- end-example -->
@@ -58,6 +60,8 @@ flowchart TD
 - No subgraphs, styling (`classDef`, `style`, `linkStyle`, `:::`), `click` or mermaid config blocks.
 - Include the main path, the decisions, and the failures the user actually sees. Not every exception or retry.
 - Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question.
+
+Anchor steps to the code that implements them, with `%% @code <step> <path>` lines at the end of the block (the paths above are placeholders: use the real paths you read). `%% @code * <path>` anchors the whole flow. Paths are relative to the repository root; a folder means everything inside it, `*` matches within a folder and `**` across folders, and every other character (brackets included) is literal. Anchor the steps a future change is most likely to touch, not every step. Mermaid and GitHub ignore these lines.
 
 A typical mistake and its fix:
 
@@ -89,16 +93,22 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
    When it is safe, run the program on a small sample and copy its real output text into your labels.
 3. Group them into use cases. Several entry points often serve one use case, and one entry point can appear in several.
 4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
-5. Run `strata check --strict` and fix every problem it reports.
-6. Finish with the list from `strata flows`, the candidates you did not write, and the open questions.
+5. Add anchors to each flow you wrote.
+6. Run `strata check --strict` and fix every problem it reports.
+7. Finish with the list from `strata flows`, the candidates you did not write, and the open questions.
 
 ## Keep it true (every task that changes behaviour)
 
-1. Before editing code, run `strata flows` and note the flows the task touches.
+1. Before editing code, run `strata which <file>` for the files you will touch (it only knows anchored flows) and `strata flows` for an overview; note the flows the task touches.
 2. After the change, update those files so they describe the behaviour as it is now. Add a file for a new use case. Delete the file of a removed one. Never rename or move a flow file: strata matches flows by path, so a rename reads as one flow removed and another added.
+
+   When you move or rename anchored code, update its `@code` paths; `strata check` fails otherwise.
+
 3. Describe the result only. Never mark what changed; `strata diff` computes that from git.
 4. Refactors, performance work and test-only changes do not touch flows. Say "no flows affected" in your final message.
 5. Run `strata check --strict` (it must pass) and `strata diff`, or `strata diff main` on a branch. Quote its first line in your final message.
+
+   If `strata diff` lists flows as "possibly stale", open each one. Update it if the behaviour changed. If it still holds, say so in your final message; never make a cosmetic edit just to silence the warning.
 
 ## Commands
 
@@ -109,5 +119,6 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 | `strata flows <name>` | Render one flow in the terminal |
 | `strata check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
 | `strata diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
+| `strata which <file>` | Which flows and steps are anchored to a file |
 
 Add `--flows <dir>` when the catalog lives somewhere else.

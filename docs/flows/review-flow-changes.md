@@ -11,4 +11,6 @@ flowchart TD
     compare --> any{Any flow changed?}
     any -->|no| none[Print no flow changes]
     any -->|yes| report[Summarise and draw each changed flow]
+    %% @code base src/git.rs
+    %% @code compare src/diff.rs src/flows.rs
 ```

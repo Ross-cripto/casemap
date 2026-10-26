@@ -16,4 +16,5 @@ flowchart TD
     install --> next[Print the next steps]
     keep --> next
     warn --> next
+    %% @code install src/skill.rs skills/strata-flows/SKILL.md
 ```

@@ -145,6 +145,55 @@ pub fn files_at(dir: &Path, commit: &str) -> Result<Vec<(String, String)>, GitEr
     Ok(files)
 }
 
+pub fn repo_files(dir: &Path) -> Result<Vec<String>, GitError> {
+    let root = toplevel(dir)?;
+    let listing = run(
+        &root,
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+    )?;
+    let mut files = listed_paths(&listing);
+    files.retain(|path| std::fs::symlink_metadata(root.join(path)).is_ok());
+    Ok(files)
+}
+
+pub fn changed_files(dir: &Path, base: &str) -> Result<Vec<String>, GitError> {
+    let root = toplevel(dir)?;
+    let mut listing = run(
+        &root,
+        &[
+            "diff",
+            "--no-renames",
+            "--no-ext-diff",
+            "--name-only",
+            "-z",
+            base,
+            "--",
+        ],
+    )?;
+    listing.push_str(&run(
+        &root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?);
+    Ok(listed_paths(&listing))
+}
+
+fn listed_paths(listing: &str) -> Vec<String> {
+    let mut paths: Vec<_> = listing
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

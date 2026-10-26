@@ -11,4 +11,5 @@ flowchart TD
     report --> strict{Errors, or warnings with --strict?}
     strict -->|yes| fail[Exit 1]
     strict -->|no| pass[Exit 0]
+    %% @code rules src/check.rs src/anchors.rs
 ```

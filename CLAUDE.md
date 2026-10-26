@@ -20,6 +20,6 @@ cargo run -- --watch examples/architecture.mmd  # redraw on every save
 
 ## Code map
 
-`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing and rendering. The README's "The renderer" explains each layout stage. Next: code anchors and `strata which`, an interactive browser, then releases.
+`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing and rendering. The README's "The renderer" explains each layout stage. Next: an interactive browser, then releases.
 
-`markdown` (mermaid blocks in .md), `diff` (union diagram + marks), `flows` (catalog, compare, report), `git` (repository paths, ignore checks, merge base and files at a commit via the git binary), `check` (catalog validation), `skill` (embedded strata-flows skill, source `skills/strata-flows/SKILL.md`).
+`anchors` (anchor syntax, matcher, file walk), `markdown` (mermaid blocks in .md), `diff` (union diagram + marks), `flows` (catalog, compare, report), `git` (repository paths, ignore checks, merge base and files at a commit via the git binary), `check` (catalog validation), `skill` (embedded strata-flows skill, source `skills/strata-flows/SKILL.md`).

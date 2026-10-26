@@ -69,10 +69,75 @@ flowchart TD
   a one-sentence description and one Mermaid flowchart.
 - Start from the actor or trigger as a stadium `([...])`. Use rectangles for
   steps and diamonds for decisions, with every exit labelled.
-- Keep it to 4 to 15 steps, using the user's words and behaviour verified in code.
+- Keep it to 3 to 15 steps, using the user's words and behaviour verified in code.
 - Keep node ids stable: change labels to rename steps. Keep file paths stable,
   because renaming a file reads as removing one flow and adding another.
 - Describe the current behaviour. strata computes changes from git.
+
+## Keep flows true: anchors
+
+Tie steps to the code that implements them with Mermaid comments inside the
+flow's first Mermaid block, usually at the end before the closing fence:
+
+```text
+%% @code pay src/checkout/payment.ts
+%% @code confirm src/checkout/confirmation.ts tests/confirmation.ts
+%% @code * src/checkout
+```
+
+A target is a node id, or `*` for the whole flow. Several patterns on one line
+and repeated lines for the same target add up. `strata flows NAME` shows them
+in a Code footer. Mermaid and GitHub ignore the comments; rendering is unchanged.
+Anchors in prose or any other block are errors.
+
+Paths are relative to the repository root and always match from that root:
+
+- A literal file matches itself; a literal folder matches everything under it.
+- `*` matches within one path segment and `?` matches one character in a segment.
+- `**` as a whole segment matches zero or more folders: `src/**/pay.rs` also
+  matches `src/pay.rs`. In `src/**.rs`, the stars behave like `*.rs`.
+- Every other character is literal, including brackets and braces:
+  `app/[id]/page.tsx` matches that exact framework path.
+- A leading `./` and trailing `/` are removed; repeated `/` separators collapse.
+  Absolute paths, drive prefixes, `.` or `..` segments, and backslashes are rejected.
+- Patterns are separated by whitespace, so anchor paths cannot contain spaces.
+
+`strata check` reports `anchor-syntax`, `anchor-unknown-step`, and
+`anchor-no-match` as errors. It indexes tracked and untracked files through git,
+excluding ignored files and files deleted from disk. Outside git, or without the
+git binary, it walks the current directory without following directory symlinks.
+Update anchors when code moves or is renamed.
+
+`strata diff` compares anchored paths with code changed since the merge base,
+including deleted files, both sides of a rename, and non-ignored untracked files.
+It appends an advisory section when a flow file was untouched:
+
+```text
+possibly stale: 1 flow whose anchored code changed but the flow did not
+  Pay for an order (pay.md)
+    pay: src/checkout/payment.ts
+```
+
+A flow is touched when any byte in its file changed between the base and the
+working tree. A touched flow is never reported stale, even when only its prose
+or anchors changed. Review stale flows: update them when behaviour changed; if
+they still hold, report that instead of making a cosmetic edit to silence the warning.
+
+`strata diff --strict` also exits 1 for possibly stale flows. Use it for local
+agent runs or teams that require acknowledgement of every anchored change.
+**`strata check --strict` remains the recommended CI gate.** Running
+`diff --strict` in CI requires `actions/checkout` with `fetch-depth: 0` so git
+can find the merge base.
+
+Run `strata which src/checkout/payment.ts` before editing to find anchored flows
+and steps. It only knows anchored flows. Arguments are literal paths relative to
+the current directory, or absolute paths; directories expand to indexed files,
+and deleted paths still match anchors. Paths outside the repository are rejected.
+Pass several paths for separate result blocks, or `--format json` for JSON v1:
+
+```json
+{"version":1,"paths":[{"path":"src/pay.rs","flows":[{"name":"pay","path":"docs/flows/pay.md","title":"Pay for an order","steps":["pay"],"whole_flow":false}]}]}
+```
 
 ## For agents
 
@@ -117,7 +182,8 @@ For agents without skill support, `strata guide` prints the skill body.
 | `strata flows [NAME]` | List the catalog, or render one use case |
 | `strata flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
 | `strata check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
-| `strata diff [REF]` | Compare the working catalog with the merge base of REF and HEAD; REF defaults to HEAD |
+| `strata diff [REF] [--strict]` | Compare with the merge base of REF and HEAD; `--strict` also exits 1 for possibly stale flows |
+| `strata which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
 | `strata guide` | Print the agent skill body |
 | `strata FILE` | Render a Mermaid file, or every Mermaid block of a Markdown file |
 | `strata completions SHELL` | Generate completions for bash, zsh, fish, powershell or elvish |
@@ -138,6 +204,9 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `unclosed-fence` | error | A code fence is never closed |
 | `duplicate-name` | error | Another file has the same stem |
 | `unreadable` | error | A flow file cannot be read as UTF-8 |
+| `anchor-syntax` | error | An invalid anchor or an anchor outside the first Mermaid block |
+| `anchor-unknown-step` | error | An anchor targets a node id the flowchart does not have |
+| `anchor-no-match` | error | An anchor path matches no file in the repository |
 | `extra-diagram` | warning | Another Mermaid block follows the first |
 | `duplicate-title` | warning | An earlier file has the same title, ignoring case and surrounding whitespace |
 | `empty-catalog` | warning | No flow files |
@@ -147,7 +216,7 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `unlabelled-branch` | warning | A decision has an exit without a label |
 | `unlabelled-step` | warning | A step's label is just its id |
 | `too-many-steps` | warning | More than 15 steps |
-| `too-few-steps` | warning | Fewer than 4 steps |
+| `too-few-steps` | warning | Fewer than 3 steps |
 | `styling` | warning | Diagram styling is ignored by strata |
 | `file-name` | warning | The file stem is not kebab-case |
 | `long-label` | warning | A node label line is wider than 40 display columns |
@@ -181,7 +250,7 @@ Global flags can appear before or after a subcommand:
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
 
-The command words `init`, `flows`, `check`, `diff`, `guide` and `completions`
+The command words `init`, `flows`, `check`, `diff`, `which`, `guide` and `completions`
 are reserved. To render a file with one of those names, use `./diff` or
 `strata -- diff`. `help` remains a file name; use `--help` or `-h` to print help.
 `init` requires a relative catalog path because the installed skill is committed.
@@ -262,7 +331,7 @@ let drawing = strata::render_diagram(&changes.union, &options);
 For the library only, disable the default CLI feature:
 
 ```toml
-strata = { version = "0.3", default-features = false }
+strata = { version = "0.4", default-features = false }
 ```
 
 To install from a local checkout, run `cargo install --path .`.
@@ -292,6 +361,8 @@ with committed and uncommitted changes. The test suite requires the `git` binary
 
 ## Known limits
 
+- Anchor paths cannot contain spaces; symbol anchors and line ranges are not supported.
+
 - Front matter needs a `key:` line immediately after the opening `---`; otherwise it is a thematic break.
 - Flowcharts only, no sequence/class/ER diagrams yet.
 - Self-loops are shown as a `↻` marker on the node; self-loop changes appear only in the diff summary and details.
@@ -304,6 +375,6 @@ with committed and uncommitted changes. The test suite requires the `git` binary
 
 ## Roadmap
 
-1. Code anchors and `strata which`: connect use cases to the code that implements them.
+1. Done: code anchors and `strata which` connect use cases to their code, with validation and stale detection.
 2. An interactive browser for exploring the catalog and diagrams wider than the terminal.
 3. Packaged releases to make installation easier.
