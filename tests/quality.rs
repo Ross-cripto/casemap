@@ -2,6 +2,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use casemap::layout::{self, ItemKind};
 use casemap::quality::{Metrics, measure};
 use casemap::{Diagram, Direction, flows, parser};
 
@@ -154,8 +155,8 @@ fn metrics_on_known_shapes() {
         parser::parse("graph TD\n A{Decision} --> B --> C --> D --> E --> F\n A -->|far| F")
             .unwrap();
     let metrics = measure(&distant_label);
-    assert_eq!(metrics.label_gap, 1);
-    assert_eq!(metrics.max_label_gap, 1);
+    assert_eq!(metrics.label_gap, 0);
+    assert_eq!(metrics.max_label_gap, 0);
     let cycle = parser::parse("graph TD\n A --> B --> C --> A").unwrap();
     assert_eq!(measure(&cycle).back_edges, 1);
     let self_loop = parser::parse("graph TD\n A --> A").unwrap();
@@ -167,8 +168,8 @@ fn metrics_on_known_shapes() {
         parser::parse("graph TD\n A --> B --> C --> D --> E --> F{Decision}\n F -->|back| A")
             .unwrap();
     let metrics = measure(&reversed_label);
-    assert_eq!(metrics.label_gap, 2);
-    assert_eq!(metrics.max_label_gap, 2);
+    assert_eq!(metrics.label_gap, 0);
+    assert_eq!(metrics.max_label_gap, 0);
     assert_eq!(metrics.back_edges, 1);
     let unicode = parser::parse("graph TD\n A[界界]").unwrap();
     assert_eq!(measure(&unicode).width, 9);
@@ -190,4 +191,77 @@ fn metrics_are_unchanged_by_reflection() {
             assert_eq!(measure(&diagram), expected, "{path} {backward:?}");
         }
     }
+}
+
+#[test]
+fn labels_sit_next_to_their_source() {
+    for source in [
+        "graph TD\n A{Decision} --> B --> C --> D --> E --> F\n A -->|forward| F",
+        "graph TD\n A --> B --> C --> D --> E --> F{Decision}\n F -->|back| A",
+    ] {
+        for direction in [
+            Direction::TopDown,
+            Direction::BottomUp,
+            Direction::LeftRight,
+            Direction::RightLeft,
+        ] {
+            let mut diagram = parser::parse(source).unwrap();
+            diagram.direction = direction;
+            assert_eq!(assert_labels_next_to_source(&diagram), 1);
+            assert_eq!(measure(&diagram).label_gap, 0);
+            assert_eq!(measure(&diagram).max_label_gap, 0);
+        }
+    }
+}
+
+fn assert_labels_next_to_source(diagram: &Diagram) -> usize {
+    let layout = layout::layout(diagram);
+    let mut labels = 0;
+    for (item_index, item) in layout.items.iter().enumerate() {
+        if !matches!(item.kind, ItemKind::Label(_)) {
+            continue;
+        }
+        labels += 1;
+        let incoming = layout.in_segs[item_index][0];
+        let edge_index = layout.segs[incoming].edge;
+        let original_source = diagram.edges[edge_index].from;
+        let source_item = layout
+            .items
+            .iter()
+            .find(|candidate| candidate.kind == ItemKind::Node(original_source))
+            .unwrap();
+        let expected_rank = if layout.reversed[edge_index] {
+            source_item.rank - 1
+        } else {
+            source_item.rank + 1
+        };
+        assert_eq!(item.rank, expected_rank, "edge {edge_index}: {diagram:?}");
+    }
+    labels
+}
+
+#[test]
+fn corpus_stays_within_quality_budgets() {
+    const MAXIMUM_CROSSINGS: usize = 8;
+    const MAXIMUM_WIDTH: usize = 4009;
+    const MAXIMUM_BENDS: usize = 626;
+    const MAXIMUM_EXTRA_LAYERS: usize = 405;
+
+    let mut total = Metrics::default();
+    for (path, diagram) in diagrams() {
+        let mut prepared = diagram.clone();
+        prepared.fold_self_loops();
+        assert_labels_next_to_source(&prepared);
+        let metrics = measure(&diagram);
+        assert_eq!(metrics.label_gap, 0, "{path}");
+        assert_eq!(metrics.max_label_gap, 0, "{path}");
+        total.crossings += metrics.crossings;
+        total.width += metrics.width;
+        total.bends += metrics.bends;
+        total.extra_layers += metrics.extra_layers;
+    }
+    assert!(total.crossings <= MAXIMUM_CROSSINGS, "{total:?}");
+    assert!(total.width <= MAXIMUM_WIDTH, "{total:?}");
+    assert!(total.bends <= MAXIMUM_BENDS, "{total:?}");
+    assert!(total.extra_layers <= MAXIMUM_EXTRA_LAYERS, "{total:?}");
 }

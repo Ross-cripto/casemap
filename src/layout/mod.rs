@@ -203,7 +203,7 @@ pub fn layout(d: &Diagram) -> Layout {
             .label
             .as_ref()
             .filter(|_| span >= 2)
-            .map(|_| ra + span / 2);
+            .map(|_| if reversed[e] { rb - 1 } else { ra + 1 });
         let mut prev = ia;
         for step in 1..span {
             let r = ra + step;
@@ -286,6 +286,7 @@ pub fn layout(d: &Diagram) -> Layout {
     order::minimize(&mut lay);
     size::assign(&mut lay, d);
     position::assign(&mut lay, d);
+    order::refine_routed(d, &mut lay);
     lay
 }
 

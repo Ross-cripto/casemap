@@ -9,13 +9,11 @@
 //! necessarily represent different diagram edges. Intersections are deduplicated
 //! by cell, and contacts at bends or within the same fan-out bus are excluded.
 
-use std::collections::BTreeSet;
-
 use unicode_width::UnicodeWidthStr;
 
 use crate::layout::{self, ItemKind, Layout};
 use crate::model::{Diagram, Shape};
-use crate::route::{self, Group, Routing};
+use crate::route::{self, Routing};
 use crate::{Options, render_diagram};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -55,7 +53,7 @@ pub fn measure(diagram: &Diagram) -> Metrics {
             .max()
             .unwrap_or(0),
         height: rendered.lines().count(),
-        crossings: count_crossings(&routing),
+        crossings: route::count_crossings(&routing),
         bends: count_bends(&routing),
         back_edges: layout.reversed.iter().filter(|&&reversed| reversed).count(),
         ..Metrics::default()
@@ -108,46 +106,4 @@ fn count_bends(routing: &Routing) -> usize {
                 * 2
         })
         .sum()
-}
-
-fn count_crossings(routing: &Routing) -> usize {
-    let mut crossings = BTreeSet::new();
-    for (horizontal_index, horizontal) in routing.groups.iter().enumerate() {
-        let Some(track) = horizontal.track else {
-            continue;
-        };
-        for (vertical_index, vertical) in routing.groups.iter().enumerate() {
-            if horizontal_index == vertical_index || horizontal.layer != vertical.layer {
-                continue;
-            }
-            for dest in &vertical.dests {
-                if vertical.src_o == dest.o {
-                    record_crossing(&mut crossings, horizontal, track, dest.o);
-                    continue;
-                }
-                let Some(vertical_track) = vertical.track else {
-                    continue;
-                };
-                if track < vertical_track {
-                    record_crossing(&mut crossings, horizontal, track, vertical.src_o);
-                }
-                if track > vertical_track {
-                    record_crossing(&mut crossings, horizontal, track, dest.o);
-                }
-            }
-        }
-    }
-    crossings.len()
-}
-
-fn record_crossing(
-    crossings: &mut BTreeSet<(usize, usize, i32)>,
-    horizontal: &Group,
-    track: usize,
-    order: i32,
-) {
-    let (left, right) = horizontal.span();
-    if left < order && order < right {
-        crossings.insert((horizontal.layer, track, order));
-    }
 }
