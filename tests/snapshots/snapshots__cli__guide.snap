@@ -5,32 +5,111 @@ expression: "cli(&[\"guide\", \"--no-color\"], &[], None)"
 $ strata guide --no-color
 [exit 0]
 --- stdout
-# Flow catalog
+# strata flows
 
-Every user-facing use case of this project has one file in docs/flows/,
-named after the use case (docs/flows/checkout.md):
+This repository keeps a catalog of its use cases in `docs/flows/`: one Markdown file per thing a user, operator or scheduled job can do, with its steps as a Mermaid flowchart. You write and maintain these files. strata checks them, renders them in the terminal and shows what each change did to them.
 
-    # Checkout
+If `strata --version` fails, stop and tell the user to install it (`cargo install --git https://github.com/Ross-cripto/strata`) instead of writing unchecked files. Run strata from the repository root.
 
-    A customer pays for the cart and gets a confirmation.
+## What a use case is
 
-    ```mermaid
-    flowchart TD
-        cart([Customer opens cart]) --> pay{Payment ok?}
-        pay -->|yes| confirm[Order confirmed]
-        pay -->|no| error[Show payment error]
-    ```
+One actor, one goal, an outcome the actor can see, done in one sitting.
 
-Rules for agents:
-- When a task changes how a use case behaves, update its flow file in the
-  same change. Add a file for a new use case; delete the file of a removed one.
-- Describe the flow as it is after your change. Do not mark what changed:
-  `strata diff` computes that from git.
-- Keep node ids stable. Rename a step by changing its label, not its id;
-  a new id reads as one step removed and another added.
-- One mermaid flowchart per file. Name steps after behaviour a user would
-  recognise, not after functions or classes.
-- Check the result with `strata diff` (uncommitted changes) or
-  `strata diff main` (the whole branch).
+- Good titles: "Check out a cart", "Reset a forgotten password", "Refund an order", "Nightly invoice run".
+- Not use cases: "Auth flow", "Request pipeline", "UserService", "Database schema".
+- Create, read, update and delete on one resource is usually one "Manage …" flow (`manage-my-articles.md`); "manage" is the verb.
+- A pair of opposite actions (follow and unfollow, favourite and unfavourite) is one flow with a labelled choice.
+- A read-only lookup that only leads into another flow belongs to that flow. Give it its own file only when looking something up is the goal ("Browse articles").
+- For an API without a UI, the actor is the API client ("Client registers an account"), and steps describe the response in plain words: a 422 becomes "Show that the email is already taken", a 401 becomes "Reject the request as not signed in".
+- A CLI or library usually has 3 to 10 flows; a web app 8 to 25. More than 30 means you are splitting per endpoint or screen.
+
+Flows are user-level journeys, not architecture diagrams. No services, databases, queues, functions, files, endpoints or status codes as steps, and do not copy architecture diagrams into the catalog. Labels use the user's words: the text on the screen, the CLI output, the email they receive.
+
+## The format
+
+One flat file per use case in `docs/flows/`, named in kebab-case verb-object form (`check-out-a-cart.md`). No subfolders.
+
+<!-- good-example -->
+````markdown
+# Check out a cart
+
+A customer pays for the items in the cart and gets an order confirmation.
+
+```mermaid
+flowchart TD
+    cart([Customer opens the cart]) --> pay[Enter payment details]
+    pay --> ok{Payment accepted?}
+    ok -->|yes| confirm[Show the order confirmation]
+    ok -->|no| error[Show the payment error]
+    error --> pay
+```
+````
+<!-- end-example -->
+
+- The `#` title names the use case; the next line is one sentence: who does what, and the outcome.
+- Exactly one mermaid flowchart per file, and it is the first code block. Start it with `flowchart TD`.
+- Shapes: the actor or trigger as a stadium `([...])`, steps as rectangles `[...]`, decisions as diamonds `{...}` with every exit labelled (`-->|yes|`).
+- 4 to 15 steps. Split a bigger flow into separate use cases; the larger part keeps the file.
+- Keep every label within 40 characters so the flow fits a side pane.
+- Never draw an edge back into the actor. End a failure branch at the step the user sees, or loop back to the step where they retry, as `error --> pay` does in the example.
+- Show a sign-in requirement as one decision, and only where a signed-out user can reach it. Do not draw middleware, validation layers or retries as steps.
+- Node ids are short, lowercase and stable (`pay`, `confirm`). strata compares flows by id, so rename a step by changing its label, never its id.
+- No subgraphs, styling (`classDef`, `style`, `linkStyle`, `:::`), `click` or mermaid config blocks.
+- Include the main path, the decisions, and the failures the user actually sees. Not every exception or retry.
+- Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question.
+
+A typical mistake and its fix:
+
+<!-- bad-example codes: no-actor unlabelled-branch unlabelled-step -->
+````markdown
+# Checkout
+
+Checkout.
+
+```mermaid
+flowchart TD
+    CartController --> PaymentService{charge}
+    PaymentService --> db
+    PaymentService --> fail
+```
+````
+<!-- end-example -->
+
+The fix describes what the customer experiences ("Enter payment details", "Payment accepted?"), starts from the customer as a stadium, and labels both exits of the decision, as in the good example.
+
+## Document a repository (empty or missing catalog)
+
+1. If `docs/flows/` does not exist, run `strata init`.
+2. Find the entry points and read enough of each to follow it end to end:
+   - HTTP routes and controllers, GraphQL resolvers, RPC handlers
+   - CLI commands and subcommands
+   - UI routes, pages and screens
+   - background jobs, schedulers, queue and event consumers, webhooks
+3. Group them into use cases. Several entry points often serve one use case, and one entry point can appear in several.
+4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
+5. Run `strata check --strict` and fix every problem it reports.
+6. Finish with the list from `strata flows`, the candidates you did not write, and the open questions.
+
+## Keep it true (every task that changes behaviour)
+
+1. Before editing code, run `strata flows` and note the flows the task touches.
+2. After the change, update those files so they describe the behaviour as it is now. Add a file for a new use case. Delete the file of a removed one. Never rename or move a flow file: strata matches flows by path, so a rename reads as one flow removed and another added.
+3. Describe the result only. Never mark what changed; `strata diff` computes that from git.
+4. Refactors, performance work and test-only changes do not touch flows. Say "no flows affected" in your final message.
+5. Run `strata check --strict` (it must pass) and `strata diff`, or `strata diff main` on a branch. Quote its first line in your final message.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `strata init` | Create `docs/flows/` and install this skill for Claude Code, Codex and other agents |
+| `strata flows` | List the catalog (`--format json` for tools) |
+| `strata flows <name>` | Render one flow in the terminal |
+| `strata check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
+| `strata diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
+
+Add `--flows <dir>` when the catalog lives somewhere else.
+
+Example file: `docs/flows/check-out-a-cart.md`.
 --- stderr
 [end]

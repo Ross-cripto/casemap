@@ -1,5 +1,4 @@
-//! strata CLI — render a Mermaid flowchart once, or keep re-rendering it as
-//! the file changes so the diagram can live in a side pane while you work.
+//! strata CLI: adopt, validate, render and compare a catalog of use-case flows.
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,9 +11,9 @@ use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
 use strata::flows::Flow;
 use strata::markdown::is_markdown_path;
-use strata::{Direction, Options, ParseError};
+use strata::{Direction, Options, ParseError, check, git, skill};
 
-const DEFAULT_FLOWS_DIR: &str = "docs/flows";
+const DEFAULT_FLOWS_DIR: &str = skill::DEFAULT_CATALOG;
 const DEFAULT_REF: &str = "HEAD";
 const WATCH_HEARTBEAT: Duration = Duration::from_secs(1);
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
@@ -24,7 +23,13 @@ const WATCH_MAX_DRAIN: Duration = Duration::from_millis(500);
 #[command(
     name = "strata",
     version,
-    about,
+    about = "The living map of your app's use cases: one Mermaid flow per use case in docs/flows/, written by your coding agent, checked and rendered in the terminal.",
+    after_help = "Quick start:
+  strata init           create docs/flows/ and install the agent skill
+  (ask your agent)      \"document the use-case flows of this repo\"
+  strata flows          see them
+  strata check          validate them
+  strata diff main      what a branch did to them",
     args_override_self = true,
     disable_help_subcommand = true
 )]
@@ -53,13 +58,35 @@ struct Cli {
     no_color: bool,
 }
 
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum Format {
+    Text,
+    Json,
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Create the flow catalog and install the strata-flows agent skill.
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the flow catalog, or render one flow.
+    Flows {
+        name: Option<String>,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+    /// Validate the flow catalog for agents and CI.
+    Check {
+        #[arg(long)]
+        strict: bool,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
     /// Show catalog changes since REF (default HEAD), including uncommitted edits.
     Diff { rev: Option<String> },
-    /// List the flow catalog, or render one flow.
-    Flows { name: Option<String> },
-    /// Print the flow-catalog convention for AGENTS.md or CLAUDE.md.
+    /// Print the strata-flows agent skill without its front matter.
     Guide,
     /// Generate shell completions.
     Completions { shell: clap_complete::Shell },
@@ -68,35 +95,6 @@ enum Commands {
 fn parse_direction(value: &str) -> Result<Direction, String> {
     Direction::parse(value).ok_or_else(|| "expects one of TD, BT, LR, RL".into())
 }
-
-const GUIDE: &str = r"# Flow catalog
-
-Every user-facing use case of this project has one file in docs/flows/,
-named after the use case (docs/flows/checkout.md):
-
-    # Checkout
-
-    A customer pays for the cart and gets a confirmation.
-
-    ```mermaid
-    flowchart TD
-        cart([Customer opens cart]) --> pay{Payment ok?}
-        pay -->|yes| confirm[Order confirmed]
-        pay -->|no| error[Show payment error]
-    ```
-
-Rules for agents:
-- When a task changes how a use case behaves, update its flow file in the
-  same change. Add a file for a new use case; delete the file of a removed one.
-- Describe the flow as it is after your change. Do not mark what changed:
-  `strata diff` computes that from git.
-- Keep node ids stable. Rename a step by changing its label, not its id;
-  a new id reads as one step removed and another added.
-- One mermaid flowchart per file. Name steps after behaviour a user would
-  recognise, not after functions or classes.
-- Check the result with `strata diff` (uncommitted changes) or
-  `strata diff main` (the whole branch).
-";
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -136,7 +134,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Commands::Diff { rev }) => {
             diff_catalog(directory, rev.as_deref().unwrap_or(DEFAULT_REF), &opts)
         }
-        Some(Commands::Flows { name }) => show_flows(directory, name.as_deref(), &opts),
+        Some(Commands::Init { force }) => init_catalog(directory, force),
+        Some(Commands::Flows { name, format }) => {
+            show_flows(directory, name.as_deref(), format, &opts)
+        }
+        Some(Commands::Check { strict, format }) => check_catalog(directory, strict, format, color),
         Some(Commands::Guide) => {
             print_guide(directory);
             Ok(ExitCode::SUCCESS)
@@ -184,10 +186,9 @@ fn render_file(file: Option<&Path>, watch: bool, opts: &Options) -> anyhow::Resu
 }
 
 fn print_guide(directory: &Path) {
-    print!(
-        "{}",
-        GUIDE.replace(DEFAULT_FLOWS_DIR, &directory.to_string_lossy())
-    );
+    let catalog = catalog_path(directory);
+    print!("{}", skill::body(&catalog));
+    println!("\nExample file: `{catalog}/check-out-a-cart.md`.");
 }
 
 fn read_stdin() -> anyhow::Result<String> {
@@ -216,13 +217,18 @@ fn render_source(path: Option<&Path>, src: &str, opts: &Options) -> Result<Strin
     Ok(strata::render_markdown(src, opts)?)
 }
 
-fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
+fn require_catalog(dir: &Path) -> anyhow::Result<()> {
     if !dir.is_dir() {
         bail!(
             "no flow catalog at {} (create it or pass --flows <dir>)",
             dir.display()
         );
     }
+    Ok(())
+}
+
+fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
+    require_catalog(dir)?;
     Ok(strata::flows::load_dir(dir)?)
 }
 
@@ -248,8 +254,32 @@ fn diff_catalog(dir: &Path, rev: &str, opts: &Options) -> anyhow::Result<ExitCod
     }
 }
 
-fn show_flows(dir: &Path, name: Option<&str>, opts: &Options) -> anyhow::Result<ExitCode> {
+fn show_flows(
+    dir: &Path,
+    name: Option<&str>,
+    format: Format,
+    opts: &Options,
+) -> anyhow::Result<ExitCode> {
+    if name.is_some() && matches!(format, Format::Json) {
+        bail!("--format json lists the catalog; drop the flow name");
+    }
     let flows = load_catalog(dir)?;
+    if matches!(format, Format::Json) {
+        let entries: Vec<_> = flows
+            .iter()
+            .map(|flow| {
+                serde_json::json!({
+                    "name": flow.name,
+                    "path": catalog_file_path(dir, &flow.path),
+                    "title": flow.title,
+                    "description": flow.description,
+                    "has_diagram": flow.source.is_some(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({"version": 1, "flows": entries}));
+        return Ok(ExitCode::SUCCESS);
+    }
     let Some(name) = name else {
         if flows.is_empty() {
             println!("no flows in {}", dir.display());
@@ -274,6 +304,353 @@ fn show_flows(dir: &Path, name: Option<&str>, opts: &Options) -> anyhow::Result<
     println!();
     print!("{}", strata::render_diagram(&diagram, opts));
     Ok(ExitCode::SUCCESS)
+}
+
+fn slash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn catalog_path(dir: &Path) -> String {
+    slash_path(dir).trim_end_matches('/').to_string()
+}
+
+fn catalog_file_path(dir: &Path, file: &str) -> String {
+    format!("{}/{}", catalog_path(dir), file)
+}
+
+fn severity_text(severity: check::Severity) -> &'static str {
+    match severity {
+        check::Severity::Error => "error",
+        check::Severity::Warning => "warning",
+    }
+}
+
+fn coloured_severity(severity: check::Severity, color: bool) -> String {
+    let text = severity_text(severity);
+    if !color {
+        return text.to_string();
+    }
+    let ink = match severity {
+        check::Severity::Error => "\x1b[31m",
+        check::Severity::Warning => "\x1b[33m",
+    };
+    format!("{ink}{text}\x1b[0m")
+}
+
+fn problem_location(dir: &Path, problem: &check::Problem) -> String {
+    let path = match &problem.file {
+        Some(file) => catalog_file_path(dir, file),
+        None => catalog_path(dir),
+    };
+    match problem.line {
+        Some(line) => format!("{path}:{line}"),
+        None => path,
+    }
+}
+
+fn problem_json(dir: &Path, problem: &check::Problem) -> serde_json::Value {
+    serde_json::json!({
+        "path": problem.file.as_ref().map(|file| catalog_file_path(dir, file)),
+        "line": problem.line,
+        "severity": severity_text(problem.code.severity()),
+        "code": problem.code.as_str(),
+        "message": problem.message,
+    })
+}
+
+fn check_summary(report: &check::Report) -> String {
+    let mut counts = Vec::new();
+    for (count, noun) in [(report.errors(), "error"), (report.warnings(), "warning")] {
+        if count > 0 {
+            let suffix = if count == 1 { "" } else { "s" };
+            counts.push(format!("{count} {noun}{suffix}"));
+        }
+    }
+    let result = if counts.is_empty() {
+        "ok".to_string()
+    } else {
+        counts.join(", ")
+    };
+    format!("checked {} flows: {result}", report.flows)
+}
+
+fn check_catalog(
+    dir: &Path,
+    strict: bool,
+    format: Format,
+    color: bool,
+) -> anyhow::Result<ExitCode> {
+    require_catalog(dir)?;
+    let report = check::check_catalog(dir)?;
+    match format {
+        Format::Text => print_check_text(dir, &report, color),
+        Format::Json => print_check_json(dir, &report),
+    }
+    Ok(check_exit_code(&report, strict))
+}
+
+fn print_check_text(dir: &Path, report: &check::Report, color: bool) {
+    for problem in &report.problems {
+        println!(
+            "{}: {}: {} [{}]",
+            problem_location(dir, problem),
+            coloured_severity(problem.code.severity(), color),
+            problem.message,
+            problem.code.as_str()
+        );
+    }
+    println!("{}", check_summary(report));
+}
+
+fn print_check_json(dir: &Path, report: &check::Report) {
+    let problems: Vec<_> = report
+        .problems
+        .iter()
+        .map(|problem| problem_json(dir, problem))
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({
+            "version": 1, "catalog": catalog_path(dir), "flows": report.flows,
+            "errors": report.errors(), "warnings": report.warnings(), "problems": problems,
+        })
+    );
+}
+
+fn check_exit_code(report: &check::Report, strict: bool) -> ExitCode {
+    if report.errors() > 0 || (strict && report.warnings() > 0) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn catalog_write_error(path: &Path, error: io::Error) -> strata::flows::CatalogError {
+    strata::flows::CatalogError {
+        path: path.to_path_buf(),
+        error,
+    }
+}
+
+fn create_catalog(dir: &Path, display: &str) -> Result<(), strata::flows::CatalogError> {
+    let existed = dir.is_dir();
+    std::fs::create_dir_all(dir).map_err(|error| catalog_write_error(dir, error))?;
+    let mut entries = std::fs::read_dir(dir).map_err(|error| catalog_write_error(dir, error))?;
+    let is_empty = entries
+        .next()
+        .transpose()
+        .map_err(|error| catalog_write_error(dir, error))?
+        .is_none();
+    if !existed || is_empty {
+        let keep = dir.join(".gitkeep");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&keep)
+            .map_err(|error| catalog_write_error(&keep, error))?;
+    }
+    let status = if existed { "exists" } else { "created" };
+    println!("{status} {display}/");
+    Ok(())
+}
+
+fn write_skill(path: &Path, desired: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if metadata.is_some_and(|metadata| metadata.is_file() && !metadata.is_symlink()) {
+        let mut temporary_name = path.as_os_str().to_os_string();
+        temporary_name.push(".strata-tmp");
+        let temporary = PathBuf::from(temporary_name);
+        std::fs::write(&temporary, desired)?;
+        if let Err(error) = std::fs::rename(&temporary, path) {
+            eprintln!(
+                "warning: {}: cannot rename temporary skill: {error}; writing directly",
+                path.display()
+            );
+            let result = std::fs::write(path, desired);
+            std::fs::remove_file(&temporary)?;
+            return result;
+        }
+        Ok(())
+    } else {
+        std::fs::write(path, desired)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SkillAction {
+    Install,
+    UpToDate,
+    Keep,
+    Update,
+}
+
+fn decide_skill_action(current: Option<&str>, desired: &str, force: bool) -> SkillAction {
+    let Some(current) = current else {
+        return SkillAction::Install;
+    };
+    if skill::normalise(current) == skill::normalise(desired) {
+        SkillAction::UpToDate
+    } else if force {
+        SkillAction::Update
+    } else {
+        SkillAction::Keep
+    }
+}
+
+fn check_skill_symlinks(root: &Path, relative: &Path) -> io::Result<()> {
+    let mut component_path = PathBuf::new();
+    for component in relative.components() {
+        component_path.push(component);
+        let path = root.join(&component_path);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        };
+        if metadata.is_symlink() {
+            match std::fs::metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(io::Error::other(format!(
+                        "{} is a symlink to a missing path",
+                        slash_path(&component_path)
+                    )));
+                }
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn install_skill(
+    root: &Path,
+    relative: &Path,
+    desired: &str,
+    force: bool,
+    agent_label: &str,
+) -> io::Result<()> {
+    check_skill_symlinks(root, relative)?;
+    let path = root.join(relative);
+    let display = slash_path(relative);
+    let current = match std::fs::read(&path) {
+        Ok(current) => Some(String::from_utf8_lossy(&current).into_owned()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    match decide_skill_action(current.as_deref(), desired, force) {
+        SkillAction::Install => {
+            write_skill(&path, desired)?;
+            println!("installed {display} ({agent_label})");
+        }
+        SkillAction::UpToDate => println!("up to date {display}"),
+        SkillAction::Keep => {
+            println!("kept {display} (differs from this strata version; use --force to update)")
+        }
+        SkillAction::Update => {
+            write_skill(&path, desired)?;
+            println!("updated {display}");
+        }
+    }
+    if git::is_ignored(root, relative) {
+        println!("warning: {display} is gitignored; teammates will not get the skill");
+    }
+    Ok(())
+}
+
+fn locate_install_root(cwd: &Path) -> anyhow::Result<(PathBuf, String)> {
+    match git::locate(cwd)? {
+        git::Location::Inside { root, prefix } => Ok((root, prefix)),
+        git::Location::NotARepository => {
+            println!("note: not a git repository; strata diff needs git");
+            Ok((cwd.to_path_buf(), String::new()))
+        }
+    }
+}
+
+fn normalise_catalog_path(prefix: &str, dir: &Path) -> anyhow::Result<PathBuf> {
+    use std::path::Component;
+    if dir.is_absolute() || dir.has_root() {
+        bail!("--flows must stay inside the repository");
+    }
+    let mut normalised = PathBuf::new();
+    for component in Path::new(prefix).join(dir).components() {
+        match component {
+            Component::Normal(name) => normalised.push(name),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalised.pop() {
+                    bail!("--flows must stay inside the repository");
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!("--flows must stay inside the repository")
+            }
+        }
+    }
+    Ok(normalised)
+}
+
+fn install_all_skills(root: &Path, desired: &str, force: bool) -> bool {
+    let mut failed = false;
+    for (directory, agent_label) in skill::INSTALL_DIRS {
+        let relative = Path::new(directory)
+            .join(skill::SKILL_NAME)
+            .join("SKILL.md");
+        if let Err(error) = install_skill(root, &relative, desired, force, agent_label) {
+            eprintln!("error: {}: {error}", slash_path(&relative));
+            failed = true;
+        }
+    }
+    failed
+}
+
+fn print_next_steps(catalog: &str) {
+    println!("\nNext: ask your coding agent to \"document the use-case flows of this repo\".");
+    println!(
+        "Then: `strata flows` to see them, `strata check` to validate them, `strata diff` after each change."
+    );
+    println!(
+        "\nOptional, so agents always keep flows current, add this line to AGENTS.md and CLAUDE.md:"
+    );
+    println!(
+        "  Use-case flows live in {catalog}/ (strata-flows skill): update them when behaviour changes and run `strata check`."
+    );
+}
+
+fn init_catalog(dir: &Path, force: bool) -> anyhow::Result<ExitCode> {
+    if dir.is_absolute() || dir.has_root() {
+        bail!("--flows must stay inside the repository");
+    }
+    let cwd = std::env::current_dir().context("reading the current directory")?;
+    let (root, prefix) = locate_install_root(&cwd)?;
+    let relative_catalog = normalise_catalog_path(&prefix, dir)?;
+    let catalog = root.join(&relative_catalog);
+    let display = catalog_path(&relative_catalog);
+    if catalog.exists() && !catalog.is_dir() {
+        bail!("{display} exists and is not a directory");
+    }
+    let mut failed = false;
+    if let Err(error) = create_catalog(&catalog, &display) {
+        let path = error.path.strip_prefix(&root).unwrap_or(&error.path);
+        eprintln!("error: {}: {}", slash_path(path), error.error);
+        failed = true;
+    }
+    let desired = skill::render(&display);
+    failed |= install_all_skills(&root, &desired, force);
+    print_next_steps(&display);
+    if failed {
+        Ok(ExitCode::FAILURE)
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
 }
 
 fn watch_frame(
@@ -497,6 +874,21 @@ mod tests {
             unreadable,
             format!("{good}\ncannot read file: temporarily busy\n")
         );
+    }
+
+    #[test]
+    fn skill_commands_parse() {
+        let mut checked = 0;
+        for span in skill::SKILL_MD.split('`').skip(1).step_by(2) {
+            if span.starts_with("strata ") {
+                checked += 1;
+                let command = span.replace("<name>", "x").replace("[REF]", "main");
+                if let Err(error) = Cli::try_parse_from(command.split_whitespace()) {
+                    assert!(!error.use_stderr(), "{span}: {error}");
+                }
+            }
+        }
+        assert!(checked >= 5);
     }
 
     #[test]

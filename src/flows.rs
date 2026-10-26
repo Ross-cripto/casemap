@@ -22,7 +22,7 @@ pub fn parse_flow(path: &str, text: &str) -> Flow {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    if paths::has_extension(Path::new(path), &["mmd"]) {
+    if is_mmd(path) {
         return Flow {
             path: path.to_string(),
             title: name.clone(),
@@ -32,12 +32,19 @@ pub fn parse_flow(path: &str, text: &str) -> Flow {
             line_offset: 0,
         };
     }
-    let block = markdown::mermaid_blocks(text).into_iter().next();
+    let outline = markdown::outline(text);
+    let block = outline
+        .blocks
+        .into_iter()
+        .find(|block| markdown::is_mermaid(&block.info));
     Flow {
         path: path.to_string(),
-        title: markdown::first_heading(text).unwrap_or_else(|| name.clone()),
+        title: outline
+            .title
+            .map(|(_, title)| title)
+            .unwrap_or_else(|| name.clone()),
         name,
-        description: markdown::first_paragraph_line(text),
+        description: outline.description.map(|(_, description)| description),
         line_offset: block.as_ref().map(|block| block.line).unwrap_or(0),
         source: block.map(|block| block.source),
     }
@@ -45,16 +52,28 @@ pub fn parse_flow(path: &str, text: &str) -> Flow {
 
 /// Errors include the opening fence offset so their lines refer to the file.
 pub fn diagram(flow: &Flow) -> Option<Result<Diagram, ParseError>> {
-    flow.source.as_ref().map(|source| {
-        parser::parse(source).map_err(|error| ParseError {
-            line: flow.line_offset + error.line,
-            message: error.message,
-        })
+    flow.source
+        .as_ref()
+        .map(|source| parse_diagram(source, flow.line_offset))
+}
+
+pub(crate) fn parse_diagram(source: &str, line_offset: usize) -> Result<Diagram, ParseError> {
+    parser::parse(source).map_err(|error| ParseError {
+        line: line_offset + error.line,
+        message: error.message,
     })
 }
 
+fn is_hidden_or_readme(name: &str) -> bool {
+    name.starts_with('.') || name.eq_ignore_ascii_case("readme.md")
+}
+
+pub fn is_mmd(name: &str) -> bool {
+    paths::has_extension(Path::new(name), &["mmd"])
+}
+
 pub fn is_flow_file_name(name: &str) -> bool {
-    !name.starts_with('.') && paths::has_extension(Path::new(name), &["md", "mmd"])
+    !is_hidden_or_readme(name) && paths::has_extension(Path::new(name), &["md", "mmd"])
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,27 +90,67 @@ fn file_error(path: &Path, error: std::io::Error) -> CatalogError {
     }
 }
 
-pub fn load_dir(dir: &Path) -> Result<Vec<Flow>, CatalogError> {
-    let mut flows = Vec::new();
+#[derive(Debug)]
+pub enum Entry {
+    Flow { name: String, text: String },
+    Unreadable { name: String, error: std::io::Error },
+    Ignored { name: String },
+}
+
+/// Skips hidden entries and README.md; ignores other non-flow names without statting them.
+/// Flow-named directories are ignored, while metadata and read errors are unreadable entries.
+/// Entries are sorted by name so catalog validation and loading agree on duplicate order.
+pub fn read_catalog(dir: &Path) -> Result<Vec<Entry>, CatalogError> {
+    let mut catalog = Vec::new();
     let entries = std::fs::read_dir(dir).map_err(|error| file_error(dir, error))?;
     for entry in entries {
         let entry = entry.map_err(|error| file_error(dir, error))?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
+        if is_hidden_or_readme(&name) {
+            continue;
+        }
         if !is_flow_file_name(&name) {
+            catalog.push(Entry::Ignored { name });
             continue;
         }
         match std::fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => continue,
-            // A dangling symlink, or a file removed while scanning, is not a flow.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(file_error(&path, error)),
+            Ok(_) => {
+                catalog.push(Entry::Ignored { name });
+                continue;
+            }
+            Err(error) => {
+                catalog.push(Entry::Unreadable { name, error });
+                continue;
+            }
         }
-        let text = std::fs::read_to_string(&path).map_err(|error| file_error(&path, error))?;
-        flows.push(parse_flow(&name, &text));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => catalog.push(Entry::Flow { name, text }),
+            Err(error) => catalog.push(Entry::Unreadable { name, error }),
+        }
     }
-    flows.sort_by(|left, right| left.path.cmp(&right.path));
+    catalog.sort_by(|left, right| entry_name(left).cmp(entry_name(right)));
+    Ok(catalog)
+}
+
+fn entry_name(entry: &Entry) -> &str {
+    match entry {
+        Entry::Flow { name, .. } | Entry::Unreadable { name, .. } | Entry::Ignored { name } => name,
+    }
+}
+
+pub fn load_dir(dir: &Path) -> Result<Vec<Flow>, CatalogError> {
+    let mut flows = Vec::new();
+    for entry in read_catalog(dir)? {
+        match entry {
+            Entry::Flow { name, text } => flows.push(parse_flow(&name, &text)),
+            // Rendering and diffing skip vanished files and dangling links for compatibility.
+            Entry::Unreadable { error, .. } if error.kind() == std::io::ErrorKind::NotFound => {}
+            Entry::Unreadable { name, error } => return Err(file_error(&dir.join(name), error)),
+            Entry::Ignored { .. } => {}
+        }
+    }
     Ok(flows)
 }
 
@@ -359,6 +418,35 @@ mod tests {
         assert!(
             report.contains("Bad (bad.md)  parse error, line 5:"),
             "{report}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_catalog_reports_dangling_flow_symlink() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        std::os::unix::fs::symlink("missing", directory.path().join("flow.md")).unwrap();
+        let entries = read_catalog(directory.path()).unwrap();
+        assert!(
+            matches!(&entries[..], [Entry::Unreadable { name, error }] if name == "flow.md" && error.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert!(load_dir(directory.path()).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_catalog_ignores_non_flow_entries_without_stat() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = assert_fs::TempDir::new().unwrap();
+        let notes = directory.path().join("notes.txt");
+        std::fs::write(&notes, "private").unwrap();
+        std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o0)).unwrap();
+        std::os::unix::fs::symlink("loop.txt", directory.path().join("loop.txt")).unwrap();
+        let result = read_catalog(directory.path());
+        std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let entries = result.unwrap();
+        assert!(
+            matches!(&entries[..], [Entry::Ignored { name: first }, Entry::Ignored { name: second }] if first == "loop.txt" && second == "notes.txt")
         );
     }
 }

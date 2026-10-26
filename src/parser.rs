@@ -48,6 +48,21 @@ pub fn parse(source: &str) -> Result<Diagram, ParseError> {
     Ok(b.finish())
 }
 
+pub fn is_header(stmt: &str) -> bool {
+    parse_header(stmt).is_some()
+}
+
+pub fn first_statement(source: &str) -> Option<(usize, &str)> {
+    source.lines().enumerate().find_map(|(index, line)| {
+        let statement = line.trim();
+        if statement.is_empty() || statement.starts_with("%%") {
+            None
+        } else {
+            Some((index + 1, statement))
+        }
+    })
+}
+
 fn parse_header(stmt: &str) -> Option<Direction> {
     let mut words = stmt.split_whitespace();
     let kw = words.next()?.to_ascii_lowercase();
