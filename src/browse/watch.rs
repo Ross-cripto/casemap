@@ -37,9 +37,7 @@ impl ReloadWatch {
         if !self.is_due(now) {
             return false;
         }
-        self.first_pending = None;
-        self.last_event = None;
-        self.last_heartbeat = now;
+        self.skip(now);
         let current = stamp();
         if current == self.last_stamp {
             return false;
@@ -62,10 +60,14 @@ impl ReloadWatch {
     }
 
     pub fn record_reload(&mut self, now: Instant, stamp: CatalogStamp) {
+        self.skip(now);
+        self.last_stamp = stamp;
+    }
+
+    pub fn skip(&mut self, now: Instant) {
         self.first_pending = None;
         self.last_event = None;
         self.last_heartbeat = now;
-        self.last_stamp = stamp;
     }
 }
 
@@ -80,6 +82,31 @@ mod tests {
             modified: None,
             length,
         }])
+    }
+
+    #[test]
+    fn stamp_error_waits_for_the_next_wake() {
+        let now = Instant::now();
+        let mut watch = ReloadWatch::new(WakeMode::Events, stamp(1), now);
+        watch.on_event(now);
+        let skipped_at = now + WATCH_DEBOUNCE;
+        assert!(watch.is_due(skipped_at));
+        watch.skip(skipped_at);
+        assert!(!watch.is_due(skipped_at));
+        assert!(!watch.is_due(skipped_at + WATCH_MAX_DRAIN));
+        let next_event = skipped_at + WATCH_MAX_DRAIN;
+        watch.on_event(next_event);
+        assert!(!watch.is_due(next_event));
+        assert!(watch.is_due(next_event + WATCH_DEBOUNCE));
+        assert!(!watch.should_reload(next_event + WATCH_DEBOUNCE, || stamp(1)));
+
+        let mut watch = ReloadWatch::new(WakeMode::Poll, stamp(1), now);
+        let skipped_at = now + WATCH_HEARTBEAT;
+        assert!(watch.is_due(skipped_at));
+        watch.skip(skipped_at);
+        assert!(!watch.is_due(skipped_at));
+        assert!(!watch.is_due(skipped_at + WATCH_HEARTBEAT - Duration::from_nanos(1)));
+        assert!(watch.should_reload(skipped_at + WATCH_HEARTBEAT, || stamp(2)));
     }
 
     #[test]

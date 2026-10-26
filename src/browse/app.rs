@@ -110,6 +110,7 @@ pub(super) struct App {
     pub panel: bool,
     pub help: bool,
     pub status: Option<String>,
+    pub watcher_note: Option<String>,
     pub reloading: bool,
     pub base: Option<BaseInfo>,
     pub ascii: bool,
@@ -133,6 +134,7 @@ impl App {
             panel: false,
             help: false,
             status: None,
+            watcher_note: None,
             reloading: false,
             base: None,
             ascii,
@@ -143,6 +145,10 @@ impl App {
         app.apply(loaded);
         app
     }
+    pub(super) fn status_text(&self) -> Option<&str> {
+        self.status.as_deref().or(self.watcher_note.as_deref())
+    }
+
     pub(super) fn handle(&mut self, key: KeyEvent) -> Action {
         if key.kind != KeyEventKind::Press {
             return Action::None;
@@ -485,6 +491,21 @@ mod state_tests {
         let mut app = App::new(loaded_with_flows(&["Alpha", "Beta", "Gamma"]), false, true);
         app.resize(120, 30);
         app
+    }
+
+    #[test]
+    fn watcher_note_survives_reloads_and_keys() {
+        let mut app = app();
+        let note = "file events unavailable; checking every 1s";
+        app.watcher_note = Some(note.into());
+        app.status = Some("catalog error".into());
+        assert_eq!(app.status_text(), Some("catalog error"));
+        app.apply(loaded_with_flows(&[]));
+        assert_eq!(app.status_text(), Some(note));
+        app.status = Some("reload error".into());
+        app.handle(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.status.is_none());
+        assert_eq!(app.status_text(), Some(note));
     }
     fn press(app: &mut App, code: KeyCode) -> Action {
         app.handle(KeyEvent::new(code, KeyModifiers::NONE))
