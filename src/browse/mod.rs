@@ -20,6 +20,7 @@ use app::{Action, App, BaseInfo, DiagramView, Entry, Loaded, Marker};
 use watch::{ReloadWatch, WakeMode};
 
 const KEY_POLL: Duration = Duration::from_millis(250);
+const RELOAD_POLL: Duration = Duration::from_millis(50);
 
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -43,13 +44,13 @@ impl ReloadWorker {
         }
     }
 
-    fn start(&mut self, app: &mut App) -> bool {
+    fn start(&mut self) -> io::Result<()> {
         if self.pending.is_some() {
-            return false;
+            return Ok(());
         }
         let loader = Arc::clone(&self.loader);
         let (sender, receiver) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("casemap-reload".into())
             .spawn(move || {
                 let result = match loader.lock() {
@@ -57,14 +58,13 @@ impl ReloadWorker {
                     Err(_) => Err(anyhow::anyhow!("reload loader lock poisoned")),
                 };
                 let _ = sender.send(result);
-            });
-        if let Err(error) = spawned {
-            app.status = Some(format!("reload failed: {error}"));
-            return false;
-        }
+            })?;
         self.pending = Some(receiver);
-        app.reloading = true;
-        true
+        Ok(())
+    }
+
+    fn is_reloading(&self) -> bool {
+        self.pending.is_some()
     }
 }
 
@@ -89,7 +89,7 @@ impl BrowserSession {
         let (watcher, wake, mode) = match crate::start_watcher(dir, sender) {
             Ok(watcher) => (Some(watcher), Wake::Events(receiver), WakeMode::Events),
             Err(error) => {
-                app.status = Some(watcher_message(&error));
+                app.watcher_note = Some(watcher_message(&error));
                 (None, Wake::Poll, WakeMode::Poll)
             }
         };
@@ -110,14 +110,16 @@ impl BrowserSession {
     }
 
     fn manual_reload(&mut self, app: &mut App) {
-        if self.worker.pending.is_some() {
+        if self.worker.is_reloading() {
             return;
         }
         match catalog_stamp(&self.dir) {
             Ok(stamp) => self.watch.record_reload(Instant::now(), stamp),
             Err(error) => app.status = Some(format!("catalog: {error:#}")),
         }
-        self.worker.start(app);
+        if let Err(error) = self.worker.start() {
+            app.status = Some(format!("reload failed: {error}"));
+        }
     }
 }
 
@@ -135,8 +137,9 @@ pub(crate) fn run(dir: &Path, reference: Option<&str>, opts: &Options) -> anyhow
     let size = terminal.size()?;
     app.resize(size.width, size.height);
     loop {
+        app.reloading = session.worker.is_reloading();
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        match handle_input(&mut app)? {
+        match handle_input(&mut app, input_timeout(session.worker.is_reloading()))? {
             Action::Quit => return Ok(ExitCode::SUCCESS),
             Action::Reload => session.manual_reload(&mut app),
             Action::None => {}
@@ -146,8 +149,12 @@ pub(crate) fn run(dir: &Path, reference: Option<&str>, opts: &Options) -> anyhow
     }
 }
 
-fn handle_input(app: &mut App) -> anyhow::Result<Action> {
-    if event::poll(KEY_POLL)? {
+fn input_timeout(reloading: bool) -> Duration {
+    if reloading { RELOAD_POLL } else { KEY_POLL }
+}
+
+fn handle_input(app: &mut App, timeout: Duration) -> anyhow::Result<Action> {
+    if event::poll(timeout)? {
         match event::read()? {
             Event::Key(key) => return Ok(app.handle(key)),
             Event::Resize(cols, rows) => app.resize(cols, rows),
@@ -169,20 +176,25 @@ fn poll_watch(session: &mut BrowserSession, app: &mut App) {
         }
     }
     if let Some(message) = failure {
-        app.status = Some(message);
+        app.watcher_note = Some(message);
         session.wake = Wake::Poll;
         session.watch.wake = WakeMode::Poll;
     }
-    if session.worker.pending.is_some() || !session.watch.is_due(now) {
+    if session.worker.is_reloading() || !session.watch.is_due(now) {
         return;
     }
     match catalog_stamp(&session.dir) {
         Ok(stamp) => {
             if session.watch.should_reload(now, || stamp) {
-                session.worker.start(app);
+                if let Err(error) = session.worker.start() {
+                    app.status = Some(format!("reload failed: {error}"));
+                }
             }
         }
-        Err(error) => app.status = Some(format!("catalog: {error:#}")),
+        Err(error) => {
+            app.status = Some(format!("catalog: {error:#}"));
+            session.watch.skip(now);
+        }
     }
 }
 
@@ -196,7 +208,6 @@ fn apply_reload(worker: &mut ReloadWorker, app: &mut App) {
         Err(mpsc::TryRecvError::Disconnected) => Err(anyhow::anyhow!("reload worker disconnected")),
     };
     worker.pending = None;
-    app.reloading = false;
     match result {
         Ok(loaded) => app.apply(loaded),
         Err(error) => app.status = Some(format!("reload failed: {error:#}")),
@@ -542,6 +553,43 @@ mod tests {
     }
 
     #[test]
+    fn input_timeout_is_short_while_reloading() {
+        assert_eq!(input_timeout(true), Duration::from_millis(50));
+        assert_eq!(input_timeout(false), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn worker_is_reloading_until_its_result_is_applied() {
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let mut worker = ReloadWorker::new(move || {
+            started_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+            let mut loaded = loaded_with_flows(vec![]);
+            loaded.catalog_problems = 7;
+            Ok(loaded)
+        });
+        let mut app = App::new(loaded_with_flows(vec![]), false, false);
+        assert!(!worker.is_reloading());
+        worker.start().unwrap();
+        started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert!(worker.is_reloading());
+        apply_reload(&mut worker, &mut app);
+        assert!(worker.is_reloading());
+        worker.start().unwrap();
+        release_sender.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while worker.is_reloading() {
+            assert!(Instant::now() < deadline, "reload result was not applied");
+            apply_reload(&mut worker, &mut app);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.catalog_problems, 7);
+    }
+
+    #[test]
     fn reload_runs_off_the_ui_thread() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
@@ -553,18 +601,15 @@ mod tests {
             Ok(loaded_with_flows(vec![]))
         });
         let mut app = App::new(loaded_with_flows(vec![]), false, false);
-        assert!(worker.start(&mut app));
+        worker.start().unwrap();
         let worker_thread = started_receiver
             .recv_timeout(Duration::from_secs(2))
             .unwrap();
         assert_ne!(worker_thread, ui_thread);
         apply_reload(&mut worker, &mut app);
         assert!(worker.pending.is_some());
-        assert!(app.reloading);
-        assert!(
-            !worker.start(&mut app),
-            "a second reload started while one was pending"
-        );
+        assert!(worker.is_reloading());
+        worker.start().unwrap();
         assert_eq!(
             app.handle(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
             Action::Quit
@@ -596,18 +641,16 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.send(Ok(loaded)).unwrap();
         worker.pending = Some(receiver);
-        app.reloading = true;
         apply_reload(&mut worker, &mut app);
         assert_eq!(app.catalog_problems, 3);
         assert_eq!(app.base.as_ref().unwrap().sha, "1234567890");
-        assert!(!app.reloading);
+        assert!(!worker.is_reloading());
         assert!(worker.pending.is_none());
         let (sender, receiver) = mpsc::sync_channel(1);
         sender
             .send(Err(anyhow::anyhow!("catalog disappeared")))
             .unwrap();
         worker.pending = Some(receiver);
-        app.reloading = true;
         apply_reload(&mut worker, &mut app);
         assert_eq!(
             app.status.as_deref(),
@@ -615,7 +658,7 @@ mod tests {
         );
         assert_eq!(app.catalog_problems, 3);
         assert_eq!(app.base.as_ref().unwrap().sha, "1234567890");
-        assert!(!app.reloading);
+        assert!(!worker.is_reloading());
         assert!(worker.pending.is_none());
     }
 

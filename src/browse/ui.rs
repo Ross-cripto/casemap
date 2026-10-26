@@ -233,8 +233,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(super::app::dimension(right.width())),
     ])
     .areas(area);
-    let mut left = match &app.status {
-        Some(message) => message.clone(),
+    let mut left = match app.status_text() {
+        Some(message) => message.to_owned(),
         None => match &app.search {
             Search::Typing(query) => format!("/{query}"),
             Search::Kept(query) => format!("/{query} (Esc clears)"),
