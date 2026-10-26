@@ -561,11 +561,15 @@ mod tests {
 
     #[test]
     fn find_agent_on_unix_path() {
-        let path = std::env::join_paths([Path::new("/a"), Path::new("/b")]).unwrap();
-        let executable = |path: &Path| path == Path::new("/b/claude");
+        // Built from temp_dir so the entries are absolute on Windows too.
+        let first = std::env::temp_dir().join("a");
+        let second = std::env::temp_dir().join("b");
+        let path = std::env::join_paths([&first, &second]).unwrap();
+        let claude = second.join("claude");
+        let executable = |candidate: &Path| candidate == claude;
         assert_eq!(
             find_agent(Agent::Claude, Some(&path), false, &executable),
-            Some(PathBuf::from("/b/claude"))
+            Some(claude.clone())
         );
         assert_eq!(
             find_agent(Agent::Codex, Some(&path), false, &executable),
@@ -762,6 +766,14 @@ mod tests {
         directory
     }
 
+    /// The root as git reports it, which is where onboarding launches the agent. Unlike
+    /// `canonicalize`, it has no `\\?\` prefix on Windows, so joins with '/' keep working.
+    fn repository_root(directory: &assert_fs::TempDir) -> PathBuf {
+        crate::catalog_display(directory.path(), Path::new("docs/flows"))
+            .unwrap()
+            .0
+    }
+
     enum AgentWrites {
         ValidFlow,
         InvalidFlow,
@@ -803,7 +815,7 @@ mod tests {
 
     fn run_agent(writes: AgentWrites, exit: anyhow::Result<AgentExit>) -> AgentRun {
         let directory = repository();
-        let root = directory.path().canonicalize().unwrap();
+        let root = repository_root(&directory);
         let catalog = root.join("docs/flows");
         let mut input = Cursor::new("1\n");
         let mut output = Vec::new();
@@ -899,7 +911,7 @@ mod tests {
 
     isolated_git_test!(onboarding_from_a_subdirectory_launches_at_the_root, {
         let directory = repository();
-        let root = directory.path().canonicalize().unwrap();
+        let root = repository_root(&directory);
         let cwd = root.join("web");
         fs::create_dir(&cwd).unwrap();
         let catalog = root.join("web/docs/flows");
@@ -930,10 +942,17 @@ mod tests {
 
     #[test]
     fn find_agent_skips_relative_and_empty_path_entries() {
-        let path = std::env::join_paths(["", ".", "bin", "/b"]).unwrap();
+        let absolute = std::env::temp_dir().join("b");
+        let path = std::env::join_paths([
+            PathBuf::new(),
+            PathBuf::from("."),
+            PathBuf::from("bin"),
+            absolute.clone(),
+        ])
+        .unwrap();
         assert_eq!(
             find_agent(Agent::Claude, Some(&path), false, &|_| true),
-            Some(PathBuf::from("/b/claude"))
+            Some(absolute.join("claude"))
         );
     }
 
@@ -998,7 +1017,7 @@ mod tests {
 
     fn run_offer(input: &str, expect_launch: bool) -> (Outcome, String) {
         let directory = repository();
-        let root = directory.path().canonicalize().unwrap();
+        let root = repository_root(&directory);
         let initialized = crate::init_core(&root, Path::new("docs/flows"), false).unwrap();
         let mut preserved = vec![overwrite_with_custom_contents(
             initialized.catalog.join("README.md"),
