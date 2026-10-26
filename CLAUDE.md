@@ -18,8 +18,10 @@ cargo run -- examples/simple.mmd                # render once
 cargo run -- --watch examples/architecture.mmd  # redraw on every save
 ```
 
+Release: bump `version` and `CHANGELOG.md`, merge, then push a `vX.Y.Z` tag; cargo-dist (`dist-workspace.toml`, `.github/workflows/release.yml`) builds and publishes it, and the tap `Ross-cripto/homebrew-tap` syncs the formula. Run `dist generate` after editing the dist config.
+
 ## Code map
 
-`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing and rendering. The README's "The renderer" explains each layout stage. The binary-only `src/browse/` TUI (behind the default-on `tui` feature) handles interactive browsing with pure app state, layout, widgets and ANSI conversion. Next: packaged releases.
+`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing and rendering. The README's "The renderer" explains each layout stage. The binary-only `src/browse/` TUI (behind the default-on `tui` feature) handles interactive browsing with pure app state, layout, widgets and ANSI conversion.
 
 `anchors` (anchor syntax, matcher, file walk), `markdown` (mermaid blocks in .md), `diff` (union diagram + marks), `flows` (catalog, compare, report), `git` (repository paths, ignore checks, merge base and files at a commit via the git binary), `check` (catalog validation), `skill` (embedded strata-flows skill, source `skills/strata-flows/SKILL.md`).

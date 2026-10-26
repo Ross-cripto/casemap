@@ -9,9 +9,22 @@ Every use case gets one Markdown file in `docs/flows/` with a Mermaid flowchart 
 Install the CLI, then run it from your repository root:
 
 ```sh
-cargo install --git https://github.com/Ross-cripto/strata
+brew install Ross-cripto/tap/strata
 strata init
 ```
+
+Without Homebrew, use the installer for your platform or build from source:
+
+```sh
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Ross-cripto/strata/releases/latest/download/strata-installer.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Ross-cripto/strata/releases/latest/download/strata-installer.ps1 | iex"
+# From source (Rust 1.88 or newer)
+cargo install --git https://github.com/Ross-cripto/strata
+```
+
+Prebuilt binaries for macOS, Linux and Windows are attached to each [release](https://github.com/Ross-cripto/strata/releases).
 
 Ask your coding agent: **"document the use-case flows of this repo"**.
 
@@ -417,6 +430,15 @@ The flow tests also check Markdown extraction, union diagrams and state colours,
 catalog classification, and CLI behaviour against temporary git repositories
 with committed and uncommitted changes. The test suite requires the `git` binary.
 
+### Releasing
+
+Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) from `.github/workflows/release.yml`:
+
+1. Bump `version` in `Cargo.toml` and add its section to `CHANGELOG.md`, then merge to `main`.
+2. Tag the merge and push the tag: `git tag v0.6.0 && git push origin v0.6.0`.
+
+The workflow builds the binaries, the shell and PowerShell installers and the Homebrew formula, and publishes them as a GitHub release with the changelog section as its notes. The tap [Ross-cripto/homebrew-tap](https://github.com/Ross-cripto/homebrew-tap) copies the new formula with its daily Sync workflow; run it by hand (`gh workflow run sync.yml -R Ross-cripto/homebrew-tap`) to publish at once. After editing `dist-workspace.toml`, run `dist generate` to refresh the workflow.
+
 ## Known limits
 
 - browse restores the terminal on quit, Ctrl-C, errors and panics; a `kill` signal leaves it in the alternate screen (run `reset`).
@@ -437,4 +459,4 @@ with committed and uncommitted changes. The test suite requires the `git` binary
 
 1. Done: code anchors and `strata which` connect use cases to their code, with validation and stale detection.
 2. Done: an interactive browser for exploring the catalog and diagrams wider than the terminal.
-3. Packaged releases to make installation easier.
+3. Done: packaged releases with prebuilt binaries, installers and a Homebrew tap.

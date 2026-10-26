@@ -2,14 +2,14 @@
 name: strata-flows
 description: Document and maintain this repository's use-case flows as Mermaid flowcharts in docs/flows/, checked and diffed with the strata CLI. Use when asked to document, map or explain what users can do in the app, and whenever a task adds, changes, fixes or removes user-facing behaviour (commands, routes, screens, jobs) so the affected flows are updated in the same change. Also use when asked which flows exist or what a change did to them.
 license: MIT
-compatibility: Requires the strata CLI 0.4 or newer and git.
+compatibility: Requires the strata CLI 0.5 or newer and git.
 ---
 
 # strata flows
 
 This repository keeps a catalog of its use cases in `docs/flows/`: one Markdown file per thing a user, operator or scheduled job can do, with its steps as a Mermaid flowchart. You write and maintain these files. strata checks them, renders them in the terminal and shows what each change did to them.
 
-If `strata --version` fails, stop and tell the user to install it (`cargo install --git https://github.com/Ross-cripto/strata`) instead of writing unchecked files. Run strata from the repository root.
+If `strata --version` fails, stop and tell the user to install it (`brew install Ross-cripto/tap/strata`, or `cargo install --git https://github.com/Ross-cripto/strata`) instead of writing unchecked files. Run strata from the repository root.
 
 ## What a use case is
 
