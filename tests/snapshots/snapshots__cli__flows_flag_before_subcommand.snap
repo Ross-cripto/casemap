@@ -3,7 +3,7 @@ source: tests/snapshots.rs
 assertion_line: 483
 expression: "cli(&[\"--flows\", \"tests/fixtures/flows/after\", \"--no-color\", \"flows\"], &[],\nNone)"
 ---
-$ strata --flows tests/fixtures/flows/after --no-color flows
+$ casemap --flows tests/fixtures/flows/after --no-color flows
 [exit 0]
 --- stdout
 checkout  Checkout — A customer pays for the cart.

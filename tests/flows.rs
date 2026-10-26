@@ -1,10 +1,10 @@
 #[cfg_attr(not(feature = "cli"), allow(unused_imports))]
 mod common;
 
+use casemap::{Direction, Options, diff, flows};
 use common::TempRepo;
 use std::fs;
 use std::path::Path;
-use strata::{Direction, Options, diff, flows};
 
 const INVALID_UTF8: [u8; 2] = [0xff, 0xfe];
 
@@ -56,7 +56,7 @@ fn union_render_invariants() {
                 direction,
                 ..Options::default()
             };
-            let output = strata::render_diagram(union, &opts);
+            let output = casemap::render_diagram(union, &opts);
             let arrows = output
                 .chars()
                 .filter(|ch| matches!(ch, '▼' | '▲' | '▶' | '◀'))
@@ -67,7 +67,7 @@ fn union_render_invariants() {
                 .filter(|ch| matches!(ch, '╵' | '╷' | '╴' | '╶' | '╹' | '╻' | '╸' | '╺'))
                 .collect();
             assert!(dangling.is_empty(), "{direction:?}: {dangling:?}\n{output}");
-            assert_eq!(output, strata::render_diagram(union, &opts));
+            assert_eq!(output, casemap::render_diagram(union, &opts));
             for node in &union.nodes {
                 for label in &node.label {
                     assert!(
@@ -84,7 +84,7 @@ fn union_render_invariants() {
                     );
                 }
             }
-            let ascii = strata::render_diagram(
+            let ascii = casemap::render_diagram(
                 union,
                 &Options {
                     ascii: true,
@@ -101,7 +101,7 @@ fn colour_follows_marks() {
     let (old, new) = pair();
     let old = flows::diagram(&old[0]).unwrap().unwrap();
     let new = flows::diagram(&new[0]).unwrap().unwrap();
-    let output = strata::render_diagram(
+    let output = casemap::render_diagram(
         &diff::diff(&old, &new).union,
         &Options {
             color: true,
@@ -128,7 +128,7 @@ fn colour_follows_marks() {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|extension| extension == "mmd") {
                 let source = fs::read_to_string(&path).unwrap();
-                let output = strata::render_str(
+                let output = casemap::render_str(
                     &source,
                     &Options {
                         color: true,
@@ -151,40 +151,40 @@ fn colour_follows_marks() {
 #[test]
 fn markdown_renders_each_block_with_heading() {
     let text = "# A\nProse\n```mermaid\ngraph TD\na[First] --> b[Second]\n```\n## B\n```bash\n# not a heading\n```\n```mermaid\ngraph LR\nc[Third] --> d[Fourth]\n```\n";
-    let output = strata::render_markdown(text, &Options::default()).unwrap();
+    let output = casemap::render_markdown(text, &Options::default()).unwrap();
     for expected in ["A\n", "B\n", "First", "Second", "Third", "Fourth"] {
         assert!(output.contains(expected), "missing {expected}\n{output}");
     }
     assert!(!output.contains("not a heading"));
-    let error = strata::render_markdown(
+    let error = casemap::render_markdown(
         &text.replace("c[Third] --> d[Fourth]", "c -->"),
         &Options::default(),
     )
     .unwrap_err();
     assert_eq!(error.line, 13);
     assert_eq!(
-        strata::render_markdown("# Empty", &Options::default()).unwrap(),
+        casemap::render_markdown("# Empty", &Options::default()).unwrap(),
         ""
     );
 }
 
 #[test]
 fn buses_group_only_edges_with_the_same_mark() {
-    let mut diagram = strata::parser::parse("graph TD\na --> b\na --> c\na --> d").unwrap();
-    diagram.edges[0].mark = strata::Mark::Added;
-    diagram.edges[1].mark = strata::Mark::Removed;
-    diagram.edges[2].mark = strata::Mark::Added;
-    let layout = strata::layout::layout(&diagram);
+    let mut diagram = casemap::parser::parse("graph TD\na --> b\na --> c\na --> d").unwrap();
+    diagram.edges[0].mark = casemap::Mark::Added;
+    diagram.edges[1].mark = casemap::Mark::Removed;
+    diagram.edges[2].mark = casemap::Mark::Added;
+    let layout = casemap::layout::layout(&diagram);
     let source = layout
         .items
         .iter()
-        .position(|item| matches!(item.kind, strata::layout::ItemKind::Node(0)))
+        .position(|item| matches!(item.kind, casemap::layout::ItemKind::Node(0)))
         .unwrap();
     let units = layout.out_units(&diagram, source);
     assert_eq!(units.len(), 2);
-    assert_eq!(units[0].mark, strata::Mark::Added);
+    assert_eq!(units[0].mark, casemap::Mark::Added);
     assert_eq!(units[0].segs.len(), 2);
-    assert_eq!(units[1].mark, strata::Mark::Removed);
+    assert_eq!(units[1].mark, casemap::Mark::Removed);
     assert_eq!(units[1].segs.len(), 1);
 }
 

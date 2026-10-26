@@ -1,8 +1,8 @@
+use casemap::flows::Flow;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::ListState;
-use strata::flows::Flow;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BareMode {
@@ -557,7 +557,7 @@ mod state_tests {
             details: Vec::new(),
         };
         Entry {
-            flow: strata::flows::parse_flow(
+            flow: casemap::flows::parse_flow(
                 &format!("{name}.md"),
                 &format!("# {name}\n\nDescription.\n\n```mermaid\ngraph TD\na --> b\n```"),
             ),

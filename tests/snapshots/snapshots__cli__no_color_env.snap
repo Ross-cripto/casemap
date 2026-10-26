@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"--color\", \"examples/simple.mmd\"], &[(\"NO_COLOR\", \"1\")], None)"
 ---
-$ strata --color examples/simple.mmd
+$ casemap --color examples/simple.mmd
 [exit 0]
 --- stdout
                  ␛[0m┌─────────┐␛[0m

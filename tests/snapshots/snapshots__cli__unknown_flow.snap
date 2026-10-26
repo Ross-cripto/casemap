@@ -2,9 +2,9 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"flows\", \"nosuch\", \"--flows\", \"tests/fixtures/flows/after\",\n\"--no-color\"], &[], None)"
 ---
-$ strata flows nosuch --flows tests/fixtures/flows/after --no-color
+$ casemap flows nosuch --flows tests/fixtures/flows/after --no-color
 [exit 1]
 --- stdout
 --- stderr
-strata: no flow named nosuch; available: checkout, login, refund
+casemap: no flow named nosuch; available: checkout, login, refund
 [end]

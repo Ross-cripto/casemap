@@ -1,4 +1,4 @@
-//! strata CLI: adopt, validate, render and compare a catalog of use-case flows.
+//! casemap CLI: adopt, validate, render and compare a catalog of use-case flows.
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -7,14 +7,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, bail};
+use casemap::flows::{Flow, FlowChange, Stale};
 use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
-use strata::flows::{Flow, FlowChange, Stale};
 
 #[cfg(feature = "tui")]
 mod browse;
-use strata::markdown::is_markdown_path;
-use strata::{Direction, Options, ParseError, anchors, check, git, skill};
+use casemap::markdown::is_markdown_path;
+use casemap::{Direction, Options, ParseError, anchors, check, git, skill};
 
 const DEFAULT_FLOWS_DIR: &str = skill::DEFAULT_CATALOG;
 const DEFAULT_REF: &str = "HEAD";
@@ -24,15 +24,15 @@ const WATCH_MAX_DRAIN: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "strata",
+    name = "casemap",
     version,
     about = "The living map of your app's use cases: one Mermaid flow per use case in docs/flows/, written by your coding agent, checked and rendered in the terminal.",
     after_help = "Quick start:
-  strata init           create docs/flows/ and install the agent skill
+  casemap init          create docs/flows/ and install the agent skill
   (ask your agent)      \"document the use-case flows of this repo\"
-  strata browse         see them
-  strata check          validate them
-  strata diff main      what a branch did to them",
+  casemap browse        see them
+  casemap check         validate them
+  casemap diff main     what a branch did to them",
     args_override_self = true,
     disable_help_subcommand = true
 )]
@@ -69,7 +69,7 @@ enum Format {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Create the flow catalog and install the strata-flows agent skill.
+    /// Create the flow catalog and install the casemap agent skill.
     Init {
         #[arg(long)]
         force: bool,
@@ -106,7 +106,7 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Print the strata-flows agent skill without its front matter.
+    /// Print the casemap agent skill without its front matter.
     Guide,
     /// Generate shell completions.
     Completions { shell: clap_complete::Shell },
@@ -127,7 +127,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("strata: {error:#}");
+            eprintln!("casemap: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -170,7 +170,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             #[cfg(not(feature = "tui"))]
             {
                 let _ = base;
-                bail!("strata was built without the tui feature")
+                bail!("casemap was built without the tui feature")
             }
         }
         Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
@@ -184,7 +184,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Commands::Completions { shell }) => {
-            clap_complete::generate(shell, &mut Cli::command(), "strata", &mut io::stdout());
+            clap_complete::generate(shell, &mut Cli::command(), "casemap", &mut io::stdout());
             Ok(ExitCode::SUCCESS)
         }
         None => {
@@ -264,12 +264,12 @@ enum RenderError {
 
 fn render_source(path: Option<&Path>, src: &str, opts: &Options) -> Result<String, RenderError> {
     let Some(path) = path.filter(|path| is_markdown_path(path)) else {
-        return Ok(strata::render_str(src, opts)?);
+        return Ok(casemap::render_str(src, opts)?);
     };
-    if strata::markdown::mermaid_blocks(src).is_empty() {
+    if casemap::markdown::mermaid_blocks(src).is_empty() {
         return Err(RenderError::NoBlocks(path.display().to_string()));
     }
-    Ok(strata::render_markdown(src, opts)?)
+    Ok(casemap::render_markdown(src, opts)?)
 }
 
 fn require_catalog(dir: &Path) -> anyhow::Result<()> {
@@ -284,7 +284,7 @@ fn require_catalog(dir: &Path) -> anyhow::Result<()> {
 
 fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
     require_catalog(dir)?;
-    Ok(strata::flows::load_dir(dir)?)
+    Ok(casemap::flows::load_dir(dir)?)
 }
 
 struct BaseChanges {
@@ -296,19 +296,19 @@ struct BaseChanges {
 }
 
 fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseChanges> {
-    let base = strata::git::merge_base(dir, rev)?;
-    let old = strata::git::files_at(dir, &base)?
+    let base = casemap::git::merge_base(dir, rev)?;
+    let old = casemap::git::files_at(dir, &base)?
         .into_iter()
-        .map(|(path, text)| strata::flows::parse_flow(&path, &text))
+        .map(|(path, text)| casemap::flows::parse_flow(&path, &text))
         .collect::<Vec<_>>();
-    let changes = strata::flows::compare(&old, current);
+    let changes = casemap::flows::compare(&old, current);
     let stale = if current
         .iter()
         .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
     {
         let (root, _, prefix) = code_root(dir)?;
         let changed = git::changed_files(&root, &base)?;
-        strata::flows::stale_flows(current, &prefix, &changed)
+        casemap::flows::stale_flows(current, &prefix, &changed)
     } else {
         Vec::new()
     };
@@ -330,11 +330,11 @@ fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::
     } = base_changes(dir, rev, &new)?;
     print!(
         "{}",
-        strata::flows::render_report(&changes, &stale, rev, &base, opts)
+        casemap::flows::render_report(&changes, &stale, rev, &base, opts)
     );
     if changes
         .iter()
-        .any(|change| matches!(change, strata::flows::FlowChange::Broken { .. }))
+        .any(|change| matches!(change, casemap::flows::FlowChange::Broken { .. }))
         || (strict && !stale.is_empty())
     {
         Ok(ExitCode::FAILURE)
@@ -373,7 +373,7 @@ fn show_flows(
         if flows.is_empty() {
             println!("no flows in {}", dir.display());
         } else {
-            print!("{}", strata::flows::render_list(&flows));
+            print!("{}", casemap::flows::render_list(&flows));
         }
         return Ok(ExitCode::SUCCESS);
     };
@@ -381,17 +381,17 @@ fn show_flows(
         let available: Vec<&str> = flows.iter().map(|flow| flow.name.as_str()).collect();
         bail!("no flow named {name}; available: {}", available.join(", "));
     };
-    let diagram = match strata::flows::diagram(flow) {
+    let diagram = match casemap::flows::diagram(flow) {
         Some(Ok(diagram)) => diagram,
         Some(Err(error)) => bail!("{}: {error}", flow.path),
         None => bail!("{}: no mermaid block", flow.path),
     };
-    print!("{}", strata::render::bold_line(&flow.title, opts.color));
+    print!("{}", casemap::render::bold_line(&flow.title, opts.color));
     if let Some(description) = &flow.description {
         println!("{description}");
     }
     println!();
-    print!("{}", strata::render_diagram(&diagram, opts));
+    print!("{}", casemap::render_diagram(&diagram, opts));
     print!("{}", anchors::render_footer(flow));
     Ok(ExitCode::SUCCESS)
 }
@@ -540,7 +540,7 @@ fn root_relative_path(path: &Path, root: &Path) -> anyhow::Result<String> {
 
 struct WhichPath<'a> {
     path: String,
-    flows: Vec<strata::flows::AnchoredFlow<'a>>,
+    flows: Vec<casemap::flows::AnchoredFlow<'a>>,
 }
 
 fn which_flows(dir: &Path, paths: &[PathBuf], format: Format) -> anyhow::Result<ExitCode> {
@@ -566,7 +566,7 @@ fn which_flows(dir: &Path, paths: &[PathBuf], format: Format) -> anyhow::Result<
             } else {
                 relative
             },
-            flows: strata::flows::anchored_flows(&flows, &files),
+            flows: casemap::flows::anchored_flows(&flows, &files),
         });
     }
     match format {
@@ -583,7 +583,7 @@ fn file_is_under_directory(file: &str, directory: &str) -> bool {
             .is_some_and(|tail| tail.starts_with('/'))
 }
 
-fn which_annotation(flow: &strata::flows::AnchoredFlow<'_>) -> String {
+fn which_annotation(flow: &casemap::flows::AnchoredFlow<'_>) -> String {
     let mut parts = Vec::new();
     if flow.whole_flow {
         parts.push("whole flow".to_string());
@@ -773,14 +773,14 @@ fn check_exit_code(report: &check::Report, strict: bool) -> ExitCode {
     }
 }
 
-fn catalog_write_error(path: &Path, error: io::Error) -> strata::flows::CatalogError {
-    strata::flows::CatalogError {
+fn catalog_write_error(path: &Path, error: io::Error) -> casemap::flows::CatalogError {
+    casemap::flows::CatalogError {
         path: path.to_path_buf(),
         error,
     }
 }
 
-fn create_catalog(dir: &Path, display: &str) -> Result<(), strata::flows::CatalogError> {
+fn create_catalog(dir: &Path, display: &str) -> Result<(), casemap::flows::CatalogError> {
     let existed = dir.is_dir();
     std::fs::create_dir_all(dir).map_err(|error| catalog_write_error(dir, error))?;
     let mut entries = std::fs::read_dir(dir).map_err(|error| catalog_write_error(dir, error))?;
@@ -819,7 +819,7 @@ fn existing_metadata(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
 
 fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
-    name.push(".strata-tmp");
+    name.push(".casemap-tmp");
     PathBuf::from(name)
 }
 
@@ -941,7 +941,7 @@ fn install_skill(
         }
         SkillAction::UpToDate => println!("up to date {display}"),
         SkillAction::Keep => {
-            println!("kept {display} (differs from this strata version; use --force to update)")
+            println!("kept {display} (differs from this casemap version; use --force to update)")
         }
         SkillAction::Update => {
             write_skill(&path, desired)?;
@@ -958,7 +958,7 @@ fn locate_install_root(cwd: &Path) -> anyhow::Result<(PathBuf, String)> {
     match git::locate(cwd)? {
         git::Location::Inside { root, prefix } => Ok((root, prefix)),
         git::Location::NotARepository => {
-            println!("note: not a git repository; strata diff needs git");
+            println!("note: not a git repository; casemap diff needs git");
             Ok((cwd.to_path_buf(), String::new()))
         }
     }
@@ -1032,13 +1032,13 @@ fn install_all_skills(root: &Path, desired: &str, force: bool) -> bool {
 fn print_next_steps(catalog: &str) {
     println!("\nNext: ask your coding agent to \"document the use-case flows of this repo\".");
     println!(
-        "Then: `strata browse` to see them, `strata check` to validate them, `strata diff` after each change."
+        "Then: `casemap browse` to see them, `casemap check` to validate them, `casemap diff` after each change."
     );
     println!(
         "\nOptional, so agents always keep flows current, add this line to AGENTS.md and CLAUDE.md:"
     );
     println!(
-        "  Use-case flows live in {catalog}/ (strata-flows skill): update them when behaviour changes and run `strata check`."
+        "  Use-case flows live in {catalog}/ (casemap skill): update them when behaviour changes and run `casemap check`."
     );
 }
 
@@ -1191,7 +1191,7 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
     let mut wake = match &watcher {
         Ok(_) => Wake::Events(receiver),
         Err(error) => {
-            eprintln!("strata: file events unavailable ({error}); checking every 1s");
+            eprintln!("casemap: file events unavailable ({error}); checking every 1s");
             Wake::Poll
         }
     };
@@ -1317,7 +1317,7 @@ mod tests {
     fn skill_commands_parse() {
         let mut checked = 0;
         for span in skill::SKILL_MD.split('`').skip(1).step_by(2) {
-            if span.starts_with("strata ") {
+            if span.starts_with("casemap ") {
                 checked += 1;
                 let command = span.replace("<name>", "x").replace("[REF]", "main");
                 if let Err(error) = Cli::try_parse_from(command.split_whitespace()) {
@@ -1336,11 +1336,14 @@ mod tests {
     #[test]
     fn parses_like_before() {
         for file in ["./diff", "-", "help"] {
-            let cli = Cli::try_parse_from(["strata", file]).unwrap();
+            let cli = Cli::try_parse_from(["casemap", file]).unwrap();
             assert_eq!(cli.file.as_deref(), Some(Path::new(file)));
             assert!(cli.command.is_none());
         }
-        for args in [["strata", "--watch", "diff"], ["strata", "diff", "--watch"]] {
+        for args in [
+            ["casemap", "--watch", "diff"],
+            ["casemap", "diff", "--watch"],
+        ] {
             let cli = Cli::try_parse_from(args).unwrap();
             assert!(cli.watch);
             assert!(matches!(
@@ -1351,10 +1354,10 @@ mod tests {
                 })
             ));
         }
-        let cli = Cli::try_parse_from(["strata", "--dir", "LR", "--dir", "TD"]).unwrap();
+        let cli = Cli::try_parse_from(["casemap", "--dir", "LR", "--dir", "TD"]).unwrap();
         assert_eq!(cli.dir, Some(Direction::TopDown));
         assert!(
-            Cli::try_parse_from(["strata", "--ascii", "--ascii"])
+            Cli::try_parse_from(["casemap", "--ascii", "--ascii"])
                 .unwrap()
                 .ascii
         );

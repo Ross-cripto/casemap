@@ -1,9 +1,9 @@
 mod common;
 
-use common::{CliRun, TempRepo, divergent_catalog, run_strata, transcript};
+use casemap::{Direction, Options, diff, flows};
+use common::{CliRun, TempRepo, divergent_catalog, run_casemap, transcript};
 use std::fs;
 use std::path::Path;
-use strata::{Direction, Options, diff, flows};
 
 fn matrix(mut render: impl FnMut(&Options) -> String) -> String {
     let mut body = String::new();
@@ -33,7 +33,7 @@ fn matrix(mut render: impl FnMut(&Options) -> String) -> String {
 
 fn render_fixture(path: &str) -> String {
     let source = fs::read_to_string(path).unwrap();
-    matrix(|options| strata::render_str(&source, options).unwrap())
+    matrix(|options| casemap::render_str(&source, options).unwrap())
 }
 
 fn union(name: &str, added: bool) -> String {
@@ -55,13 +55,13 @@ fn union(name: &str, added: bool) -> String {
             &flows::diagram(current).unwrap().unwrap(),
         )
     };
-    matrix(|options| strata::render_diagram(&difference.union, options))
+    matrix(|options| casemap::render_diagram(&difference.union, options))
 }
 
 fn cli(args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> String {
     transcript(
         &args.join(" "),
-        &run_strata(args, Path::new(env!("CARGO_MANIFEST_DIR")), env, input),
+        &run_casemap(args, Path::new(env!("CARGO_MANIFEST_DIR")), env, input),
     )
 }
 
@@ -86,7 +86,7 @@ fn redact_shas(repo: &TempRepo, mut body: String) -> String {
 }
 
 fn repo_transcript(repo: &TempRepo, args: &[&str]) -> String {
-    let run: CliRun = repo.strata(args).into();
+    let run: CliRun = repo.casemap(args).into();
     redact_shas(repo, transcript(&args.join(" "), &run))
 }
 
@@ -162,7 +162,7 @@ fn markdown_blocks() {
     for color in [false, true] {
         body.push_str(&format!(
             "== color={color}\n{}",
-            strata::render_markdown(
+            casemap::render_markdown(
                 document,
                 &Options {
                     color,

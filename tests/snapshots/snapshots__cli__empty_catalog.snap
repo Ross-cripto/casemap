@@ -1,8 +1,8 @@
 ---
 source: tests/snapshots.rs
-expression: "transcript(\"flows --flows empty --no-color\",\n&repo.strata(&[\"flows\", \"--flows\", \"empty\", \"--no-color\"]).into())"
+expression: "transcript(\"flows --flows empty --no-color\",\n&repo.casemap(&[\"flows\", \"--flows\", \"empty\", \"--no-color\"]).into())"
 ---
-$ strata flows --flows empty --no-color
+$ casemap flows --flows empty --no-color
 [exit 0]
 --- stdout
 no flows in empty

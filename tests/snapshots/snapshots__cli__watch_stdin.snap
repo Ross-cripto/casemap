@@ -2,9 +2,9 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"-w\", \"-\"], &[], None)"
 ---
-$ strata -w -
+$ casemap -w -
 [exit 1]
 --- stdout
 --- stderr
-strata: --watch needs a file path
+casemap: --watch needs a file path
 [end]

@@ -141,6 +141,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64fa3c856b712db6612c019f14756e64e4bcea13337a6b33b696333a9eaa2d06"
 
 [[package]]
+name = "casemap"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "assert_fs",
+ "clap",
+ "clap_complete",
+ "insta",
+ "notify",
+ "predicates",
+ "ratatui",
+ "serde_json",
+ "thiserror",
+ "unicode-width",
+]
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1138,24 +1156,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "strata"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "assert_fs",
- "clap",
- "clap_complete",
- "insta",
- "notify",
- "predicates",
- "ratatui",
- "serde_json",
- "thiserror",
- "unicode-width",
-]
 
 [[package]]
 name = "strsim"

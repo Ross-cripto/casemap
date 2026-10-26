@@ -2,9 +2,9 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"--watch\", \"diff\"], &[], None)"
 ---
-$ strata --watch diff
+$ casemap --watch diff
 [exit 1]
 --- stdout
 --- stderr
-strata: --watch only applies to rendering a file
+casemap: --watch only applies to rendering a file
 [end]

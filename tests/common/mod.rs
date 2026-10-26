@@ -32,10 +32,10 @@ pub fn git_command(config: &Path) -> Command {
     let mut command = Command::new("git");
     isolate_git(&mut command, config);
     command
-        .env("GIT_AUTHOR_NAME", "strata")
-        .env("GIT_AUTHOR_EMAIL", "strata@example.com")
-        .env("GIT_COMMITTER_NAME", "strata")
-        .env("GIT_COMMITTER_EMAIL", "strata@example.com")
+        .env("GIT_AUTHOR_NAME", "casemap")
+        .env("GIT_AUTHOR_EMAIL", "casemap@example.com")
+        .env("GIT_COMMITTER_NAME", "casemap")
+        .env("GIT_COMMITTER_EMAIL", "casemap@example.com")
         .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+00:00")
         .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+00:00")
         .args(["-c", "commit.gpgsign=false"]);
@@ -43,8 +43,8 @@ pub fn git_command(config: &Path) -> Command {
 }
 
 #[cfg(feature = "cli")]
-pub fn strata_command(config: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_strata"));
+pub fn casemap_command(config: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_casemap"));
     isolate_git(&mut command, config);
     command.env_remove("NO_COLOR");
     command
@@ -125,8 +125,8 @@ impl TempRepo {
     }
 
     #[cfg(feature = "cli")]
-    pub fn strata(&self, args: &[&str]) -> Output {
-        strata_command(&self.config_path())
+    pub fn casemap(&self, args: &[&str]) -> Output {
+        casemap_command(&self.config_path())
             .args(args)
             .current_dir(self.path())
             .output()
@@ -160,8 +160,8 @@ pub fn divergent_catalog() -> TempRepo {
 
 #[cfg(feature = "cli")]
 impl TempRepo {
-    pub fn strata_stdin(&self, args: &[&str], input: &str) -> Output {
-        let mut child = strata_command(&self.config_path())
+    pub fn casemap_stdin(&self, args: &[&str], input: &str) -> Output {
+        let mut child = casemap_command(&self.config_path())
             .args(args)
             .current_dir(self.path())
             .stdin(Stdio::piped())
@@ -196,8 +196,8 @@ impl From<Output> for CliRun {
 }
 
 #[cfg(feature = "cli")]
-pub fn run_strata(args: &[&str], cwd: &Path, env: &[(&str, &str)], stdin: Option<&str>) -> CliRun {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_strata"));
+pub fn run_casemap(args: &[&str], cwd: &Path, env: &[(&str, &str)], stdin: Option<&str>) -> CliRun {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_casemap"));
     command
         .args(args)
         .current_dir(cwd)
@@ -217,7 +217,7 @@ pub fn run_strata(args: &[&str], cwd: &Path, env: &[(&str, &str)], stdin: Option
 
 pub fn transcript(args: &str, run: &CliRun) -> String {
     format!(
-        "$ strata {args}\n[exit {}]\n--- stdout\n{}--- stderr\n{}[end]\n",
+        "$ casemap {args}\n[exit {}]\n--- stdout\n{}--- stderr\n{}[end]\n",
         run.status, run.stdout, run.stderr
     )
     .replace('\x1b', "␛")

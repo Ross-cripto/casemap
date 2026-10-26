@@ -1,5 +1,5 @@
-pub const SKILL_NAME: &str = "strata-flows";
-pub const SKILL_MD: &str = include_str!("../skills/strata-flows/SKILL.md");
+pub const SKILL_NAME: &str = "casemap";
+pub const SKILL_MD: &str = include_str!("../skills/casemap/SKILL.md");
 pub const DEFAULT_CATALOG: &str = "docs/flows";
 pub const INSTALL_DIRS: [(&str, &str); 2] = [
     (".claude/skills", "Claude Code"),
@@ -13,9 +13,9 @@ pub fn render(catalog: &str) -> String {
         return rendered;
     }
     rendered.replace(
-        "Run strata from the repository root.",
+        "Run casemap from the repository root.",
         &format!(
-            "Run strata from the repository root and pass `--flows {catalog}` to every command."
+            "Run casemap from the repository root and pass `--flows {catalog}` to every command."
         ),
     )
 }
@@ -102,14 +102,14 @@ mod tests {
     fn body_handles_crlf() {
         let rendered = format!("\u{feff}{}", render(DEFAULT_CATALOG).replace('\n', "\r\n"));
         let body = body_from_source(&rendered);
-        assert!(body.starts_with("# strata flows\n"));
+        assert!(body.starts_with("# casemap flows\n"));
         assert!(!body.contains("\r\n"));
     }
 
     #[test]
     fn body_drops_front_matter_and_renders_catalog() {
         let text = body("web/flows");
-        assert!(text.starts_with("# strata flows\n"));
+        assert!(text.starts_with("# casemap flows\n"));
         assert!(!text.contains("docs/flows"));
         assert!(text.contains("web/flows/"));
         assert!(render("web/flows").starts_with("---\n"));
@@ -120,13 +120,13 @@ mod tests {
     #[test]
     fn render_adds_flows_flag_for_custom_catalog() {
         assert!(render("web/flows").contains(
-            "Run strata from the repository root and pass `--flows web/flows` to every command."
+            "Run casemap from the repository root and pass `--flows web/flows` to every command."
         ));
     }
 
     #[test]
     fn render_keeps_default_text() {
         assert_eq!(render(DEFAULT_CATALOG), SKILL_MD);
-        assert!(render(DEFAULT_CATALOG).contains("Run strata from the repository root."));
+        assert!(render(DEFAULT_CATALOG).contains("Run casemap from the repository root."));
     }
 }

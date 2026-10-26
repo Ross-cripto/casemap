@@ -1,4 +1,4 @@
-//! strata: the living map of an app's use cases, checked, rendered and diffed in the terminal.
+//! casemap: the living map of an app's use cases, checked, rendered and diffed in the terminal.
 //!
 //! The pipeline is `parser` → `layout` (layered, cluster-aware) → `route`
 //! (orthogonal edge routing) → `render` (box-drawing canvas). Each stage is a
@@ -7,7 +7,7 @@
 //! A flow catalog records use cases in Markdown and compares their diagrams with git.
 //!
 //! ```
-//! let out = strata::render_str("graph TD\n  a[API] --> b[(DB)]", &strata::Options::default()).unwrap();
+//! let out = casemap::render_str("graph TD\n  a[API] --> b[(DB)]", &casemap::Options::default()).unwrap();
 //! assert!(out.contains("API"));
 //! ```
 

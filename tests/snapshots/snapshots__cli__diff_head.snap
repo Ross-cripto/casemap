@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "repo_cli(&repo, &[\"diff\", \"--no-color\"])"
 ---
-$ strata diff --no-color
+$ casemap diff --no-color
 [exit 0]
 --- stdout
 flow changes since HEAD ([SHA]): 1 modified, 0 new, 0 removed

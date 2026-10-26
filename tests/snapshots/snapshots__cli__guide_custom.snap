@@ -2,14 +2,14 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"guide\", \"--flows\", \"flows\", \"--no-color\"], &[], None)"
 ---
-$ strata guide --flows flows --no-color
+$ casemap guide --flows flows --no-color
 [exit 0]
 --- stdout
-# strata flows
+# casemap flows
 
-This repository keeps a catalog of its use cases in `flows/`: one Markdown file per thing a user, operator or scheduled job can do, with its steps as a Mermaid flowchart. You write and maintain these files. strata checks them, renders them in the terminal and shows what each change did to them.
+This repository keeps a catalog of its use cases in `flows/`: one Markdown file per thing a user, operator or scheduled job can do, with its steps as a Mermaid flowchart. You write and maintain these files. casemap checks them, renders them in the terminal and shows what each change did to them.
 
-If `strata --version` fails, stop and tell the user to install it (`brew install Ross-cripto/tap/strata`, or `cargo install --git https://github.com/Ross-cripto/strata`) instead of writing unchecked files. Run strata from the repository root and pass `--flows flows` to every command.
+If `casemap --version` fails, stop and tell the user to install it (`brew install Ross-cripto/tap/casemap`, or `cargo install --git https://github.com/Ross-cripto/casemap`) instead of writing unchecked files. Run casemap from the repository root and pass `--flows flows` to every command.
 
 ## What a use case is
 
@@ -56,7 +56,7 @@ flowchart TD
 - Keep every label within 40 columns (wide characters count double) so the flow fits a side pane.
 - Never draw an edge back into the actor. End a failure branch at the step the user sees, or loop back to the step where they retry, as `error --> pay` does in the example.
 - Show a sign-in requirement as one decision, and only where a signed-out user can reach it. Do not draw middleware, validation layers or retries as steps.
-- Node ids are short, lowercase and stable (`pay`, `confirm`). strata compares flows by id, so rename a step by changing its label, never its id.
+- Node ids are short, lowercase and stable (`pay`, `confirm`). casemap compares flows by id, so rename a step by changing its label, never its id.
 - No subgraphs, styling (`classDef`, `style`, `linkStyle`, `:::`), `click` or mermaid config blocks.
 - Include the main path, the decisions, and the failures the user actually sees. Not every exception or retry.
 - Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question.
@@ -84,7 +84,7 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 
 ## Document a repository (empty or missing catalog)
 
-1. If `flows/` does not exist, run `strata init`.
+1. If `flows/` does not exist, run `casemap init`.
 2. Find the entry points and read enough of each to follow it end to end:
    - HTTP routes and controllers, GraphQL resolvers, RPC handlers
    - CLI commands and subcommands
@@ -94,33 +94,33 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 3. Group them into use cases. Several entry points often serve one use case, and one entry point can appear in several.
 4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
 5. Add anchors to each flow you wrote.
-6. Run `strata check --strict` and fix every problem it reports.
-7. Finish with the list from `strata flows`, the candidates you did not write, and the open questions.
+6. Run `casemap check --strict` and fix every problem it reports.
+7. Finish with the list from `casemap flows`, the candidates you did not write, and the open questions.
 
 ## Keep it true (every task that changes behaviour)
 
-1. Before editing code, run `strata which <file>` for the files you will touch (it only knows anchored flows) and `strata flows` for an overview; note the flows the task touches.
-2. After the change, update those files so they describe the behaviour as it is now. Add a file for a new use case. Delete the file of a removed one. Never rename or move a flow file: strata matches flows by path, so a rename reads as one flow removed and another added.
+1. Before editing code, run `casemap which <file>` for the files you will touch (it only knows anchored flows) and `casemap flows` for an overview; note the flows the task touches.
+2. After the change, update those files so they describe the behaviour as it is now. Add a file for a new use case. Delete the file of a removed one. Never rename or move a flow file: casemap matches flows by path, so a rename reads as one flow removed and another added.
 
-   When you move or rename anchored code, update its `@code` paths; `strata check` fails otherwise.
+   When you move or rename anchored code, update its `@code` paths; `casemap check` fails otherwise.
 
-3. Describe the result only. Never mark what changed; `strata diff` computes that from git.
+3. Describe the result only. Never mark what changed; `casemap diff` computes that from git.
 4. Refactors, performance work and test-only changes do not touch flows. Say "no flows affected" in your final message.
-5. Run `strata check --strict` (it must pass) and `strata diff`, or `strata diff main` on a branch. Quote its first line in your final message.
+5. Run `casemap check --strict` (it must pass) and `casemap diff`, or `casemap diff main` on a branch. Quote its first line in your final message.
 
-   If `strata diff` lists flows as "possibly stale", open each one. Update it if the behaviour changed. If it still holds, say so in your final message; never make a cosmetic edit just to silence the warning.
+   If `casemap diff` lists flows as "possibly stale", open each one. Update it if the behaviour changed. If it still holds, say so in your final message; never make a cosmetic edit just to silence the warning.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `strata init` | Create `flows/` and install this skill for Claude Code, Codex and other agents |
-| `strata flows` | List the catalog (`--format json` for tools) |
-| `strata flows <name>` | Render one flow in the terminal |
-| `strata check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
-| `strata diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
-| `strata which <file>` | Which flows and steps are anchored to a file |
-| `strata browse` | Explore the catalog interactively (for humans; agents use the other commands) |
+| `casemap init` | Create `flows/` and install this skill for Claude Code, Codex and other agents |
+| `casemap flows` | List the catalog (`--format json` for tools) |
+| `casemap flows <name>` | Render one flow in the terminal |
+| `casemap check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
+| `casemap diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
+| `casemap which <file>` | Which flows and steps are anchored to a file |
+| `casemap browse` | Explore the catalog interactively (for humans; agents use the other commands) |
 
 Add `--flows <dir>` when the catalog lives somewhere else.
 

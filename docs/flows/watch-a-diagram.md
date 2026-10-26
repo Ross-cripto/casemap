@@ -4,7 +4,7 @@ The diagram redraws on every save; a broken edit keeps the last good drawing on 
 
 ```mermaid
 flowchart TD
-    dev([Developer runs strata --watch FILE]) --> poll[Wait for a file event or a 1 s heartbeat]
+    dev([Developer runs casemap --watch FILE]) --> poll[Wait for a file event or a 1 s heartbeat]
     poll --> changed{Changed?}
     changed -->|no| poll
     changed -->|yes| render[Render it]

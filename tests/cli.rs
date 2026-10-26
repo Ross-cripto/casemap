@@ -1,6 +1,7 @@
 mod common;
 
 use assert_cmd::Command;
+use casemap::{flows, skill};
 use common::{BASE_BRANCH, FLOWS_DIR, TempRepo, divergent_catalog};
 use predicates::prelude::*;
 use std::fs;
@@ -9,10 +10,9 @@ use std::process::{Child, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use strata::{flows, skill};
 
-fn strata_command(repo: &TempRepo) -> Command {
-    Command::from_std(common::strata_command(&repo.config_path()))
+fn casemap_command(repo: &TempRepo) -> Command {
+    Command::from_std(common::casemap_command(&repo.config_path()))
 }
 
 fn stdout(output: &Output) -> String {
@@ -28,7 +28,7 @@ fn stdout(output: &Output) -> String {
 fn cli_diff_uses_merge_base_not_ref() {
     let repo = divergent_catalog();
     let sha = repo.git_stdout(&["merge-base", BASE_BRANCH, "HEAD"]);
-    let output = stdout(&repo.strata(&["diff", BASE_BRANCH, "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", BASE_BRANCH, "--no-color"]));
     assert_eq!(
         output.lines().next().unwrap(),
         format!(
@@ -47,7 +47,7 @@ fn cli_diff_reports_base_that_did_not_parse() {
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "broken base"]);
     fs::write(path, "# X\n```mermaid\ngraph TD\na[A]\n```\n").unwrap();
-    let output = stdout(&repo.strata(&["diff", "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", "--no-color"]));
     assert!(
         output.contains("X (x.md)  new flow: +1 step (base version did not parse)"),
         "{output}"
@@ -57,7 +57,7 @@ fn cli_diff_reports_base_that_did_not_parse() {
 #[test]
 fn cli_diff_against_branch_includes_uncommitted() {
     let repo = divergent_catalog();
-    let output = stdout(&repo.strata(&["diff", BASE_BRANCH, "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", BASE_BRANCH, "--no-color"]));
     for expected in [
         "1 modified, 1 new, 1 removed",
         "Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link",
@@ -68,14 +68,14 @@ fn cli_diff_against_branch_includes_uncommitted() {
     ] {
         assert!(output.contains(expected), "missing {expected}\n{output}");
     }
-    let output = stdout(&repo.strata(&["diff", "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", "--no-color"]));
     assert!(output.contains("1 modified, 0 new, 0 removed"), "{output}");
 }
 
 #[test]
 fn cli_diff_without_changes() {
     let repo = TempRepo::committed_before();
-    let output = stdout(&repo.strata(&["diff", "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", "--no-color"]));
     assert!(
         output.starts_with("no flow changes since HEAD ("),
         "{output}"
@@ -99,7 +99,7 @@ fn cli_diff_ignores_hidden_flow_files() {
         "# Hidden\n\n```mermaid\nflowchart TD\n    a --> c\n```\n",
     )
     .unwrap();
-    let result = repo.strata(&["diff", "--no-color"]);
+    let result = repo.casemap(&["diff", "--no-color"]);
     assert_eq!(result.status.code(), Some(0));
     let output = stdout(&result);
     assert!(
@@ -114,20 +114,20 @@ fn cli_diff_ignores_hidden_flow_files() {
 fn cli_diff_outside_git_fails() {
     let repo = TempRepo::new();
     repo.add_fixture("before", "login.md");
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .arg("diff")
         .env("GIT_CEILING_DIRECTORIES", std::env::temp_dir())
         .current_dir(repo.path())
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: git"));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("casemap: git"));
 }
 
 #[test]
 fn cli_flows_lists_and_renders_one() {
     let repo = TempRepo::new();
-    let run = |args: &[&str]| strata_command(&repo).args(args).output().unwrap();
+    let run = |args: &[&str]| casemap_command(&repo).args(args).output().unwrap();
     let output = stdout(&run(&[
         "flows",
         "--flows",
@@ -165,10 +165,10 @@ fn cli_flows_lists_and_renders_one() {
 #[test]
 fn cli_guide_prints_convention() {
     let repo = TempRepo::new();
-    let output = stdout(&repo.strata(&["guide"]));
+    let output = stdout(&repo.casemap(&["guide"]));
     assert!(output.contains("docs/flows/"));
-    assert!(output.contains("strata diff main"));
-    let output = stdout(&repo.strata(&["guide", "--flows", "flows"]));
+    assert!(output.contains("casemap diff main"));
+    let output = stdout(&repo.casemap(&["guide", "--flows", "flows"]));
     assert!(output.contains("flows/check-out-a-cart.md"));
     assert!(!output.contains("docs/flows"));
 }
@@ -182,7 +182,7 @@ fn cli_diff_reports_broken_flow_and_continues() {
     )
     .unwrap();
     repo.add_fixture("after", "refund.md");
-    let output = repo.strata(&["diff", "--no-color"]);
+    let output = repo.casemap(&["diff", "--no-color"]);
     assert_eq!(output.status.code(), Some(1));
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(
@@ -211,11 +211,11 @@ fn cli_diff_handles_catalog_absent_at_base_and_unusual_paths() {
         dir.join("sign in ü.md"),
     )
     .unwrap();
-    let output = stdout(&repo.strata(&["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"]));
     assert!(output.contains("0 modified, 1 new, 0 removed"), "{output}");
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "add catalog"]);
-    let output = stdout(&repo.strata(&["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"]));
+    let output = stdout(&repo.casemap(&["diff", "--flows", UNUSUAL_CATALOG_DIR, "--no-color"]));
     assert!(
         output.starts_with("no flow changes since HEAD ("),
         "{output}"
@@ -230,11 +230,11 @@ fn cli_render_markdown_and_reject_invalid_arguments() {
         "# Render\n```mermaid\ngraph TD\na[Visible]\n```\n",
     )
     .unwrap();
-    let output = stdout(&repo.strata(&["flow.markdown", "--no-color"]));
+    let output = stdout(&repo.casemap(&["flow.markdown", "--no-color"]));
     assert!(output.starts_with("Render\n"), "{output}");
     assert!(output.contains("Visible"), "{output}");
     fs::copy(repo.file("flow.markdown"), repo.file("README.MD")).unwrap();
-    let output = stdout(&repo.strata(&["README.MD", "--no-color"]));
+    let output = stdout(&repo.casemap(&["README.MD", "--no-color"]));
     assert!(output.starts_with("Render\n"), "{output}");
     assert!(output.contains("Visible"), "{output}");
     fs::write(repo.file("empty.md"), "# No diagram\n").unwrap();
@@ -257,7 +257,7 @@ fn cli_render_markdown_and_reject_invalid_arguments() {
         (vec!["diff", "HEAD", "extra"], "Usage:"),
         (vec!["one.mmd", "two.mmd"], "Usage:"),
     ] {
-        let output = repo.strata(&args);
+        let output = repo.casemap(&args);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(expected),
@@ -276,19 +276,19 @@ fn usage_errors_exit_with_one() {
         vec!["--dir"],
         vec!["a.mmd", "b.mmd"],
     ] {
-        strata_command(&repo).args(args).assert().code(1);
+        casemap_command(&repo).args(args).assert().code(1);
     }
-    strata_command(&repo)
+    casemap_command(&repo)
         .args(["--dir", "XX"])
         .assert()
         .code(1)
         .stderr(predicate::str::contains("expects one of TD, BT, LR, RL"));
-    strata_command(&repo)
+    casemap_command(&repo)
         .args(["--dir=lr", "examples/simple.mmd", "--no-color"])
         .assert()
         .success();
     for flag in ["--help", "--version", "-h", "-V"] {
-        strata_command(&repo).arg(flag).assert().success();
+        casemap_command(&repo).arg(flag).assert().success();
     }
 }
 
@@ -296,13 +296,13 @@ fn usage_errors_exit_with_one() {
 fn completions_generate_for_each_shell() {
     let repo = TempRepo::new();
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
-        strata_command(&repo)
+        casemap_command(&repo)
             .args(["completions", shell])
             .assert()
             .success()
             .stdout(predicate::str::is_empty().not());
     }
-    strata_command(&repo)
+    casemap_command(&repo)
         .args(["completions", "nosuch"])
         .assert()
         .code(1);
@@ -311,11 +311,11 @@ fn completions_generate_for_each_shell() {
 #[test]
 fn file_and_subcommand_conflict() {
     let repo = TempRepo::new();
-    strata_command(&repo)
+    casemap_command(&repo)
         .args(["x.mmd", "--ascii", "diff"])
         .assert()
         .code(1)
-        .stderr("strata: FILE cannot be combined with a subcommand\n");
+        .stderr("casemap: FILE cannot be combined with a subcommand\n");
 }
 
 #[test]
@@ -326,7 +326,7 @@ fn dot_slash_renders_a_file_named_like_a_command() {
         vec!["./diff", "--no-color"],
         vec!["--no-color", "--", "diff"],
     ] {
-        strata_command(&repo)
+        casemap_command(&repo)
             .current_dir(repo.path())
             .args(args)
             .assert()
@@ -342,7 +342,7 @@ fn no_color_wins_across_subcommand_boundaries() {
         ["--color", "flows", "refund", "--no-color"],
         ["--no-color", "flows", "refund", "--color"],
     ] {
-        strata_command(&repo)
+        casemap_command(&repo)
             .args(args)
             .args(["--flows", "tests/fixtures/flows/after"])
             .assert()
@@ -362,7 +362,7 @@ struct WatchProcess {
 
 impl WatchProcess {
     fn start(repo: &TempRepo) -> Self {
-        let mut command = common::strata_command(&repo.config_path());
+        let mut command = common::casemap_command(&repo.config_path());
         let mut child = command
             .args(["--watch", "--no-color", "f.mmd"])
             .current_dir(repo.path())
@@ -457,7 +457,7 @@ fn check_passes_on_a_valid_catalog() {
     let repo = TempRepo::new();
     repo.copy_catalog("after");
     assert_eq!(
-        stdout(&repo.strata(&["check", "--no-color"])),
+        stdout(&repo.casemap(&["check", "--no-color"])),
         "checked 3 flows: ok\n"
     );
 }
@@ -488,7 +488,7 @@ fn check_exits_1_on_errors() {
         ),
     )
     .unwrap();
-    let output = repo.strata(&["check", "--no-color"]);
+    let output = repo.casemap(&["check", "--no-color"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stderr.is_empty());
     let text = String::from_utf8(output.stdout).unwrap();
@@ -503,10 +503,10 @@ fn check_warnings_exit_0_unless_strict() {
     let path = repo.flow_path("checkout.md");
     let valid = fs::read_to_string(&path).unwrap();
     fs::write(&path, format!("{valid}```mermaid\nflowchart TD\n```\n")).unwrap();
-    let report = stdout(&repo.strata(&["check", "--no-color"]));
+    let report = stdout(&repo.casemap(&["check", "--no-color"]));
     assert!(report.contains("[extra-diagram]"), "{report}");
     assert!(report.ends_with("checked 1 flows: 1 warning\n"), "{report}");
-    let strict = repo.strata(&["check", "--strict", "--no-color"]);
+    let strict = repo.casemap(&["check", "--strict", "--no-color"]);
     assert_eq!(strict.status.code(), Some(1));
     assert!(strict.stderr.is_empty());
     assert_eq!(String::from_utf8(strict.stdout).unwrap(), report);
@@ -516,10 +516,10 @@ fn check_warnings_exit_0_unless_strict() {
 fn check_empty_catalog_warns() {
     let repo = TempRepo::new();
     assert_eq!(
-        stdout(&repo.strata(&["check", "--no-color"])),
+        stdout(&repo.casemap(&["check", "--no-color"])),
         "docs/flows: warning: no flows yet [empty-catalog]\nchecked 0 flows: 1 warning\n"
     );
-    let strict = repo.strata(&["check", "--strict"]);
+    let strict = repo.casemap(&["check", "--strict"]);
     assert_eq!(strict.status.code(), Some(1));
     assert!(strict.stderr.is_empty());
     assert!(String::from_utf8_lossy(&strict.stdout).contains("[empty-catalog]"));
@@ -533,7 +533,7 @@ fn check_json_shape() {
         "# Checkout\n\nDescription.\n```mermaid\nflowchart TD\na -->\n```\n",
     )
     .unwrap();
-    let output = repo.strata(&["check", "--format", "json"]);
+    let output = repo.casemap(&["check", "--format", "json"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -546,7 +546,7 @@ fn check_json_shape() {
     );
     fs::remove_file(repo.flow_path("checkout.md")).unwrap();
     let value: serde_json::Value =
-        serde_json::from_str(&stdout(&repo.strata(&["check", "--format", "json"]))).unwrap();
+        serde_json::from_str(&stdout(&repo.casemap(&["check", "--format", "json"]))).unwrap();
     assert!(value["problems"][0]["path"].is_null());
     assert!(value["problems"][0]["line"].is_null());
     assert_eq!(value["problems"][0]["severity"], "warning");
@@ -560,13 +560,13 @@ fn check_text_points_at_file_and_line() {
         "# Checkout\n\n```mermaid\ngraph TD\na -->\n```\n",
     )
     .unwrap();
-    let output = repo.strata(&["check", "--no-color"]);
+    let output = repo.casemap(&["check", "--no-color"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stdout)
             .contains("docs/flows/checkout.md:5: error: link has no target node [parse-error]\n")
     );
-    let output = repo.strata(&["check", "--color", "--flows", "docs/flows/"]);
+    let output = repo.casemap(&["check", "--color", "--flows", "docs/flows/"]);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("docs/flows/checkout.md:5: \x1b[31merror\x1b[0m:"));
     assert!(!text.contains("flows//"));
@@ -576,7 +576,7 @@ fn check_text_points_at_file_and_line() {
 fn flows_json_lists_the_catalog() {
     let repo = TempRepo::new();
     repo.copy_catalog("after");
-    let output = stdout(&repo.strata(&["flows", "--format", "json"]));
+    let output = stdout(&repo.casemap(&["flows", "--format", "json"]));
     let value: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(value.as_object().unwrap().len(), 2);
     assert_eq!(value["version"], 1);
@@ -586,7 +586,7 @@ fn flows_json_lists_the_catalog() {
         entries[0],
         serde_json::json!({"name": "checkout", "path": "docs/flows/checkout.md", "title": "Checkout", "description": "A customer pays for the cart.", "has_diagram": true})
     );
-    let output = repo.strata(&["flows", "checkout", "--format", "json"]);
+    let output = repo.casemap(&["flows", "checkout", "--format", "json"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr)
@@ -597,7 +597,7 @@ fn flows_json_lists_the_catalog() {
 #[test]
 fn check_this_repository_strictly() {
     let repo = TempRepo::new();
-    strata_command(&repo)
+    casemap_command(&repo)
         .args(["check", "--strict"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .assert()
@@ -609,12 +609,12 @@ fn check_this_repository_strictly() {
 fn json_commands_reject_missing_catalog_without_stdout() {
     let repo = TempRepo::new();
     for command in ["check", "flows"] {
-        let output = repo.strata(&[command, "--flows", "absent", "--format", "json"]);
+        let output = repo.casemap(&[command, "--flows", "absent", "--format", "json"]);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
-            "strata: no flow catalog at absent (create it or pass --flows <dir>)\n"
+            "casemap: no flow catalog at absent (create it or pass --flows <dir>)\n"
         );
     }
 }
@@ -644,7 +644,7 @@ fn installed_skills(repo: &TempRepo) -> Vec<String> {
 #[test]
 fn init_creates_catalog_and_installs_skill() {
     let repo = init_repo();
-    let output = stdout(&repo.strata(&["init"]));
+    let output = stdout(&repo.casemap(&["init"]));
     assert!(
         output.starts_with(&format!("created {}/\n", skill::DEFAULT_CATALOG)),
         "{output}"
@@ -659,7 +659,7 @@ fn init_creates_catalog_and_installs_skill() {
         );
     }
     assert!(output.contains(&format!(
-        "Use-case flows live in {}/ (strata-flows skill)",
+        "Use-case flows live in {}/ (casemap skill)",
         skill::DEFAULT_CATALOG
     )));
 }
@@ -667,7 +667,7 @@ fn init_creates_catalog_and_installs_skill() {
 #[test]
 fn init_installs_the_rendered_skill() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     for text in installed_skills(&repo) {
         assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
     }
@@ -676,7 +676,7 @@ fn init_installs_the_rendered_skill() {
 #[test]
 fn init_renders_a_custom_catalog() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init", "--flows", "flows"]));
+    stdout(&repo.casemap(&["init", "--flows", "flows"]));
     assert!(repo.file("flows/.gitkeep").is_file());
     for text in installed_skills(&repo) {
         assert_eq!(text, skill::render("flows"));
@@ -687,8 +687,8 @@ fn init_renders_a_custom_catalog() {
 #[test]
 fn init_is_idempotent() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
-    let output = stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
+    let output = stdout(&repo.casemap(&["init"]));
     assert!(output.starts_with(&format!("exists {}/\n", skill::DEFAULT_CATALOG)));
     assert_eq!(output.matches("up to date ").count(), 2);
 }
@@ -696,18 +696,18 @@ fn init_is_idempotent() {
 #[test]
 fn init_keeps_differing_files_without_force() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     for path in skill_paths() {
         fs::write(repo.file(&path), "custom skill\n").unwrap();
     }
-    let output = stdout(&repo.strata(&["init"]));
+    let output = stdout(&repo.casemap(&["init"]));
     for path in skill_paths() {
         assert_eq!(
             fs::read_to_string(repo.file(&path)).unwrap(),
             "custom skill\n"
         );
         assert!(output.contains(&format!(
-            "kept {path} (differs from this strata version; use --force to update)"
+            "kept {path} (differs from this casemap version; use --force to update)"
         )));
     }
 }
@@ -715,13 +715,13 @@ fn init_keeps_differing_files_without_force() {
 #[test]
 fn init_force_overwrites_only_skill_files() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     fs::write(repo.flow_path("custom.md"), "my flow\n").unwrap();
     fs::write(repo.file("AGENTS.md"), "my rules\n").unwrap();
     for path in skill_paths() {
         fs::write(repo.file(&path), "custom skill\n").unwrap();
     }
-    let output = stdout(&repo.strata(&["init", "--force"]));
+    let output = stdout(&repo.casemap(&["init", "--force"]));
     assert_eq!(output.matches("updated ").count(), 2);
     for text in installed_skills(&repo) {
         assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
@@ -761,7 +761,7 @@ fn files_under(directory: &std::path::Path, root: &std::path::Path) -> Vec<Strin
 #[test]
 fn init_writes_only_its_targets() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     let mut expected = skill_paths();
     expected.push(format!("{}/.gitkeep", skill::DEFAULT_CATALOG));
     expected.sort();
@@ -771,7 +771,7 @@ fn init_writes_only_its_targets() {
 #[test]
 fn init_treats_crlf_copy_as_up_to_date() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     let crlf = format!(
         "\u{feff}{}",
         skill::render(skill::DEFAULT_CATALOG).replace('\n', "\r\n")
@@ -779,7 +779,7 @@ fn init_treats_crlf_copy_as_up_to_date() {
     for path in skill_paths() {
         fs::write(repo.file(&path), &crlf).unwrap();
     }
-    let output = stdout(&repo.strata(&["init", "--force"]));
+    let output = stdout(&repo.casemap(&["init", "--force"]));
     assert_eq!(output.matches("up to date ").count(), 2);
     for text in installed_skills(&repo) {
         assert_eq!(text, crlf);
@@ -790,7 +790,7 @@ fn init_treats_crlf_copy_as_up_to_date() {
 fn init_from_a_subdirectory_installs_at_the_root() {
     let repo = init_repo();
     fs::create_dir(repo.file("web")).unwrap();
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .arg("init")
         .current_dir(repo.file("web"))
         .output()
@@ -810,7 +810,7 @@ fn init_from_a_subdirectory_installs_at_the_root() {
 fn init_warns_when_skill_is_gitignored() {
     let repo = init_repo();
     fs::write(repo.file(".gitignore"), ".agents/\n.claude/\n").unwrap();
-    let output = stdout(&repo.strata(&["init"]));
+    let output = stdout(&repo.casemap(&["init"]));
     for path in skill_paths() {
         assert!(
             output.contains(&format!(
@@ -825,7 +825,7 @@ fn init_warns_when_skill_is_gitignored() {
 fn init_rejects_absolute_flows_dir() {
     let repo = init_repo();
     let path = repo.file("catalog");
-    let output = repo.strata(&["init", "--flows", path.to_str().unwrap()]);
+    let output = repo.casemap(&["init", "--flows", path.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(
@@ -838,7 +838,7 @@ fn init_rejects_absolute_flows_dir() {
 fn init_rejects_a_file_as_catalog() {
     let repo = init_repo();
     fs::write(repo.file("flows"), "keep me\n").unwrap();
-    let output = repo.strata(&["init", "--flows", "flows"]);
+    let output = repo.casemap(&["init", "--flows", "flows"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("flows exists and is not a directory")
@@ -850,11 +850,10 @@ fn init_rejects_a_file_as_catalog() {
 fn init_continues_after_failed_writes() {
     let repo = init_repo();
     fs::write(repo.file(".claude"), "block skill directory").unwrap();
-    let output = repo.strata(&["init"]);
+    let output = repo.casemap(&["init"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("error: .claude/skills/strata-flows/SKILL.md:")
+        String::from_utf8_lossy(&output.stderr).contains("error: .claude/skills/casemap/SKILL.md:")
     );
     assert!(repo.file(&skill_paths()[1]).is_file());
     assert!(repo.flow_path(".gitkeep").is_file());
@@ -867,9 +866,9 @@ fn init_writes_through_symlinked_skills() {
     let shared = repo.file("shared-skill");
     fs::create_dir(&shared).unwrap();
     fs::create_dir_all(repo.file(".agents/skills")).unwrap();
-    std::os::unix::fs::symlink(&shared, repo.file(".agents/skills/strata-flows")).unwrap();
-    stdout(&repo.strata(&["init"]));
-    assert!(repo.file(".agents/skills/strata-flows").is_symlink());
+    std::os::unix::fs::symlink(&shared, repo.file(".agents/skills/casemap")).unwrap();
+    stdout(&repo.casemap(&["init"]));
+    assert!(repo.file(".agents/skills/casemap").is_symlink());
     assert_eq!(
         fs::read_to_string(shared.join("SKILL.md")).unwrap(),
         skill::render(skill::DEFAULT_CATALOG)
@@ -879,16 +878,16 @@ fn init_writes_through_symlinked_skills() {
 #[test]
 fn init_keeps_non_utf8_skills_until_forced() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     for path in skill_paths() {
         fs::write(repo.file(&path), [0xff, 0xfe]).unwrap();
     }
-    let output = stdout(&repo.strata(&["init"]));
+    let output = stdout(&repo.casemap(&["init"]));
     assert_eq!(output.matches("kept ").count(), 2);
     for path in skill_paths() {
         assert_eq!(fs::read(repo.file(&path)).unwrap(), [0xff, 0xfe]);
     }
-    let output = stdout(&repo.strata(&["init", "--force"]));
+    let output = stdout(&repo.casemap(&["init", "--force"]));
     assert_eq!(output.matches("updated ").count(), 2);
     for text in installed_skills(&repo) {
         assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
@@ -906,13 +905,13 @@ fn init_outside_git_sets_up_the_current_directory() {
         .output()
         .unwrap();
     assert!(!location.status.success());
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .arg("init")
         .env("GIT_CEILING_DIRECTORIES", repo.path().parent().unwrap())
         .current_dir(repo.path())
         .output()
         .unwrap();
-    assert!(stdout(&output).starts_with("note: not a git repository; strata diff needs git\n"));
+    assert!(stdout(&output).starts_with("note: not a git repository; casemap diff needs git\n"));
     for text in installed_skills(&repo) {
         assert_eq!(text, skill::render(skill::DEFAULT_CATALOG));
     }
@@ -923,7 +922,7 @@ fn init_outside_git_sets_up_the_current_directory() {
 fn init_reports_the_failed_catalog_file_and_continues() {
     let repo = init_repo();
     fs::write(repo.file("docs"), "block catalog directory").unwrap();
-    let output = repo.strata(&["init"]);
+    let output = repo.casemap(&["init"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr)
@@ -942,7 +941,7 @@ fn init_reports_the_failed_catalog_file_and_continues() {
 fn init_rejects_paths_outside_the_repo() {
     let repo = init_repo();
     for path in ["../x", "/x"] {
-        let output = repo.strata(&["init", "--flows", path]);
+        let output = repo.casemap(&["init", "--flows", path]);
         assert_eq!(output.status.code(), Some(1));
         assert!(
             String::from_utf8_lossy(&output.stderr)
@@ -957,7 +956,7 @@ fn init_rejects_paths_outside_the_repo() {
 fn init_normalises_catalog_path() {
     let repo = init_repo();
     fs::create_dir(repo.file("web")).unwrap();
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .args(["init", "--flows", "./flows"])
         .current_dir(repo.file("web"))
         .output()
@@ -966,7 +965,7 @@ fn init_normalises_catalog_path() {
     for text in installed_skills(&repo) {
         assert_eq!(text, skill::render("web/flows"));
     }
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .args(["init", "--flows", "../docs/./flows"])
         .current_dir(repo.file("web"))
         .output()
@@ -978,8 +977,8 @@ fn init_normalises_catalog_path() {
 fn relative_skill_link(repo: &TempRepo) {
     fs::create_dir_all(repo.file(".claude/skills")).unwrap();
     std::os::unix::fs::symlink(
-        "../../.agents/skills/strata-flows",
-        repo.file(".claude/skills/strata-flows"),
+        "../../.agents/skills/casemap",
+        repo.file(".claude/skills/casemap"),
     )
     .unwrap();
 }
@@ -989,47 +988,47 @@ fn relative_skill_link(repo: &TempRepo) {
 fn init_reports_dangling_skill_symlink() {
     let repo = init_repo();
     relative_skill_link(&repo);
-    let output = repo.strata(&["init"]);
+    let output = repo.casemap(&["init"]);
     assert_eq!(output.status.code(), Some(1));
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("error: .claude/skills/strata-flows/SKILL.md:"),
+        error.contains("error: .claude/skills/casemap/SKILL.md:"),
         "{error}"
     );
     assert!(
-        error.contains(".claude/skills/strata-flows is a symlink to a missing path"),
+        error.contains(".claude/skills/casemap is a symlink to a missing path"),
         "{error}"
     );
-    assert!(repo.file(".agents/skills/strata-flows/SKILL.md").is_file());
+    assert!(repo.file(".agents/skills/casemap/SKILL.md").is_file());
 }
 
 #[cfg(unix)]
 #[test]
 fn init_writes_through_relative_skill_symlink() {
     let repo = init_repo();
-    fs::create_dir_all(repo.file(".agents/skills/strata-flows")).unwrap();
+    fs::create_dir_all(repo.file(".agents/skills/casemap")).unwrap();
     relative_skill_link(&repo);
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     assert_eq!(
-        stdout(&repo.strata(&["init"]))
+        stdout(&repo.casemap(&["init"]))
             .matches("up to date ")
             .count(),
         2
     );
-    assert!(repo.file(".claude/skills/strata-flows").is_symlink());
+    assert!(repo.file(".claude/skills/casemap").is_symlink());
 }
 
 #[test]
 fn init_fails_when_git_errors() {
     let repo = init_repo();
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .arg("init")
         .env("PATH", repo.file("no-git"))
         .current_dir(repo.path())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: cannot run git"));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("casemap: cannot run git"));
     assert!(output.stdout.is_empty());
     assert!(!repo.file(".agents").exists());
 }
@@ -1039,7 +1038,7 @@ fn init_leaves_populated_catalog_alone() {
     let repo = init_repo();
     fs::create_dir_all(repo.file(skill::DEFAULT_CATALOG)).unwrap();
     fs::write(repo.flow_path("a.md"), "existing flow").unwrap();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     assert!(!repo.flow_path(".gitkeep").exists());
     assert_eq!(
         fs::read_to_string(repo.flow_path("a.md")).unwrap(),
@@ -1050,7 +1049,7 @@ fn init_leaves_populated_catalog_alone() {
 #[test]
 fn guide_trims_trailing_slash() {
     let repo = TempRepo::new();
-    let text = stdout(&repo.strata(&["guide", "--flows", "flows/"]));
+    let text = stdout(&repo.casemap(&["guide", "--flows", "flows/"]));
     assert!(text.contains("flows/check-out-a-cart.md"));
     assert!(!text.contains("flows//"));
 }
@@ -1061,7 +1060,7 @@ fn init_rejects_catalog_through_outside_symlink() {
     let repo = init_repo();
     let outside = assert_fs::TempDir::new().unwrap();
     std::os::unix::fs::symlink(outside.path(), repo.file("out")).unwrap();
-    let output = repo.strata(&["init", "--flows", "out/x"]);
+    let output = repo.casemap(&["init", "--flows", "out/x"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("--flows must stay inside the repository")
@@ -1076,7 +1075,7 @@ fn init_accepts_catalog_through_inside_symlink() {
     let repo = init_repo();
     fs::create_dir(repo.file("real-docs")).unwrap();
     std::os::unix::fs::symlink("real-docs", repo.file("docs")).unwrap();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     assert!(repo.file("real-docs/flows/.gitkeep").is_file());
 }
 
@@ -1084,7 +1083,7 @@ fn init_accepts_catalog_through_inside_symlink() {
 fn init_rejects_repo_root_as_catalog() {
     for catalog in [".", "a/.."] {
         let repo = init_repo();
-        let output = repo.strata(&["init", "--flows", catalog]);
+        let output = repo.casemap(&["init", "--flows", catalog]);
         assert_eq!(output.status.code(), Some(1), "{catalog}");
         assert!(
             String::from_utf8_lossy(&output.stderr)
@@ -1099,15 +1098,15 @@ fn init_rejects_repo_root_as_catalog() {
 #[test]
 fn init_ignores_planted_temp_symlink() {
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     let outside = assert_fs::TempDir::new().unwrap();
     let outside_file = outside.path().join("untouched");
     fs::write(&outside_file, "keep outside").unwrap();
     let skill_path = repo.file(&skill_paths()[0]);
     fs::write(&skill_path, "old skill").unwrap();
-    let temporary = skill_path.with_file_name("SKILL.md.strata-tmp");
+    let temporary = skill_path.with_file_name("SKILL.md.casemap-tmp");
     std::os::unix::fs::symlink(&outside_file, &temporary).unwrap();
-    let output = repo.strata(&["init", "--force"]);
+    let output = repo.casemap(&["init", "--force"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(fs::read_to_string(&outside_file).unwrap(), "keep outside");
     assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
@@ -1123,11 +1122,11 @@ fn init_ignores_planted_temp_symlink() {
 fn init_force_keeps_file_mode() {
     use std::os::unix::fs::PermissionsExt;
     let repo = init_repo();
-    stdout(&repo.strata(&["init"]));
+    stdout(&repo.casemap(&["init"]));
     let skill_path = repo.file(&skill_paths()[0]);
     fs::write(&skill_path, "old skill").unwrap();
     fs::set_permissions(&skill_path, fs::Permissions::from_mode(0o640)).unwrap();
-    stdout(&repo.strata(&["init", "--force"]));
+    stdout(&repo.casemap(&["init", "--force"]));
     assert_eq!(
         fs::metadata(&skill_path).unwrap().permissions().mode() & 0o777,
         0o640
@@ -1143,7 +1142,7 @@ fn init_force_keeps_file_mode() {
 fn init_rejects_dangling_symlink_catalog() {
     let repo = init_repo();
     std::os::unix::fs::symlink("missing", repo.file("out")).unwrap();
-    let output = repo.strata(&["init", "--flows", "out/flows"]);
+    let output = repo.casemap(&["init", "--flows", "out/flows"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("--flows must stay inside the repository")
@@ -1159,7 +1158,7 @@ fn check_reports_anchor_no_match() {
         common::ANCHORED_PAY.replace("src/pay.rs", "src/missing.rs"),
     )
     .unwrap();
-    let output = repo.strata(&["check"]);
+    let output = repo.casemap(&["check"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stdout).contains("[anchor-no-match]"));
 }
@@ -1168,7 +1167,7 @@ fn check_reports_anchor_no_match() {
 fn diff_reports_stale_flow_when_anchored_code_changes() {
     let repo = common::anchored_catalog();
     fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
-    let text = stdout(&repo.strata(&["diff"]));
+    let text = stdout(&repo.casemap(&["diff"]));
     assert!(text.starts_with("no flow changes since HEAD ("));
     assert!(text.contains("possibly stale: 1 flow whose anchored code changed but the flow did not\n  Pay for an order (pay.md)\n    pay: src/pay.rs\n"), "{text}");
 }
@@ -1182,29 +1181,29 @@ fn diff_does_not_flag_a_touched_flow() {
         common::ANCHORED_PAY.replace("sees the result", "gets the result"),
     )
     .unwrap();
-    assert!(!stdout(&repo.strata(&["diff", "--strict"])).contains("possibly stale:"));
+    assert!(!stdout(&repo.casemap(&["diff", "--strict"])).contains("possibly stale:"));
 }
 
 #[test]
 fn diff_strict_fails_only_on_stale_or_broken() {
     let repo = common::anchored_catalog();
-    assert_eq!(repo.strata(&["diff", "--strict"]).status.code(), Some(0));
+    assert_eq!(repo.casemap(&["diff", "--strict"]).status.code(), Some(0));
     fs::write(repo.file("src/pay.rs"), "changed\n").unwrap();
-    assert_eq!(repo.strata(&["diff"]).status.code(), Some(0));
-    assert_eq!(repo.strata(&["diff", "--strict"]).status.code(), Some(1));
+    assert_eq!(repo.casemap(&["diff"]).status.code(), Some(0));
+    assert_eq!(repo.casemap(&["diff", "--strict"]).status.code(), Some(1));
     fs::write(
         repo.flow_path("pay.md"),
         common::ANCHORED_PAY.replace("pay[Pay]", "pay[Make payment]"),
     )
     .unwrap();
-    assert_eq!(repo.strata(&["diff", "--strict"]).status.code(), Some(0));
+    assert_eq!(repo.casemap(&["diff", "--strict"]).status.code(), Some(0));
     fs::write(
         repo.flow_path("pay.md"),
         "```mermaid\nflowchart TD\na -->\n```\n",
     )
     .unwrap();
     for arguments in [&["diff"][..], &["diff", "--strict"]] {
-        let output = repo.strata(arguments);
+        let output = repo.casemap(arguments);
         assert_eq!(output.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&output.stdout).contains("parse error"));
     }
@@ -1214,7 +1213,7 @@ fn diff_strict_fails_only_on_stale_or_broken() {
 fn diff_counts_untracked_and_renamed_files() {
     let repo = common::anchored_catalog();
     repo.git(&["mv", "src/pay.rs", "src/payment.rs"]);
-    assert!(stdout(&repo.strata(&["diff"])).contains("pay: src/pay.rs"));
+    assert!(stdout(&repo.casemap(&["diff"])).contains("pay: src/pay.rs"));
     repo.git(&["reset", "--hard", "-q", "HEAD"]);
     fs::write(
         repo.flow_path("pay.md"),
@@ -1224,7 +1223,7 @@ fn diff_counts_untracked_and_renamed_files() {
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "anchor folder"]);
     fs::write(repo.file("src/new.rs"), "new\n").unwrap();
-    assert!(stdout(&repo.strata(&["diff"])).contains("pay: src/new.rs"));
+    assert!(stdout(&repo.casemap(&["diff"])).contains("pay: src/new.rs"));
 }
 
 #[test]
@@ -1232,7 +1231,7 @@ fn diff_without_anchors_runs_no_extra_git() {
     let repo = TempRepo::committed_before();
     let sha = repo.git_stdout(&["rev-parse", "HEAD"]);
     let trace_path = repo.file("git-trace.log");
-    let output = strata_command(&repo)
+    let output = casemap_command(&repo)
         .arg("diff")
         .env("GIT_TRACE", &trace_path)
         .current_dir(repo.path())
@@ -1252,7 +1251,7 @@ fn diff_without_anchors_runs_no_extra_git() {
 fn which_lists_anchored_steps() {
     let repo = common::anchored_catalog();
     assert_eq!(
-        stdout(&repo.strata(&["which", "src/pay.rs"])),
+        stdout(&repo.casemap(&["which", "src/pay.rs"])),
         "src/pay.rs\n  pay.md  Pay for an order  (steps: pay)\n"
     );
 }
@@ -1261,7 +1260,7 @@ fn which_lists_anchored_steps() {
 fn which_reports_no_match() {
     let repo = common::anchored_catalog();
     assert_eq!(
-        stdout(&repo.strata(&["which", "src/other.rs"])),
+        stdout(&repo.casemap(&["which", "src/other.rs"])),
         "src/other.rs: no anchored flow\n"
     );
 }
@@ -1269,7 +1268,7 @@ fn which_reports_no_match() {
 #[test]
 fn which_accepts_absolute_paths() {
     let repo = common::anchored_catalog();
-    let output = repo.strata(&["which", repo.file("src/pay.rs").to_str().unwrap()]);
+    let output = repo.casemap(&["which", repo.file("src/pay.rs").to_str().unwrap()]);
     assert_eq!(
         stdout(&output),
         "src/pay.rs\n  pay.md  Pay for an order  (steps: pay)\n"
@@ -1280,7 +1279,7 @@ fn which_accepts_absolute_paths() {
 fn which_rejects_paths_outside_the_repo() {
     let repo = common::anchored_catalog();
     for path in ["../outside.rs", "src/../../outside.rs"] {
-        let output = repo.strata(&["which", path]);
+        let output = repo.casemap(&["which", path]);
         assert_eq!(output.status.code(), Some(1));
         assert!(
             String::from_utf8_lossy(&output.stderr)
@@ -1294,7 +1293,7 @@ fn which_rejects_paths_outside_the_repo() {
 fn which_expands_directories() {
     let repo = common::anchored_catalog();
     assert_eq!(
-        stdout(&repo.strata(&["which", "src"])),
+        stdout(&repo.casemap(&["which", "src"])),
         "src\n  pay.md  Pay for an order  (steps: pay)\n"
     );
 }
@@ -1302,7 +1301,7 @@ fn which_expands_directories() {
 #[test]
 fn which_json_shape() {
     let repo = common::anchored_catalog();
-    let text = stdout(&repo.strata(&["which", "src/pay.rs", "--format", "json"]));
+    let text = stdout(&repo.casemap(&["which", "src/pay.rs", "--format", "json"]));
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
         value,
@@ -1320,7 +1319,7 @@ fn which_merges_targets_ignores_unknown_steps_and_accepts_deleted_paths() {
     fs::write(repo.flow_path("pay.md"), source).unwrap();
     fs::remove_file(repo.file("src/pay.rs")).unwrap();
     assert_eq!(
-        stdout(&repo.strata(&["which", "src/pay.rs", "src/other.rs"])),
+        stdout(&repo.casemap(&["which", "src/pay.rs", "src/other.rs"])),
         "src/pay.rs\n  pay.md  Pay for an order  (whole flow; steps: pay)\n\nsrc/other.rs\n  pay.md  Pay for an order  (whole flow; steps: pay)\n"
     );
 }
@@ -1334,7 +1333,7 @@ fn flows_name_prints_anchor_footer() {
     );
     fs::write(repo.flow_path("pay.md"), source).unwrap();
     assert!(
-        stdout(&repo.strata(&["flows", "pay"]))
+        stdout(&repo.casemap(&["flows", "pay"]))
             .ends_with("\nCode:\n  pay: src/pay.rs, src/other.rs\n  whole flow: src\n")
     );
 }
@@ -1345,14 +1344,14 @@ fn anchor_commands_use_the_catalog_repository_from_another_cwd() {
     let outside = TempRepo::new();
     let catalog = repo.file("docs/flows");
     let catalog = catalog.to_str().unwrap();
-    let output = outside.strata(&["check", "--strict", "--flows", catalog]);
+    let output = outside.casemap(&["check", "--strict", "--flows", catalog]);
     assert_eq!(
         output.status.code(),
         Some(0),
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let output = outside.strata(&[
+    let output = outside.casemap(&[
         "which",
         repo.file("src/pay.rs").to_str().unwrap(),
         "--flows",
@@ -1360,7 +1359,7 @@ fn anchor_commands_use_the_catalog_repository_from_another_cwd() {
     ]);
     assert!(stdout(&output).contains("steps: pay"));
     fs::write(repo.file("src/pay.rs"), "changed").unwrap();
-    assert!(stdout(&outside.strata(&["diff", "--flows", catalog])).contains("pay: src/pay.rs"));
+    assert!(stdout(&outside.casemap(&["diff", "--flows", catalog])).contains("pay: src/pay.rs"));
 }
 
 #[test]
@@ -1368,7 +1367,7 @@ fn check_and_which_work_without_git() {
     let repo = common::anchored_catalog();
     fs::remove_dir_all(repo.file(".git")).unwrap();
     for arguments in [&["check", "--strict"][..], &["which", "src/pay.rs"]] {
-        let output = strata_command(&repo)
+        let output = casemap_command(&repo)
             .args(arguments)
             .env("PATH", repo.file("no-git"))
             .current_dir(repo.path())
@@ -1387,7 +1386,7 @@ fn check_and_which_work_without_git() {
 fn which_expands_the_repository_root() {
     let repo = common::anchored_catalog();
     assert_eq!(
-        stdout(&repo.strata(&["which", "."])),
+        stdout(&repo.casemap(&["which", "."])),
         ".\n  pay.md  Pay for an order  (steps: pay)\n"
     );
 }
@@ -1406,7 +1405,7 @@ fn which_directory_arguments_are_literal() {
     )
     .unwrap();
     assert_eq!(
-        stdout(&repo.strata(&["which", "src/a*"])),
+        stdout(&repo.casemap(&["which", "src/a*"])),
         "src/a*: no anchored flow\n"
     );
 }
@@ -1416,10 +1415,10 @@ fn which_directory_arguments_are_literal() {
 fn which_resolves_symlink_paths_and_rejects_symlink_escapes() {
     let repo = common::anchored_catalog();
     std::os::unix::fs::symlink("src", repo.file("alias")).unwrap();
-    assert!(stdout(&repo.strata(&["which", "alias/pay.rs"])).starts_with("src/pay.rs\n"));
+    assert!(stdout(&repo.casemap(&["which", "alias/pay.rs"])).starts_with("src/pay.rs\n"));
     let outside = assert_fs::TempDir::new().unwrap();
     std::os::unix::fs::symlink(outside.path(), repo.file("outside")).unwrap();
-    let output = repo.strata(&["which", "outside/deleted.rs"]);
+    let output = repo.casemap(&["which", "outside/deleted.rs"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr)
@@ -1431,16 +1430,16 @@ fn which_resolves_symlink_paths_and_rejects_symlink_escapes() {
 fn check_builds_the_file_index_lazily_and_propagates_index_errors() {
     let repo = common::anchored_catalog();
     fs::write(repo.file(".git/config"), "[broken\n").unwrap();
-    let output = repo.strata(&["check"]);
+    let output = repo.casemap(&["check"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: git "));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("casemap: git "));
     assert!(output.stdout.is_empty());
     fs::write(
         repo.flow_path("pay.md"),
         common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", ""),
     )
     .unwrap();
-    assert_eq!(repo.strata(&["check", "--strict"]).status.code(), Some(0));
+    assert_eq!(repo.casemap(&["check", "--strict"]).status.code(), Some(0));
 }
 
 #[test]
@@ -1448,7 +1447,7 @@ fn anchors_do_not_change_rendering() {
     let repo = common::anchored_catalog();
     let without_anchors = common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", "");
     fs::write(repo.file("baseline.md"), &without_anchors).unwrap();
-    let block = strata::markdown::mermaid_blocks(&without_anchors).remove(0);
+    let block = casemap::markdown::mermaid_blocks(&without_anchors).remove(0);
     fs::write(repo.file("baseline.mmd"), &block.source).unwrap();
     fs::write(
         repo.file("anchored.mmd"),
@@ -1462,8 +1461,8 @@ fn anchors_do_not_change_rendering() {
                 ("baseline.mmd", "anchored.mmd"),
             ] {
                 assert_eq!(
-                    stdout(&repo.strata(&[baseline, "--dir", direction, mode])),
-                    stdout(&repo.strata(&[anchored, "--dir", direction, mode]))
+                    stdout(&repo.casemap(&[baseline, "--dir", direction, mode])),
+                    stdout(&repo.casemap(&[anchored, "--dir", direction, mode]))
                 );
             }
         }
@@ -1481,9 +1480,9 @@ fn stale_counts_valid_patterns_on_a_line_with_an_invalid_one() {
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "mixed patterns"]);
     fs::write(repo.file("src/pay.rs"), "fn changed() {}\n").unwrap();
-    assert!(stdout(&repo.strata(&["diff"])).contains("pay: src/pay.rs"));
-    assert!(stdout(&repo.strata(&["which", "src/pay.rs"])).contains("(steps: pay)"));
-    let output = repo.strata(&["check"]);
+    assert!(stdout(&repo.casemap(&["diff"])).contains("pay: src/pay.rs"));
+    assert!(stdout(&repo.casemap(&["which", "src/pay.rs"])).contains("(steps: pay)"));
+    let output = repo.casemap(&["check"]);
     assert_eq!(output.status.code(), Some(1));
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("[anchor-syntax]"), "{text}");
@@ -1496,9 +1495,9 @@ fn stale_counts_valid_patterns_on_a_line_with_an_invalid_one() {
 fn which_surfaces_git_errors() {
     let repo = common::anchored_catalog();
     fs::write(repo.file(".git/config"), "[broken\n").unwrap();
-    let output = repo.strata(&["which", "src/pay.rs"]);
+    let output = repo.casemap(&["which", "src/pay.rs"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: git"));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("casemap: git"));
 }
 
 #[test]
@@ -1506,7 +1505,7 @@ fn check_and_which_work_outside_a_repository() {
     let repo = common::anchored_catalog();
     fs::remove_dir_all(repo.file(".git")).unwrap();
     for arguments in [&["check", "--strict"][..], &["which", "src/pay.rs"]] {
-        let output = strata_command(&repo)
+        let output = casemap_command(&repo)
             .args(arguments)
             .env("GIT_CEILING_DIRECTORIES", repo.path().parent().unwrap())
             .current_dir(repo.path())
@@ -1527,16 +1526,16 @@ fn check_without_anchors_ignores_broken_git_config() {
     write_valid_flow(&repo, "checkout.md");
     repo.git(&["init", "-q"]);
     fs::write(repo.file(".git/config"), "[broken").unwrap();
-    assert!(repo.strata(&["check"]).status.success());
+    assert!(repo.casemap(&["check"]).status.success());
 }
 
 #[cfg(feature = "tui")]
 #[test]
 fn browse_requires_a_terminal() {
     let repo = TempRepo::committed_before();
-    let output = repo.strata(&["browse"]);
+    let output = repo.casemap(&["browse"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("strata browse needs a terminal"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("casemap browse needs a terminal"));
 }
 
 #[cfg(feature = "tui")]
@@ -1544,8 +1543,8 @@ fn browse_requires_a_terminal() {
 fn browse_missing_catalog_fails_like_flows() {
     let repo = TempRepo::new();
     fs::remove_dir_all(repo.file(FLOWS_DIR)).unwrap();
-    let browse = repo.strata(&["browse"]);
-    let flows = repo.strata(&["flows"]);
+    let browse = repo.casemap(&["browse"]);
+    let flows = repo.casemap(&["flows"]);
     assert_eq!(browse.status.code(), Some(1));
     assert!(!browse.stderr.is_empty());
     assert_eq!(browse.stderr, flows.stderr);
@@ -1555,17 +1554,17 @@ fn browse_missing_catalog_fails_like_flows() {
 #[test]
 fn browse_invalid_base_fails_like_diff() {
     let repo = TempRepo::committed_before();
-    let browse = repo.strata(&["browse", "--base", "missing-ref"]);
-    let diff = repo.strata(&["diff", "missing-ref"]);
+    let browse = repo.casemap(&["browse", "--base", "missing-ref"]);
+    let diff = repo.casemap(&["diff", "missing-ref"]);
     assert_eq!(browse.status.code(), Some(1));
     assert!(!browse.stderr.is_empty());
     assert_eq!(browse.stderr, diff.stderr);
 }
 
 #[test]
-fn bare_strata_with_piped_stdin_still_renders() {
+fn bare_casemap_with_piped_stdin_still_renders() {
     let repo = TempRepo::new();
-    strata_command(&repo)
+    casemap_command(&repo)
         .current_dir(repo.path())
         .write_stdin("graph TD\na[First] --> b[Second]\n")
         .assert()
@@ -1577,10 +1576,10 @@ fn bare_strata_with_piped_stdin_still_renders() {
 #[test]
 fn browse_without_tui_feature_errors() {
     let repo = TempRepo::new();
-    let output = repo.strata(&["browse"]);
+    let output = repo.casemap(&["browse"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("strata was built without the tui feature")
+            .contains("casemap was built without the tui feature")
     );
 }
