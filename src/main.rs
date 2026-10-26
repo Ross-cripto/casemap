@@ -1,6 +1,6 @@
 //! casemap CLI: adopt, validate, render and compare a catalog of use-case flows.
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -13,6 +13,7 @@ use notify::{RecursiveMode, Watcher};
 
 #[cfg(feature = "tui")]
 mod browse;
+mod onboard;
 use casemap::markdown::is_markdown_path;
 use casemap::{Direction, Options, ParseError, anchors, check, git, skill};
 
@@ -73,6 +74,8 @@ enum Commands {
     Init {
         #[arg(long)]
         force: bool,
+        #[arg(long, value_enum)]
+        agent: Option<onboard::Agent>,
     },
     /// List the flow catalog, or render one flow.
     Flows {
@@ -155,6 +158,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         .flows
         .as_deref()
         .unwrap_or_else(|| Path::new(DEFAULT_FLOWS_DIR));
+    #[cfg(feature = "tui")]
+    let onboarding_opts = &browse_opts;
+    #[cfg(not(feature = "tui"))]
+    let onboarding_opts = &opts;
     match cli.command {
         Some(Commands::Diff { rev, strict }) => diff_catalog(
             directory,
@@ -162,19 +169,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             strict,
             &opts,
         ),
-        Some(Commands::Browse { base }) => {
-            #[cfg(feature = "tui")]
-            {
-                browse::run(directory, base.as_deref(), &browse_opts)
-            }
-            #[cfg(not(feature = "tui"))]
-            {
-                let _ = base;
-                bail!("casemap was built without the tui feature")
-            }
-        }
+        #[cfg(feature = "tui")]
+        Some(Commands::Browse { base }) => browse::run(directory, base.as_deref(), &browse_opts),
+        #[cfg(not(feature = "tui"))]
+        Some(Commands::Browse { .. }) => bail!("casemap was built without the tui feature"),
         Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
-        Some(Commands::Init { force }) => init_catalog(directory, force),
+        Some(Commands::Init { force, agent }) => {
+            let outcome = init_catalog(directory, force, agent)?;
+            finish_onboarding(outcome, onboarding_opts)
+        }
         Some(Commands::Flows { name, format }) => {
             show_flows(directory, name.as_deref(), format, &opts)
         }
@@ -188,22 +191,87 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         None => {
-            #[cfg(feature = "tui")]
-            if browse::app::bare_mode(&browse::app::BareModeInputs {
-                stdin_tty: io::stdin().is_terminal(),
-                stdout_tty: io::stdout().is_terminal(),
-                ci: std::env::var_os("CI").is_some(),
-                term_dumb: std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
-                catalog_exists: directory.is_dir(),
+            let mode = onboard::bare_mode(&onboard::BareModeInputs {
+                interactive: interactive_session(),
+                catalog: onboard::catalog_state(directory),
                 watch: cli.watch,
                 has_file: cli.file.is_some(),
-            }) == browse::app::BareMode::Browse
-            {
-                return browse::run(directory, None, &browse_opts);
+                browser_available: cfg!(feature = "tui"),
+            });
+            match mode {
+                onboard::BareMode::Browse => finish_onboarding(
+                    onboard::Outcome::Browse(directory.to_path_buf()),
+                    onboarding_opts,
+                ),
+                onboard::BareMode::Onboard => {
+                    let cwd = std::env::current_dir().context("reading the current directory")?;
+                    let outcome = with_terminal_session(
+                        &cwd,
+                        directory,
+                        onboard::catalog_state(directory),
+                        onboard::detect_agents(),
+                        onboard::run,
+                    )?;
+                    finish_onboarding(outcome, onboarding_opts)
+                }
+                onboard::BareMode::ReadStdin => render_file(cli.file.as_deref(), cli.watch, &opts),
             }
-            render_file(cli.file.as_deref(), cli.watch, &opts)
         }
     }
+}
+
+#[cfg(feature = "tui")]
+fn finish_onboarding(outcome: onboard::Outcome, options: &Options) -> anyhow::Result<ExitCode> {
+    match outcome {
+        onboard::Outcome::Exit(code) => Ok(code),
+        onboard::Outcome::Browse(catalog) => browse::run(&catalog, None, options),
+    }
+}
+
+#[cfg(not(feature = "tui"))]
+fn finish_onboarding(outcome: onboard::Outcome, options: &Options) -> anyhow::Result<ExitCode> {
+    match outcome {
+        onboard::Outcome::Exit(code) => Ok(code),
+        onboard::Outcome::Browse(catalog) => show_flows(&catalog, None, Format::Text, options),
+    }
+}
+
+struct TerminalMenuInput;
+
+impl onboard::MenuInput for TerminalMenuInput {
+    fn read_menu_line(&mut self, line: &mut String) -> io::Result<usize> {
+        // Canonical tty mode returns one line per read, leaving typed-ahead lines for the agent.
+        io::stdin().lock().read_line(line)
+    }
+}
+
+fn with_terminal_session(
+    cwd: &Path,
+    dir: &Path,
+    state: onboard::CatalogState,
+    agents: Vec<(onboard::Agent, PathBuf)>,
+    action: impl FnOnce(onboard::Session<'_>) -> anyhow::Result<onboard::Outcome>,
+) -> anyhow::Result<onboard::Outcome> {
+    let mut input = TerminalMenuInput;
+    let mut output = io::stdout();
+    action(onboard::Session {
+        cwd,
+        dir,
+        state,
+        agents,
+        input: &mut input,
+        output: &mut output,
+        launch: &mut onboard::launch,
+    })
+}
+
+fn interactive_session() -> bool {
+    onboard::is_interactive_session(
+        io::stdin().is_terminal(),
+        io::stdout().is_terminal(),
+        std::env::var_os("CI").is_some(),
+        std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
+    )
 }
 
 fn resolve_color(cli: &Cli) -> bool {
@@ -737,17 +805,28 @@ fn problem_line(problem: &check::Problem, prefix: &str, severity: &str) -> Strin
 }
 
 fn print_check_text(dir: &Path, report: &check::Report, color: bool) {
+    write_check_text(&mut io::stdout().lock(), dir, report, color).expect("writing check output");
+}
+
+fn write_check_text(
+    output: &mut dyn Write,
+    dir: &Path,
+    report: &check::Report,
+    color: bool,
+) -> io::Result<()> {
     for problem in &report.problems {
-        println!(
+        writeln!(
+            output,
             "{}",
             problem_line(
                 problem,
                 &format!("{}: ", problem_location(dir, problem)),
                 &coloured_severity(problem.code.severity(), color)
             )
-        );
+        )?;
     }
-    println!("{}", check_summary(report));
+    writeln!(output, "{}", check_summary(report))?;
+    Ok(())
 }
 
 fn print_check_json(dir: &Path, report: &check::Report) {
@@ -954,14 +1033,13 @@ fn install_skill(
     Ok(())
 }
 
-fn locate_install_root(cwd: &Path) -> anyhow::Result<(PathBuf, String)> {
-    match git::locate(cwd)? {
-        git::Location::Inside { root, prefix } => Ok((root, prefix)),
-        git::Location::NotARepository => {
-            println!("note: not a git repository; casemap diff needs git");
-            Ok((cwd.to_path_buf(), String::new()))
-        }
-    }
+fn catalog_display(cwd: &Path, dir: &Path) -> anyhow::Result<(PathBuf, String)> {
+    let (root, prefix) = match git::locate(cwd)? {
+        git::Location::Inside { root, prefix } => (root, prefix),
+        git::Location::NotARepository => (cwd.to_path_buf(), String::new()),
+    };
+    let relative = normalise_catalog_path(&prefix, dir)?;
+    Ok((root, catalog_path(&relative)))
 }
 
 fn normalise_catalog_path(prefix: &str, dir: &Path) -> anyhow::Result<PathBuf> {
@@ -1042,16 +1120,77 @@ fn print_next_steps(catalog: &str) {
     );
 }
 
-fn init_catalog(dir: &Path, force: bool) -> anyhow::Result<ExitCode> {
+struct InitOutcome {
+    root: PathBuf,
+    catalog: PathBuf,
+    display: String,
+    failed: bool,
+}
+
+fn init_catalog(
+    dir: &Path,
+    force: bool,
+    agent: Option<onboard::Agent>,
+) -> anyhow::Result<onboard::Outcome> {
+    let interactive = interactive_session();
+    let agents = if interactive {
+        onboard::detect_agents()
+    } else {
+        Vec::new()
+    };
+    let chosen_agent = onboard::preflight(agent, interactive, &agents)?;
+    let cwd = std::env::current_dir().context("reading the current directory")?;
+    let initialized = init_core(&cwd, dir, force)?;
+    if chosen_agent.is_none() {
+        print_next_steps(&initialized.display);
+    }
+    if initialized.failed {
+        return Ok(onboard::Outcome::Exit(ExitCode::FAILURE));
+    }
+    with_terminal_session(
+        &cwd,
+        dir,
+        onboard::catalog_state(&initialized.catalog),
+        agents,
+        |mut session| {
+            if let Some((agent, program)) = chosen_agent {
+                return onboard::launch_and_finish(
+                    &mut session,
+                    agent,
+                    &program,
+                    &initialized.root,
+                    &initialized.catalog,
+                    &initialized.display,
+                );
+            }
+            if interactive && !session.agents.is_empty() {
+                return onboard::offer(
+                    &mut session,
+                    &initialized.root,
+                    &initialized.catalog,
+                    &initialized.display,
+                );
+            }
+            Ok(onboard::Outcome::Exit(ExitCode::SUCCESS))
+        },
+    )
+}
+
+fn init_core(cwd: &Path, dir: &Path, force: bool) -> anyhow::Result<InitOutcome> {
     if dir.is_absolute() || dir.has_root() {
         bail!("--flows must stay inside the repository");
     }
-    let cwd = std::env::current_dir().context("reading the current directory")?;
-    let (root, prefix) = locate_install_root(&cwd)?;
+    let prefix = match git::locate(cwd)? {
+        git::Location::Inside { prefix, .. } => prefix,
+        git::Location::NotARepository => {
+            println!("note: not a git repository; casemap diff needs git");
+            String::new()
+        }
+    };
+    let (root, display) = catalog_display(cwd, dir)?;
     let relative_catalog = normalise_catalog_path(&prefix, dir)?;
     ensure_inside_root(&root, &relative_catalog)?;
     let catalog = root.join(&relative_catalog);
-    let display = catalog_path(&relative_catalog);
     if catalog.exists() && !catalog.is_dir() {
         bail!("{display} exists and is not a directory");
     }
@@ -1063,12 +1202,12 @@ fn init_catalog(dir: &Path, force: bool) -> anyhow::Result<ExitCode> {
     }
     let desired = skill::render(&display);
     failed |= install_all_skills(&root, &desired, force);
-    print_next_steps(&display);
-    if failed {
-        Ok(ExitCode::FAILURE)
-    } else {
-        Ok(ExitCode::SUCCESS)
-    }
+    Ok(InitOutcome {
+        root,
+        catalog,
+        display,
+        failed,
+    })
 }
 
 fn watch_frame(

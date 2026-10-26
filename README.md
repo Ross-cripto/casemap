@@ -10,8 +10,9 @@ Install the CLI, then run it from your repository root:
 
 ```sh
 brew install Ross-cripto/tap/casemap
-casemap init
 ```
+
+Run `casemap` in your repository. With no flows yet, it offers to have Claude Code or Codex write them, then opens the browser.
 
 Without Homebrew, use the installer for your platform or build from source:
 
@@ -25,6 +26,8 @@ cargo install --git https://github.com/Ross-cripto/casemap
 ```
 
 Prebuilt binaries for macOS, Linux and Windows are attached to each [release](https://github.com/Ross-cripto/casemap/releases).
+
+For manual setup, run `casemap init`.
 
 Ask your coding agent: **"document the use-case flows of this repo"**.
 
@@ -109,8 +112,9 @@ Removed flows appear last. Diagrams pan without wrapping. Below 80 columns,
 Tab switches between the list and diagram views.
 
 Bare `casemap` opens the browser only when stdin **and** stdout are terminals,
-`CI` is unset, `TERM` is not `dumb`, the catalog (`--flows` or `docs/flows`) exists,
-and neither FILE nor `--watch` is supplied. Otherwise it reads stdin as before.
+`CI` is unset, `TERM` is not `dumb`, the catalog (`--flows` or `docs/flows`) has flows,
+and neither FILE nor `--watch` is supplied. With no flows it offers setup;
+outside an interactive session it reads stdin as before.
 Explicit `casemap browse` requires terminal stdout. Build with
 `--no-default-features --features cli` for the CLI without the browser; library
 embedders can use `default-features = false`.
@@ -247,7 +251,7 @@ For agents without skill support, `casemap guide` prints the skill body.
 
 | Command | Result |
 |---|---|
-| `casemap init [--force]` | Create the catalog and install the agent skill; `--force` updates differing skills |
+| `casemap init [--force] [--agent claude\|codex]` | Create the catalog and install the agent skill; `--force` updates differing skills; `--agent` opens that agent in a terminal |
 | `casemap browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
 | `casemap flows [NAME]` | List the catalog, or render one use case |
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
@@ -441,6 +445,9 @@ Releases are automatic from `main`, which only accepts pull requests with green 
 The tap [Ross-cripto/homebrew-tap](https://github.com/Ross-cripto/homebrew-tap) copies the new formula with its daily Sync workflow; run it by hand (`gh workflow run sync.yml -R Ross-cripto/homebrew-tap`) to publish at once. After editing `dist-workspace.toml`, run `dist generate` to refresh the release workflow. Configuration: `release-plz.toml`, `.github/workflows/release-plz.yml`.
 
 ## Known limits
+
+- In a terminal, `casemap` with no flows opens the setup menu instead of reading stdin; pipe input or pass `casemap -` to render from stdin.
+- On Windows only native `claude.exe`/`codex.exe` are launched; npm `.cmd` shims get the manual steps.
 
 - browse restores the terminal on quit, Ctrl-C, errors and panics; a `kill` signal leaves it in the alternate screen (run `reset`).
 

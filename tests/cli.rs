@@ -1583,3 +1583,28 @@ fn browse_without_tui_feature_errors() {
             .contains("casemap was built without the tui feature")
     );
 }
+
+#[test]
+fn bare_casemap_without_catalog_and_piped_stdin_still_renders() {
+    let repo = TempRepo::new();
+    std::fs::remove_dir(repo.file("docs/flows")).unwrap();
+    casemap_command(&repo)
+        .current_dir(repo.path())
+        .write_stdin("graph TD\na[First] --> b[Second]\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("First"));
+}
+
+#[test]
+fn init_agent_flag_needs_a_terminal() {
+    let repo = TempRepo::new();
+    std::fs::remove_dir(repo.file("docs/flows")).unwrap();
+    casemap_command(&repo)
+        .current_dir(repo.path())
+        .args(["init", "--agent", "claude"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("needs a terminal"));
+    assert!(!repo.file("docs/flows").exists());
+}
