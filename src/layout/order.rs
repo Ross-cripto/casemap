@@ -7,17 +7,21 @@ use std::cmp::Ordering;
 use super::{Item, ItemKind, Layout, position};
 use crate::{model::Diagram, route};
 
+const MINIMUM_BALANCED_EXITS: usize = 3;
+
 pub fn minimize(lay: &mut Layout) {
-    minimize_with_discovery(lay, Discovery::Declaration);
+    minimize_with_discovery(lay, Discovery::Balanced);
 }
 
 #[derive(Clone, Copy)]
 enum Discovery {
     Declaration,
+    Balanced,
     BackEdgesFirst,
     BackEdgesLast,
     Reverse,
     Branches(usize),
+    BalancedBranches(usize),
 }
 
 fn minimize_with_discovery(lay: &mut Layout, discovery: Discovery) {
@@ -77,10 +81,16 @@ fn discovery_children(lay: &Layout, down: &[Vec<usize>], discovery: Discovery) -
         children[turn].retain(|&child| child != target);
         children[target].push(turn);
     }
+    if matches!(
+        discovery,
+        Discovery::Balanced | Discovery::BalancedBranches(_)
+    ) {
+        balance_fanouts(lay, &mut children);
+    }
     let mut branch = 0;
     for (item, neighbours) in children.iter_mut().enumerate() {
         match discovery {
-            Discovery::Declaration => {}
+            Discovery::Declaration | Discovery::Balanced => {}
             Discovery::BackEdgesFirst | Discovery::BackEdgesLast => {
                 neighbours.sort_by_key(|&child| {
                     let reversed = matches!(lay.items[child].kind, ItemKind::LoopTurn)
@@ -91,7 +101,7 @@ fn discovery_children(lay: &Layout, down: &[Vec<usize>], discovery: Discovery) -
                 });
             }
             Discovery::Reverse => neighbours.reverse(),
-            Discovery::Branches(choices) => {
+            Discovery::Branches(choices) | Discovery::BalancedBranches(choices) => {
                 if neighbours.len() > 1 && lay.items[item].is_node() {
                     if choices.checked_shr(branch).unwrap_or(0) & 1 != 0 {
                         neighbours.reverse();
@@ -102,6 +112,35 @@ fn discovery_children(lay: &Layout, down: &[Vec<usize>], discovery: Discovery) -
         }
     }
     children
+}
+
+/// A continuation needs an interior slot at a wide fan-out so terminal branches
+/// can use both sides of its spine. Crossing minimisation can still adjust it.
+fn balance_fanouts(layout: &Layout, children: &mut [Vec<usize>]) {
+    if !has_wide_fanout(layout, children) {
+        return;
+    }
+    let sizes = position::descendant_counts(layout);
+    for (item_index, branches) in children.iter_mut().enumerate() {
+        if !layout.items[item_index].is_node() || branches.len() < MINIMUM_BALANCED_EXITS {
+            continue;
+        }
+        let continuation_slot = branches
+            .iter()
+            .enumerate()
+            .max_by_key(|&(_, &child)| (sizes[child], std::cmp::Reverse(child)))
+            .map(|(slot, _)| slot)
+            .expect("fan-out has children");
+        let continuation = branches.remove(continuation_slot);
+        branches.sort_by_key(|&child| sizes[child]);
+        branches.insert(branches.len().div_ceil(2), continuation);
+    }
+}
+
+fn has_wide_fanout(layout: &Layout, children: &[Vec<usize>]) -> bool {
+    children.iter().enumerate().any(|(item_index, branches)| {
+        layout.items[item_index].is_node() && branches.len() >= MINIMUM_BALANCED_EXITS
+    })
 }
 
 fn index_map(lay: &Layout) -> Vec<usize> {
@@ -317,7 +356,7 @@ impl RoutedCandidate {
 
     fn consider(&mut self, diagram: &Diagram, layout: &Layout) {
         let score = RoutedScore::measure(diagram, layout);
-        if score.improves_loop_order(&self.score) {
+        if score.improves_branch_order(&self.score) {
             self.score = score;
             self.items = layout.items.clone();
             self.layers = layout.layers.clone();
@@ -330,13 +369,10 @@ impl RoutedCandidate {
     }
 }
 
-/// Keeps the entire return path outside forward branches, comparing both sides
-/// with routed crossings before using width and track count to break ties.
-pub(super) fn place_loops_outside(diagram: &Diagram, layout: &mut Layout) {
+/// Branch sides must be scored after rigid alignment: equal layer crossings
+/// can give different widths or thread a return lane through the main path.
+pub(super) fn refine_branch_sides(diagram: &Diagram, layout: &mut Layout) {
     let chains = loop_chains(layout);
-    if chains.is_empty() {
-        return;
-    }
     let mut best = RoutedCandidate::capture(diagram, layout);
     compare_branch_orders(diagram, layout, &mut best);
     compare_loop_sides(diagram, layout, &chains, &mut best);
@@ -348,7 +384,8 @@ pub(super) fn place_loops_outside(diagram: &Diagram, layout: &mut Layout) {
     best.restore(layout);
 }
 
-/// A forward branch may have to move inward to expose a face for its return.
+/// Try both existing sides and balanced fan-outs because shared descendants
+/// can make a visually balanced fork introduce a routed crossing.
 fn compare_branch_orders(diagram: &Diagram, layout: &mut Layout, best: &mut RoutedCandidate) {
     const MAXIMUM_BRANCH_CHOICES: usize = 8;
     let original_items = layout.items.clone();
@@ -363,16 +400,25 @@ fn compare_branch_orders(diagram: &Diagram, layout: &mut Layout, best: &mut Rout
         })
         .collect();
     let children = discovery_children(layout, &down, Discovery::Declaration);
+    let has_fanouts = has_wide_fanout(layout, &children);
     let branches = children
         .iter()
         .enumerate()
         .filter(|(item, neighbours)| layout.items[*item].is_node() && neighbours.len() > 1)
         .count();
     for choices in 0..1usize << branches.min(MAXIMUM_BRANCH_CHOICES) {
-        layout.items = original_items.clone();
-        minimize_with_discovery(layout, Discovery::Branches(choices));
-        position::assign(layout, diagram);
-        best.consider(diagram, layout);
+        for discovery in [
+            Discovery::Branches(choices),
+            Discovery::BalancedBranches(choices),
+        ] {
+            if matches!(discovery, Discovery::BalancedBranches(_)) && !has_fanouts {
+                continue;
+            }
+            layout.items = original_items.clone();
+            minimize_with_discovery(layout, discovery);
+            position::assign(layout, diagram);
+            best.consider(diagram, layout);
+        }
     }
 }
 
@@ -466,7 +512,7 @@ impl RoutedScore {
         }
     }
 
-    fn improves_loop_order(&self, best: &Self) -> bool {
+    fn improves_branch_order(&self, best: &Self) -> bool {
         (self.crossings, self.order_extent, self.tracks)
             < (best.crossings, best.order_extent, best.tracks)
     }
@@ -501,7 +547,7 @@ pub(super) fn refine_routed(diagram: &Diagram, layout: &mut Layout) {
         position::assign(layout, diagram);
         let score = RoutedScore::measure(diagram, layout);
         let improves = if layout.reversed.iter().any(|&reversed| reversed) {
-            score.improves_loop_order(&best_score)
+            score.improves_branch_order(&best_score)
         } else {
             score.improves(&best_score)
         };
