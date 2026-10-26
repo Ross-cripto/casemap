@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.0](https://github.com/Ross-cripto/casemap/compare/v0.5.1...v0.6.0) - 2026-10-26
+
+### Added
+
+- *(hook)* stop coding agents once when their changes leave the map out of date
+- *(coverage)* show which code no use-case flow covers
+- *(pr)* draw the use cases each pull request changed in a PR comment
+- *(onboard)* guided first run that lets your coding agent map the repo
+
+### Fixed
+
+- *(check)* catch keyword ids and one-way decisions, and sharpen the skill
+- *(layout)* keep the main path straight instead of drawing staircases
+- *(layout)* draw loops up the side and into their target from above
+- *(layout)* put edge labels next to their decision and cut crossings
+- *(browse)* faster reload feedback and a status line that keeps its notes
+
+### Other
+
+- *(quality)* report corpus paths with '/' on every OS
+- *(quality)* measure diagram layout over a real-app corpus
+- *(onboard)* make the onboarding tests portable to Windows
+
 ## [0.5.1](https://github.com/Ross-cripto/casemap/compare/v0.5.0...v0.5.1) - 2026-10-26
 
 ### Other
