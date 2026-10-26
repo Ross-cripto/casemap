@@ -212,6 +212,44 @@ Pass several paths for separate result blocks, or `--format json` for JSON v1:
 {"version":1,"paths":[{"path":"src/pay.rs","flows":[{"name":"pay","path":"docs/flows/pay.md","title":"Pay for an order","steps":["pay"],"whole_flow":false}]}]}
 ```
 
+## Coverage
+
+`casemap coverage` shows which code files have at least one known `@code` anchor,
+with totals by directory and the uncovered file names:
+
+```text
+code anchored to flows: 50% (2 of 4 files)
+
+  src/auth/   50%   2/4   not covered: mfa.ts, reset.ts
+```
+
+Run `casemap coverage main` to list changed code files no flow covers since the
+merge base with `main`, including uncommitted and untracked changes. Add
+`--strict` to exit 1 when that list is non-empty. Repository mode has no gate.
+Both modes support `--format json` (version 1).
+
+Coverage counts files, not lines or symbols. A file is covered when it matches an
+anchor to an existing step or a whole-flow (`*`) anchor, just as `casemap which`
+does. With no known anchors, both modes explain how to start measuring and exit 0,
+even with `--strict`.
+
+By default code extensions are `rs`, `ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`,
+`go`, `rb`, `java`, `kt`, `kts`, `swift`, `cs`, `php`, `ex`, `exs`, `scala`, `c`,
+`h`, `cc`, `cpp`, `hpp`, `m`, `mm`, `dart`, `lua`, `vue`, `svelte`, `elm`, `clj`,
+`fs`, `erl`, `hs`, `ml`, `zig` and `sh`. Paths under `test`, `tests`, `__tests__`,
+`spec`, `specs`, `vendor`, `node_modules`, `target`, `dist`, `build`, `.github`
+or `.git` are excluded, as are test names `*_test.*`, `*.test.*`, `*.spec.*`,
+`test_*.py` and `*_spec.rb`. Extensions and excluded folder names are matched
+case-insensitively. Test files named like `*Tests.swift` or `*Test.java` outside
+test folders count as code; use `--exclude` to remove them. Dotfile folders other
+than `.github` and `.git`, and root config files such as `jest.config.ts`, count
+as code by default.
+
+Repeat `--include PATTERN` to replace those defaults with your own selection;
+repeat `--exclude PATTERN` to remove files. Patterns use the same repository-root
+syntax as anchors. Excludes always win, and catalog files are always excluded.
+For example: `casemap coverage --include src --exclude src/generated`.
+
 ## On pull requests
 
 Run `casemap init --ci` to install the agent skill and add
@@ -240,9 +278,10 @@ jobs:
 ```
 
 The Action keeps one comment updated on each pull request, with coloured Mermaid
-flow changes, possibly stale flows and the `check` result. It also writes the
-report to the job summary. Fork PRs with read-only tokens fall back to that
-summary with a notice. Linux and macOS runners are supported. Checkout must use
+flow changes, possibly stale flows, changed code no flow covers and the `check`
+result. It also writes the report to the job summary. Fork PRs with read-only tokens fall back to that
+summary with a notice. When flows have @code anchors, a pull request that changes code no flow covers gets a comment even if no flow changed.
+Linux and macOS runners are supported. Checkout must use
 `fetch-depth: 0` so the base revision and its merge base are available.
 
 Only `check` errors, including broken diagrams, fail the flow review job.
@@ -346,6 +385,7 @@ For agents without skill support, `casemap guide` prints the skill body.
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
 | `casemap check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
 | `casemap diff [REF] [--strict] [--format text\|markdown]` | Compare with the merge base of REF and HEAD; `--format markdown` writes the PR comment and also fails on check errors (unlike text mode); `--strict` also exits 1 for possibly stale flows |
+| `casemap coverage [REF] [--include P] [--exclude P] [--strict] [--format text\|json]` | Code no flow covers, by directory or changed since REF; `--strict` fails only in branch mode |
 | `casemap which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
 | `casemap guide` | Print the agent skill body |
 | `casemap FILE` | Render a Mermaid file, or every Mermaid block of a Markdown file |

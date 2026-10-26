@@ -1,0 +1,22 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"diff\", \"main\", \"--format\", \"markdown\"])"
+---
+$ casemap diff main --format markdown
+[exit 0]
+--- stdout
+<!-- casemap:pr-comment -->
+### 🗺️ casemap · 0 use cases changed · 0 possibly stale · check ok · 3 files not covered by a flow
+Compared with `main` ([SHA]).
+
+#### 🧭 Changed code no flow covers
+
+- `root.py`
+- `src/a.rs`
+- `src/z.rs`
+
+#### Check
+
+ok
+--- stderr
+[end]

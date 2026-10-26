@@ -1853,3 +1853,297 @@ fn init_ci_warns_when_workflow_is_gitignored() {
         "warning: .github/workflows/casemap.yml is gitignored; teammates will not get the workflow"
     ));
 }
+
+#[test]
+fn coverage_json_shape() {
+    let repo = common::coverage_catalog();
+    let repository: serde_json::Value =
+        serde_json::from_str(&stdout(&repo.casemap(&["coverage", "--format", "json"]))).unwrap();
+    assert_eq!(
+        repository,
+        serde_json::json!({
+            "version": 1, "mode": "repository", "files": 4, "covered": 1, "anchored": true,
+            "directories": [
+                {"path": "", "files": 1, "covered": 0, "uncovered": ["root.py"]},
+                {"path": "src", "files": 3, "covered": 1, "uncovered": ["a.rs", "z.rs"]}
+            ]
+        })
+    );
+    let branch: serde_json::Value = serde_json::from_str(&stdout(
+        &repo.casemap(&["coverage", "main", "--format", "json"]),
+    ))
+    .unwrap();
+    assert_eq!(
+        branch,
+        serde_json::json!({
+            "version": 1, "mode": "branch", "since": "main",
+            "base": repo.git_stdout(&["rev-parse", "HEAD"]).trim(),
+            "changed": 3, "uncovered": ["root.py", "src/a.rs", "src/z.rs"], "anchored": true
+        })
+    );
+}
+
+#[test]
+fn coverage_without_anchors_says_so() {
+    let repo = common::coverage_catalog();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", ""),
+    )
+    .unwrap();
+    assert_eq!(
+        stdout(&repo.casemap(&["coverage"])),
+        "no flow has @code anchors yet; anchor steps to code to measure coverage\n"
+    );
+}
+
+#[test]
+fn coverage_strict_fails_on_uncovered_changes() {
+    let repo = common::coverage_catalog();
+    assert_eq!(
+        repo.casemap(&["coverage", "main", "--strict"])
+            .status
+            .code(),
+        Some(1)
+    );
+    assert!(repo.casemap(&["coverage", "--strict"]).status.success());
+    assert!(
+        repo.casemap(&["coverage", "main", "--strict", "--exclude", "**"])
+            .status
+            .success()
+    );
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "cover baseline"]);
+    fs::write(repo.file("src/pay.rs"), "changed\n").unwrap();
+    assert!(
+        repo.casemap(&["coverage", "main", "--strict"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn coverage_include_and_exclude() {
+    let repo = common::coverage_catalog();
+    let output: serde_json::Value = serde_json::from_str(&stdout(&repo.casemap(&[
+        "coverage",
+        "--include",
+        "./src//**",
+        "--include",
+        "README.md",
+        "--exclude",
+        "src/z.rs",
+        "--format",
+        "json",
+    ])))
+    .unwrap();
+    assert_eq!(output["files"], 4);
+    assert_eq!(
+        output["directories"][1]["uncovered"],
+        serde_json::json!(["a.rs", "a.test.ts"])
+    );
+}
+
+#[test]
+fn coverage_bad_pattern_fails() {
+    let repo = common::coverage_catalog();
+    for option in ["--include", "--exclude"] {
+        let output = repo.casemap(&["coverage", option, "../escape"]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!("invalid {option} pattern"))
+        );
+    }
+}
+
+#[test]
+fn coverage_branch_handles_empty_and_covered_changes() {
+    let repo = common::anchored_catalog();
+    let base = repo.git_stdout(&["rev-parse", "HEAD"]);
+    let short = &base[..flows::SHORT_SHA_LEN];
+    assert_eq!(
+        stdout(&repo.casemap(&["coverage", "main"])),
+        format!("no code changed since main ({short})\n")
+    );
+    fs::write(repo.file("src/pay.rs"), "changed\n").unwrap();
+    assert_eq!(
+        stdout(&repo.casemap(&["coverage", "main", "--strict"])),
+        format!("every changed code file since main ({short}) is covered by a flow (1 file)\n")
+    );
+    assert!(!repo.casemap(&["coverage", "missing-ref"]).status.success());
+}
+
+#[test]
+fn coverage_repository_handles_empty_selection_and_truncates_names() {
+    let repo = common::coverage_catalog();
+    assert_eq!(
+        stdout(&repo.casemap(&["coverage", "--exclude", "**"])),
+        "no code files found (adjust --include)\n"
+    );
+    for index in 0..8 {
+        fs::write(repo.file(&format!("src/file-{index}.rs")), "code\n").unwrap();
+    }
+    let output = stdout(&repo.casemap(&["coverage"]));
+    assert!(
+        output
+            .contains("not covered: a.rs, file-0.rs, file-1.rs, file-2.rs, file-3.rs, … (+5 more)")
+    );
+}
+
+#[test]
+fn coverage_walks_without_git_and_always_excludes_catalog() {
+    let repo = common::coverage_catalog();
+    fs::remove_dir_all(repo.file(".git")).unwrap();
+    fs::write(repo.flow_path("own.rs"), "code\n").unwrap();
+    let output = casemap_command(&repo)
+        .args(["coverage", "--include", "**", "--format", "json"])
+        .env("PATH", repo.file("no-git"))
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["files"], 6);
+    assert_eq!(report["directories"].as_array().unwrap().len(), 2);
+    assert!(!repo.casemap(&["coverage", "main"]).status.success());
+}
+
+#[test]
+fn coverage_uses_catalog_repository_from_another_directory() {
+    let repo = common::coverage_catalog();
+    let outside = TempRepo::new();
+    let output = outside.casemap(&[
+        "coverage",
+        "--flows",
+        repo.file(FLOWS_DIR).to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["files"], 4);
+    assert_eq!(report["covered"], 1);
+}
+
+#[test]
+fn diff_markdown_reports_uncovered_changes_without_changing_text_or_exit() {
+    let repo = common::coverage_catalog();
+    let text = stdout(&repo.casemap(&["diff"]));
+    assert!(text.starts_with("no flow changes since HEAD"));
+    assert!(!text.contains("no flow covers"));
+    let output = stdout(&repo.casemap(&["diff", "--format", "markdown", "--strict"]));
+    assert!(output.contains(
+        "#### 🧭 Changed code no flow covers\n\n- `root.py`\n- `src/a.rs`\n- `src/z.rs`"
+    ));
+    assert!(!output.contains("a.test.ts"));
+    assert!(!output.contains(flows::QUIET_MARKER));
+}
+
+#[test]
+fn coverage_ignores_deleted_and_renamed_away_files() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/old.rs"), "old\n").unwrap();
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "old code"]);
+    repo.git(&["checkout", "-qb", "feature"]);
+    repo.git(&["rm", "src/old.rs"]);
+    let base = repo.git_stdout(&["rev-parse", "main"]);
+    let short = &base[..flows::SHORT_SHA_LEN];
+    let output = repo.casemap(&["coverage", "main", "--strict"]);
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        format!("no code changed since main ({short})\n")
+    );
+    let report: serde_json::Value = serde_json::from_str(&stdout(
+        &repo.casemap(&["coverage", "main", "--format", "json"]),
+    ))
+    .unwrap();
+    assert_eq!(report["changed"], 0);
+    assert_eq!(report["uncovered"], serde_json::json!([]));
+    let markdown = stdout(&repo.casemap(&["diff", "main", "--format", "markdown"]));
+    assert!(!markdown.contains("Changed code no flow covers"));
+    repo.git(&["restore", "--staged", "src/old.rs"]);
+    repo.git(&["restore", "src/old.rs"]);
+    repo.git(&["mv", "src/old.rs", "src/new.rs"]);
+    let report: serde_json::Value = serde_json::from_str(&stdout(
+        &repo.casemap(&["coverage", "main", "--format", "json"]),
+    ))
+    .unwrap();
+    assert_eq!(report["changed"], 1);
+    assert_eq!(report["uncovered"], serde_json::json!(["src/new.rs"]));
+    let markdown = stdout(&repo.casemap(&["diff", "main", "--format", "markdown"]));
+    assert!(markdown.contains("- `src/new.rs`"));
+    assert!(!markdown.contains("src/old.rs"));
+}
+
+#[test]
+fn coverage_branch_without_anchors_says_so() {
+    let repo = common::coverage_catalog();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", ""),
+    )
+    .unwrap();
+    let output = repo.casemap(&["coverage", "main", "--strict"]);
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        "no flow has @code anchors yet; anchor steps to code to measure coverage\n"
+    );
+    let output = repo.casemap(&["coverage", "main", "--strict", "--format", "json"]);
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(report["anchored"], false);
+    assert_eq!(report["uncovered"], serde_json::json!([]));
+    assert_eq!(report["changed"], 3);
+}
+
+#[test]
+fn coverage_from_a_subdirectory_with_a_nested_catalog() {
+    let repo = common::anchored_catalog();
+    fs::create_dir_all(repo.file("app/docs/flows")).unwrap();
+    fs::create_dir_all(repo.file("app/src")).unwrap();
+    fs::write(repo.file("app/src/pay.rs"), "code\n").unwrap();
+    fs::write(
+        repo.file("app/docs/flows/pay.md"),
+        common::ANCHORED_PAY.replace("src/pay.rs", "app/src/pay.rs"),
+    )
+    .unwrap();
+    for arguments in [
+        vec!["coverage", "--flows", "../docs/flows", "--format", "json"],
+        vec![
+            "coverage",
+            "main",
+            "--flows",
+            "../docs/flows",
+            "--format",
+            "json",
+            "--strict",
+        ],
+    ] {
+        let output = casemap_command(&repo)
+            .args(arguments)
+            .current_dir(repo.file("app/src"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let report: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+        if report["mode"] == "repository" {
+            assert_eq!(report["covered"], 1);
+        } else {
+            assert_eq!(report["changed"], 1);
+            assert_eq!(report["uncovered"], serde_json::json!([]));
+        }
+    }
+}
+
+#[test]
+fn coverage_aligns_unicode_directory_columns() {
+    let repo = common::anchored_catalog();
+    for directory in ["é", "界"] {
+        fs::create_dir(repo.file(directory)).unwrap();
+        fs::write(repo.file(&format!("{directory}/a.rs")), "code\n").unwrap();
+    }
+    let output = stdout(&repo.casemap(&["coverage"]));
+    assert!(output.contains("  é/      0%"), "{output}");
+    assert!(output.contains("  界/     0%"), "{output}");
+}

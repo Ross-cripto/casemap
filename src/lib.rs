@@ -14,6 +14,7 @@
 pub mod anchors;
 pub mod canvas;
 pub mod check;
+pub mod coverage;
 pub mod diff;
 pub mod flows;
 pub mod git;

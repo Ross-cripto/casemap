@@ -628,3 +628,30 @@ fn diff_markdown_broken() {
         repo_transcript(&repo, &["diff", "--format", "markdown"])
     );
 }
+
+#[test]
+fn coverage_repository_text() {
+    let repo = common::coverage_catalog();
+    insta::assert_snapshot!(
+        "coverage_repository_text",
+        repo_transcript(&repo, &["coverage"])
+    );
+}
+
+#[test]
+fn coverage_branch_text() {
+    let repo = common::coverage_catalog();
+    insta::assert_snapshot!(
+        "coverage_branch_text",
+        repo_transcript(&repo, &["coverage", "main"])
+    );
+}
+
+#[test]
+fn diff_markdown_uncovered() {
+    let repo = common::coverage_catalog();
+    insta::assert_snapshot!(
+        "diff_markdown_uncovered",
+        repo_transcript(&repo, &["diff", "main", "--format", "markdown"])
+    );
+}

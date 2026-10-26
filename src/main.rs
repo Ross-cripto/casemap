@@ -10,12 +10,13 @@ use anyhow::{Context, bail};
 use casemap::flows::{Flow, FlowChange, Stale};
 use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
+use unicode_width::UnicodeWidthStr;
 
 #[cfg(feature = "tui")]
 mod browse;
 mod onboard;
 use casemap::markdown::is_markdown_path;
-use casemap::{Direction, Options, ParseError, anchors, check, git, skill};
+use casemap::{Direction, Options, ParseError, anchors, check, coverage, git, skill};
 
 const DEFAULT_FLOWS_DIR: &str = skill::DEFAULT_CATALOG;
 const DEFAULT_REF: &str = "HEAD";
@@ -119,6 +120,19 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
+    /// Which code no flow covers: the whole repository, or the files changed since REF.
+    Coverage {
+        rev: Option<String>,
+        #[arg(long = "include", value_name = "PATTERN")]
+        include: Vec<String>,
+        #[arg(long = "exclude", value_name = "PATTERN")]
+        exclude: Vec<String>,
+        /// With REF, exit 1 when changed code is not covered.
+        #[arg(long)]
+        strict: bool,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
     /// Print the casemap agent skill without its front matter.
     Guide,
     /// Generate shell completions.
@@ -189,6 +203,20 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         #[cfg(not(feature = "tui"))]
         Some(Commands::Browse { .. }) => bail!("casemap was built without the tui feature"),
         Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
+        Some(Commands::Coverage {
+            rev,
+            include,
+            exclude,
+            strict,
+            format,
+        }) => measure_coverage(
+            directory,
+            rev.as_deref(),
+            &include,
+            &exclude,
+            strict,
+            format,
+        ),
         Some(Commands::Init { force, agent, ci }) => {
             let outcome = init_catalog(directory, force, agent, ci)?;
             finish_onboarding(outcome, onboarding_opts)
@@ -376,6 +404,9 @@ struct BaseChanges {
     old: Vec<Flow>,
     changes: Vec<FlowChange>,
     stale: Vec<Stale>,
+    changed: Vec<String>,
+    root: PathBuf,
+    prefix: String,
 }
 
 fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseChanges> {
@@ -385,21 +416,25 @@ fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseC
         .map(|(path, text)| casemap::flows::parse_flow(&path, &text))
         .collect::<Vec<_>>();
     let changes = casemap::flows::compare(&old, current);
-    let stale = if current
+    let (root, _, prefix) = code_root(dir)?;
+    let (changed, stale) = if current
         .iter()
         .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
     {
-        let (root, _, prefix) = code_root(dir)?;
         let changed = git::changed_files(&root, &base)?;
-        casemap::flows::stale_flows(current, &prefix, &changed)
+        let stale = casemap::flows::stale_flows(current, &prefix, &changed);
+        (changed, stale)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     Ok(BaseChanges {
         base,
         old,
         changes,
         stale,
+        changed,
+        root,
+        prefix,
     })
 }
 
@@ -442,16 +477,28 @@ fn diff_catalog_markdown(dir: &Path, rev: &str, strict: bool) -> anyhow::Result<
         restore_removed_flow(change, &compared.old);
     }
     let report = check_report(dir)?;
+    let changed = changed_code(
+        &compared.changed,
+        &compared.prefix,
+        &coverage::Selection::default(),
+        &|path| compared.root.join(path).is_file(),
+    );
+    let uncovered = if casemap::flows::has_known_anchors(&current) {
+        coverage::uncovered_changes(&changed, &current)
+    } else {
+        Vec::new()
+    };
     print!(
         "{}",
-        casemap::flows::render_markdown(
-            &compared.changes,
-            &compared.stale,
-            rev,
-            &compared.base,
-            &report,
-            &catalog_path(dir),
-        )
+        casemap::flows::render_markdown(&casemap::flows::MarkdownInput {
+            changes: &compared.changes,
+            stale: &compared.stale,
+            since: rev,
+            base: &compared.base,
+            report: &report,
+            catalog: &catalog_path(dir),
+            uncovered: &uncovered,
+        })
     );
     Ok(markdown_exit_code(
         &report,
@@ -721,6 +768,220 @@ fn which_flows(dir: &Path, paths: &[PathBuf], format: Format) -> anyhow::Result<
         Format::Json => print_which_json(dir, &root, &results)?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn selection_patterns(values: &[String], option: &str) -> anyhow::Result<Vec<String>> {
+    values
+        .iter()
+        .map(|value| {
+            anchors::normalise_pattern(value)
+                .map_err(|error| anyhow::anyhow!("invalid {option} pattern {error}"))
+        })
+        .collect()
+}
+
+fn measure_coverage(
+    dir: &Path,
+    rev: Option<&str>,
+    include: &[String],
+    exclude: &[String],
+    strict: bool,
+    format: Format,
+) -> anyhow::Result<ExitCode> {
+    let flows = load_catalog(dir)?;
+    let selection = coverage::Selection {
+        include: selection_patterns(include, "--include")?,
+        exclude: selection_patterns(exclude, "--exclude")?,
+    };
+    match rev {
+        Some(rev) => coverage_branch(dir, rev, &flows, &selection, strict, format),
+        None => coverage_repository(dir, &flows, &selection, format),
+    }
+}
+
+fn changed_code(
+    changed: &[String],
+    catalog_prefix: &str,
+    selection: &coverage::Selection,
+    exists: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    changed
+        .iter()
+        .filter(|path| exists(path) && coverage::is_code_path(path, catalog_prefix, selection))
+        .cloned()
+        .collect()
+}
+
+fn coverage_branch(
+    dir: &Path,
+    rev: &str,
+    flows: &[Flow],
+    selection: &coverage::Selection,
+    strict: bool,
+    format: Format,
+) -> anyhow::Result<ExitCode> {
+    let (root, _, catalog_prefix) = code_root(dir)?;
+    let base = git::merge_base(dir, rev)?;
+    let changed = changed_code(
+        &git::changed_files(&root, &base)?,
+        &catalog_prefix,
+        selection,
+        &|path| root.join(path).is_file(),
+    );
+    let anchored = casemap::flows::has_known_anchors(flows);
+    let uncovered = if anchored {
+        coverage::uncovered_changes(&changed, flows)
+    } else {
+        Vec::new()
+    };
+    match format {
+        Format::Json => println!(
+            "{}",
+            serde_json::json!({
+                "version": 1, "mode": "branch", "since": rev, "base": base,
+                "changed": changed.len(), "uncovered": uncovered, "anchored": anchored,
+            })
+        ),
+        Format::Text => {
+            if anchored {
+                print!(
+                    "{}",
+                    coverage_branch_text(rev, &base, changed.len(), &uncovered)
+                );
+            } else {
+                print!("{NO_COVERAGE_ANCHORS}");
+            }
+        }
+    }
+    Ok(if strict && !uncovered.is_empty() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn directory_json(directory: &coverage::Directory) -> serde_json::Value {
+    serde_json::json!({
+        "path": directory.path, "files": directory.files, "covered": directory.covered,
+        "uncovered": directory.uncovered,
+    })
+}
+
+fn coverage_repository(
+    dir: &Path,
+    flows: &[Flow],
+    selection: &coverage::Selection,
+    format: Format,
+) -> anyhow::Result<ExitCode> {
+    let mut index = LazyCodeIndex::deferred(dir);
+    let root = index.root()?.to_path_buf();
+    let catalog_prefix = root_relative_path(dir, &root)?;
+    let report = coverage::repository(index.files()?, flows, &catalog_prefix, selection);
+    match format {
+        Format::Text => print!("{}", coverage_repository_text(&report)),
+        Format::Json => {
+            let directories: Vec<_> = report.directories.iter().map(directory_json).collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "version": 1, "mode": "repository", "files": report.files, "covered": report.covered,
+                    "anchored": report.anchored, "directories": directories,
+                })
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+const NO_COVERAGE_ANCHORS: &str =
+    "no flow has @code anchors yet; anchor steps to code to measure coverage\n";
+
+fn coverage_file_word(count: usize) -> &'static str {
+    if count == 1 { "file" } else { "files" }
+}
+
+fn coverage_branch_text(rev: &str, base: &str, changed: usize, uncovered: &[String]) -> String {
+    let short: String = base.chars().take(casemap::flows::SHORT_SHA_LEN).collect();
+    if changed == 0 {
+        return format!("no code changed since {rev} ({short})\n");
+    }
+    let files = coverage_file_word(changed);
+    if uncovered.is_empty() {
+        return format!(
+            "every changed code file since {rev} ({short}) is covered by a flow ({changed} {files})\n"
+        );
+    }
+    let mut output = format!(
+        "changed code no flow covers since {rev} ({short}): {} of {changed} {files}\n",
+        uncovered.len()
+    );
+    for path in uncovered {
+        output.push_str(&format!("  {path}\n"));
+    }
+    output
+}
+
+const MAX_UNCOVERED_NAMES: usize = 5;
+
+fn coverage_percentage(covered: usize, files: usize) -> usize {
+    covered * 100 / files
+}
+
+fn coverage_directory_label(path: &str) -> String {
+    if path.is_empty() {
+        ".".into()
+    } else {
+        format!("{path}/")
+    }
+}
+
+fn coverage_repository_text(report: &coverage::Report) -> String {
+    if !report.anchored {
+        return NO_COVERAGE_ANCHORS.into();
+    }
+    if report.files == 0 {
+        return "no code files found (adjust --include)\n".into();
+    }
+    let percentage = coverage_percentage(report.covered, report.files);
+    let mut output = format!(
+        "code anchored to flows: {percentage}% ({} of {} {})\n\n",
+        report.covered,
+        report.files,
+        coverage_file_word(report.files)
+    );
+    let width = report
+        .directories
+        .iter()
+        .map(|directory| UnicodeWidthStr::width(coverage_directory_label(&directory.path).as_str()))
+        .max()
+        .unwrap_or(0);
+    for directory in &report.directories {
+        let label = coverage_directory_label(&directory.path);
+        let percentage = coverage_percentage(directory.covered, directory.files);
+        let padding = " ".repeat(width - UnicodeWidthStr::width(label.as_str()));
+        output.push_str(&format!(
+            "  {label}{padding}  {percentage:>3}%   {}/{}",
+            directory.covered, directory.files
+        ));
+        if !directory.uncovered.is_empty() {
+            let names: Vec<_> = directory
+                .uncovered
+                .iter()
+                .take(MAX_UNCOVERED_NAMES)
+                .map(String::as_str)
+                .collect();
+            output.push_str(&format!("   not covered: {}", names.join(", ")));
+            let remaining = directory
+                .uncovered
+                .len()
+                .saturating_sub(MAX_UNCOVERED_NAMES);
+            if remaining > 0 {
+                output.push_str(&format!(", … (+{remaining} more)"));
+            }
+        }
+        output.push('\n');
+    }
+    output
 }
 
 fn file_is_under_directory(file: &str, directory: &str) -> bool {

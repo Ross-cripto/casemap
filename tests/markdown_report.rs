@@ -17,7 +17,15 @@ fn clean_report() -> Report {
 #[test]
 fn markdown_quiet_contains_only_markers_and_heading() {
     assert_eq!(
-        flows::render_markdown(&[], &[], "HEAD", "abcdef123", &clean_report(), "docs/flows"),
+        flows::render_markdown(&flows::MarkdownInput {
+            changes: &[],
+            stale: &[],
+            since: "HEAD",
+            base: "abcdef123",
+            report: &clean_report(),
+            catalog: "docs/flows",
+            uncovered: &[],
+        }),
         format!(
             "{COMMENT_MARKER}\n{QUIET_MARKER}\n### 🗺️ casemap · no use-case changes · check ok\n"
         )
@@ -34,14 +42,15 @@ fn markdown_draws_changed_new_and_removed_flows_in_order() {
         flows::parse_flow("pay.mmd", "graph TD\na[Pay] --> c[Review] --> b[Done]"),
         flows::parse_flow("new.mmd", "graph TD\nx[New]"),
     ];
-    let output = flows::render_markdown(
-        &flows::compare(&before, &after),
-        &[],
-        "main",
-        "abcdef123",
-        &clean_report(),
-        "docs/flows",
-    );
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &flows::compare(&before, &after),
+        stale: &[],
+        since: "main",
+        base: "abcdef123",
+        report: &clean_report(),
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.starts_with("<!-- casemap:pr-comment -->\n### 🗺️ casemap · 3 use cases changed · 0 possibly stale · check ok\nCompared with `main` (abcdef1).\n"));
     assert!(output.contains("#### + new · `docs/flows/new.mmd` (new)"));
     assert!(output.contains("#### − old · `docs/flows/old.mmd` (removed)"));
@@ -89,8 +98,15 @@ fn markdown_includes_broken_stale_and_check_problem_locations() {
             },
         ],
     };
-    let output =
-        flows::render_markdown(&changes, &stale, "HEAD", "abcdef123", &report, "docs/flows");
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &changes,
+        stale: &stale,
+        since: "HEAD",
+        base: "abcdef123",
+        report: &report,
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.contains("1 use case changed · 1 possibly stale · check 1 error, 1 warning"));
     assert!(output.contains(
         "#### ✗ pay · `docs/flows/pay.mmd` (parse error)\n\n`line 2: link has no target node`"
@@ -130,8 +146,15 @@ fn markdown_preserves_first_diagrams_when_capping() {
             message: "Check retained".into(),
         }],
     };
-    let output =
-        flows::render_markdown(&changes, &stale, "main", "abcdef123", &report, "docs/flows");
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &changes,
+        stale: &stale,
+        since: "main",
+        base: "abcdef123",
+        report: &report,
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(
         output.chars().count() <= COMMENT_LIMIT,
         "{}",
@@ -176,14 +199,15 @@ fn markdown_omits_details_after_all_diagrams_when_needed() {
         &format!("graph TD\na[\"{}\"]", "x".repeat(COMMENT_LIMIT)),
     );
     let changes: Vec<FlowChange> = flows::compare(&[], &[flow]);
-    let output = flows::render_markdown(
-        &changes,
-        &[],
-        "HEAD",
-        "abcdef1",
-        &clean_report(),
-        "docs/flows",
-    );
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &changes,
+        stale: &[],
+        since: "HEAD",
+        base: "abcdef1",
+        report: &clean_report(),
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.chars().count() <= COMMENT_LIMIT);
     assert!(!output.contains("```mermaid"));
     assert!(!output.contains("<details>"));
@@ -214,22 +238,35 @@ fn markdown_is_capped_for_github() {
             })
             .collect(),
     };
-    let output = flows::render_markdown(&[], &stale, "main", "abcdef123", &report, "docs/flows");
+    let uncovered: Vec<_> = (0..10_000)
+        .map(|index| format!("src/uncovered-{index}.rs"))
+        .collect();
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &[],
+        stale: &stale,
+        since: "main",
+        base: "abcdef123",
+        report: &report,
+        catalog: "docs/flows",
+        uncovered: &uncovered,
+    });
     assert!(output.chars().count() <= COMMENT_LIMIT);
     assert!(output.contains("more problems; run `casemap check` locally."));
     assert!(output.contains("more stale flows; run `casemap diff main` locally."));
+    assert!(output.contains("more files; run `casemap coverage main` locally."));
     assert!(output.starts_with(COMMENT_MARKER));
 
     for label in ["x".repeat(DIAGRAM_LIMIT), "🗺".repeat(DIAGRAM_LIMIT / 2)] {
         let huge = flows::parse_flow("huge.mmd", &format!("graph TD\na[\"{label}\"]"));
-        let output = flows::render_markdown(
-            &flows::compare(&[], &[huge]),
-            &[],
-            "main",
-            "abcdef123",
-            &clean_report(),
-            "docs/flows",
-        );
+        let output = flows::render_markdown(&flows::MarkdownInput {
+            changes: &flows::compare(&[], &[huge]),
+            stale: &[],
+            since: "main",
+            base: "abcdef123",
+            report: &clean_report(),
+            catalog: "docs/flows",
+            uncovered: &[],
+        });
         assert!(output.chars().count() <= COMMENT_LIMIT);
         assert!(output.contains("Diagram too large for GitHub"));
         for block in output.split("\n```mermaid\n").skip(1) {
@@ -252,14 +289,15 @@ fn markdown_escapes_untrusted_text_and_uses_safe_inline_fences() {
             message: "@someone <details> *text* `code`".into(),
         }],
     };
-    let output = flows::render_markdown(
-        &flows::compare(&[], &[flow]),
-        &[],
-        "main`branch",
-        "abcdef123",
-        &report,
-        "docs/flows",
-    );
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &flows::compare(&[], &[flow]),
+        stale: &[],
+        since: "main`branch",
+        base: "abcdef123",
+        report: &report,
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.contains(r"\~title\~ \& \*title\* \_x\_ \[link\] \<details\> \# \| \@user"));
     assert!(output.contains("``docs/flows/x`y.md``"));
     assert!(output.contains("Compared with ``main`branch`` (abcdef1)."));
@@ -279,7 +317,15 @@ fn markdown_does_not_repeat_a_sha_prefix() {
             message: "No flows".into(),
         }],
     };
-    let output = flows::render_markdown(&[], &[], "abcdef1", "abcdef123", &report, "docs/flows");
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &[],
+        stale: &[],
+        since: "abcdef1",
+        base: "abcdef123",
+        report: &report,
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.contains("Compared with abcdef1.\n"));
     assert!(!output.contains("(abcdef1)"));
 }
@@ -288,14 +334,15 @@ fn markdown_does_not_repeat_a_sha_prefix() {
 fn markdown_caps_oversized_flow_headings() {
     let mut flow = flows::parse_flow("huge.mmd", "graph TD\na[A]");
     flow.title = "x".repeat(COMMENT_LIMIT * 2);
-    let output = flows::render_markdown(
-        &flows::compare(&[], &[flow]),
-        &[],
-        "main",
-        "abcdef123",
-        &clean_report(),
-        "docs/flows",
-    );
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &flows::compare(&[], &[flow]),
+        stale: &[],
+        since: "main",
+        base: "abcdef123",
+        report: &clean_report(),
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.chars().count() <= COMMENT_LIMIT);
     assert!(output.starts_with(COMMENT_MARKER));
     assert!(output.contains("1 more changed flows"));
@@ -330,8 +377,15 @@ fn cap_drops_flow_sections_before_check_and_stale() {
             })
             .collect(),
     };
-    let output =
-        flows::render_markdown(&changes, &stale, "main", "abcdef123", &report, "docs/flows");
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &changes,
+        stale: &stale,
+        since: "main",
+        base: "abcdef123",
+        report: &report,
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
     assert!(output.chars().count() <= COMMENT_LIMIT);
     assert!(output.contains("more changed flows"));
     assert!(output.contains("#### + Flow 0 "));
@@ -353,18 +407,70 @@ fn diagrams_over_the_edge_limit_are_omitted() {
             source.push_str(&format!("a --> n{index}\n"));
         }
         let flow = flows::parse_flow("edges.mmd", &source);
-        let output = flows::render_markdown(
-            &flows::compare(&[], &[flow]),
-            &[],
-            "main",
-            "abcdef123",
-            &clean_report(),
-            "docs/flows",
-        );
+        let output = flows::render_markdown(&flows::MarkdownInput {
+            changes: &flows::compare(&[], &[flow]),
+            stale: &[],
+            since: "main",
+            base: "abcdef123",
+            report: &clean_report(),
+            catalog: "docs/flows",
+            uncovered: &[],
+        });
         assert_eq!(
             output.contains("Diagram too large for GitHub; run `casemap diff main` locally."),
             omitted
         );
         assert_eq!(output.contains("```mermaid"), !omitted);
     }
+}
+
+#[test]
+fn markdown_lists_uncovered_changes_and_omits_empty_lists() {
+    let uncovered = vec!["src/admin/export.ts".into(), "src/a`b.rs".into()];
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &[],
+        stale: &[],
+        since: "main",
+        base: "abcdef123",
+        report: &clean_report(),
+        catalog: "docs/flows",
+        uncovered: &uncovered,
+    });
+    assert!(output.contains(" · 2 files not covered by a flow\n"));
+    assert!(output.contains(
+        "#### 🧭 Changed code no flow covers\n\n- `src/admin/export.ts`\n- ``src/a`b.rs``\n"
+    ));
+    assert!(!output.contains(QUIET_MARKER));
+    assert!(output.find("Changed code").unwrap() < output.find("#### Check").unwrap());
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &[],
+        stale: &[],
+        since: "main",
+        base: "abcdef123",
+        report: &clean_report(),
+        catalog: "docs/flows",
+        uncovered: &[],
+    });
+    assert!(!output.contains("Changed code"));
+    assert!(!output.contains("files not covered"));
+}
+
+#[test]
+fn markdown_is_capped_with_uncovered_changes() {
+    let uncovered: Vec<_> = (0..10_000)
+        .map(|index| format!("src/uncovered-{index}.rs"))
+        .collect();
+    let output = flows::render_markdown(&flows::MarkdownInput {
+        changes: &[],
+        stale: &[],
+        since: "main",
+        base: "abcdef123",
+        report: &clean_report(),
+        catalog: "docs/flows",
+        uncovered: &uncovered,
+    });
+    assert!(output.chars().count() <= COMMENT_LIMIT);
+    assert!(output.contains("more files; run `casemap coverage main` locally."));
+    assert!(output.contains("#### 🧭 Changed code no flow covers"));
+    assert!(output.ends_with("#### Check\n\nok\n"));
 }
