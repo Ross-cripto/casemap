@@ -4,37 +4,6 @@ use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::ListState;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum BareMode {
-    Browse,
-    ReadStdin,
-}
-
-pub(crate) struct BareModeInputs {
-    pub stdin_tty: bool,
-    pub stdout_tty: bool,
-    pub ci: bool,
-    pub term_dumb: bool,
-    pub catalog_exists: bool,
-    pub watch: bool,
-    pub has_file: bool,
-}
-
-impl BareModeInputs {
-    fn is_interactive_session(&self) -> bool {
-        self.stdin_tty && self.stdout_tty && !self.ci && !self.term_dumb
-    }
-}
-
-pub(crate) fn bare_mode(inputs: &BareModeInputs) -> BareMode {
-    if inputs.is_interactive_session() && inputs.catalog_exists && !inputs.watch && !inputs.has_file
-    {
-        BareMode::Browse
-    } else {
-        BareMode::ReadStdin
-    }
-}
-
 pub(super) const FAST_PAN: u16 = 10;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -103,6 +72,7 @@ pub(super) struct BaseInfo {
 }
 
 pub(super) struct Loaded {
+    pub catalog: String,
     pub flows: Vec<Entry>,
     pub base: Option<BaseInfo>,
     pub catalog_problems: usize,
@@ -128,6 +98,7 @@ pub(super) enum Action {
 }
 
 pub(super) struct App {
+    pub catalog: String,
     pub flows: Vec<Entry>,
     pub view: Vec<usize>,
     pub list_state: ListState,
@@ -150,6 +121,7 @@ pub(super) struct App {
 impl App {
     pub(super) fn new(loaded: Loaded, ascii: bool, color: bool) -> Self {
         let mut app = Self {
+            catalog: String::new(),
             flows: Vec::new(),
             view: Vec::new(),
             list_state: ListState::default(),
@@ -354,6 +326,7 @@ impl App {
 
     pub(super) fn apply(&mut self, loaded: Loaded) {
         let path = self.selected().map(|entry| entry.flow.path.clone());
+        self.catalog = loaded.catalog;
         self.flows = loaded.flows;
         self.base = loaded.base;
         self.status = loaded.status;
@@ -472,80 +445,6 @@ pub(super) fn dimension(value: usize) -> u16 {
 #[cfg(test)]
 mod state_tests {
     use super::*;
-    #[test]
-    fn bare_mode_table() {
-        let interactive = || BareModeInputs {
-            stdin_tty: true,
-            stdout_tty: true,
-            ci: false,
-            term_dumb: false,
-            catalog_exists: true,
-            watch: false,
-            has_file: false,
-        };
-        let cases = [
-            ("interactive catalog", interactive(), BareMode::Browse),
-            (
-                "piped stdin",
-                BareModeInputs {
-                    stdin_tty: false,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-            (
-                "piped stdout",
-                BareModeInputs {
-                    stdout_tty: false,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-            (
-                "CI session",
-                BareModeInputs {
-                    ci: true,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-            (
-                "dumb terminal",
-                BareModeInputs {
-                    term_dumb: true,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-            (
-                "missing catalog",
-                BareModeInputs {
-                    catalog_exists: false,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-            (
-                "watch requested",
-                BareModeInputs {
-                    watch: true,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-            (
-                "file supplied",
-                BareModeInputs {
-                    has_file: true,
-                    ..interactive()
-                },
-                BareMode::ReadStdin,
-            ),
-        ];
-        for (reason, inputs, expected) in cases {
-            assert_eq!(bare_mode(&inputs), expected, "{reason}");
-        }
-    }
     fn entry(name: &str) -> Entry {
         let text = (0..100)
             .map(|row| format!("{row:03} {}", "diagram".repeat(30)))
@@ -572,6 +471,7 @@ mod state_tests {
     }
     fn loaded_with_flows(names: &[&str]) -> Loaded {
         Loaded {
+            catalog: "docs/flows".into(),
             flows: names.iter().map(|name| entry(name)).collect(),
             base: Some(BaseInfo {
                 reference: "HEAD".into(),

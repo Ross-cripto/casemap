@@ -3,7 +3,7 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, Focus, Marker, Search};
@@ -32,12 +32,20 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     }
     if !areas.diagram.is_empty() {
         draw_header(frame, app, areas.header);
-        let text = app
-            .diagram()
-            .map(|view| view.text.clone())
-            .unwrap_or_default();
-        let title = if app.diff_mode { " Diff " } else { " Diagram " };
-        let diagram = Paragraph::new(text)
+        let empty = app.flows.is_empty();
+        let text = if empty {
+            Text::raw(welcome_text(&app.catalog))
+        } else {
+            app.diagram()
+                .map(|view| view.text.clone())
+                .unwrap_or_default()
+        };
+        let title = if app.diff_mode && !empty {
+            " Diff "
+        } else {
+            " Diagram "
+        };
+        let mut diagram = Paragraph::new(text)
             .block(border(
                 title,
                 app.ascii,
@@ -45,6 +53,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
                 app.color,
             ))
             .scroll((app.pan.rows, app.pan.columns));
+        if empty {
+            diagram = diagram.wrap(Wrap { trim: false });
+        }
         frame.render_widget(diagram, areas.diagram);
     }
     if !areas.panel.is_empty() {
@@ -80,6 +91,13 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     if app.help {
         draw_help(frame, app, area);
     }
+}
+
+fn welcome_text(catalog: &str) -> String {
+    let prompt = crate::onboard::agent_prompt(catalog);
+    format!(
+        "No use cases yet.\n\ncasemap keeps one Mermaid flow per use case in {catalog}/,\nwritten by your coding agent.\n\nQuit (q) and run `casemap` to let Claude Code or Codex write them,\nor ask your agent:\n  \"{prompt}\""
+    )
 }
 
 fn visible_panel_lines(app: &App, height: u16) -> Vec<String> {
@@ -128,7 +146,9 @@ fn marker_style(marker: Marker, color: bool) -> Style {
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let title_width = usize::from(area.width.saturating_sub(4));
-    let items: Vec<_> = if app.view.is_empty() {
+    let items: Vec<_> = if app.flows.is_empty() {
+        vec![ListItem::new("no flows yet")]
+    } else if app.view.is_empty() {
         vec![ListItem::new("no matching flows")]
     } else {
         app.view
@@ -234,7 +254,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             "reloading…".into()
         };
     }
-    if app.catalog_problems > 0 {
+    if !app.flows.is_empty() && app.catalog_problems > 0 {
         let suffix = if app.catalog_problems == 1 {
             "problem"
         } else {
@@ -395,6 +415,27 @@ mod tests {
         app.focus = Focus::Diagram;
         let rendered = render(&mut app, 79, 2);
         assert!(rendered.contains("terminal too small"), "{rendered}");
+    }
+
+    #[test]
+    fn empty() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        let mut loaded = crate::browse::build_loaded(
+            directory.path(),
+            Vec::new(),
+            check::check_catalog_with(directory.path(), &mut |_| true).unwrap(),
+            "HEAD",
+            None,
+            &Options::default(),
+        );
+        loaded.catalog = "docs/flows".into();
+        let mut app = App::new(loaded, false, false);
+        let rendered = render(&mut app, 120, 30);
+        assert!(rendered.contains("no flows yet"));
+        assert!(rendered.contains("No use cases yet."));
+        assert!(!rendered.contains("catalog: 1 problem"));
+        assert!(rendered.contains("docs/flows/"));
+        assert_browse_snapshot("browse__empty", rendered);
     }
 
     #[test]

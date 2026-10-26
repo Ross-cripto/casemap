@@ -300,6 +300,7 @@ fn build_loaded(
         }
     }
     Loaded {
+        catalog: crate::catalog_path(dir),
         flows: entries,
         base: base.map(|base| BaseInfo {
             reference: reference.into(),
@@ -532,6 +533,7 @@ mod tests {
 
     fn loaded_with_flows(flows: Vec<Entry>) -> Loaded {
         Loaded {
+            catalog: "docs/flows".into(),
             flows,
             base: None,
             catalog_problems: 0,

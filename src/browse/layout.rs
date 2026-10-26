@@ -56,6 +56,7 @@ mod tests {
     fn layout_tracks_terminal_size_and_panel() {
         let mut app = App::new(
             Loaded {
+                catalog: "docs/flows".into(),
                 flows: vec![],
                 base: None,
                 catalog_problems: 0,
