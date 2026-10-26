@@ -1231,10 +1231,21 @@ fn diff_counts_untracked_and_renamed_files() {
 fn diff_without_anchors_runs_no_extra_git() {
     let repo = TempRepo::committed_before();
     let sha = repo.git_stdout(&["rev-parse", "HEAD"]);
+    let trace_path = repo.file("git-trace.log");
+    let output = strata_command(&repo)
+        .arg("diff")
+        .env("GIT_TRACE", &trace_path)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
     assert_eq!(
-        stdout(&repo.strata(&["diff"])),
+        stdout(&output),
         format!("no flow changes since HEAD ({})\n", &sha[..7])
     );
+    let trace = fs::read_to_string(trace_path).unwrap();
+    assert!(trace.contains("merge-base"), "{trace}");
+    assert!(!trace.contains("ls-files --others"), "{trace}");
+    assert!(!trace.contains("diff --no-renames"), "{trace}");
 }
 
 #[test]
@@ -1456,5 +1467,56 @@ fn anchors_do_not_change_rendering() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn stale_counts_valid_patterns_on_a_line_with_an_invalid_one() {
+    let repo = common::anchored_catalog();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("src/pay.rs", "src/pay.rs ../bad"),
+    )
+    .unwrap();
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "mixed patterns"]);
+    fs::write(repo.file("src/pay.rs"), "fn changed() {}\n").unwrap();
+    assert!(stdout(&repo.strata(&["diff"])).contains("pay: src/pay.rs"));
+    assert!(stdout(&repo.strata(&["which", "src/pay.rs"])).contains("(steps: pay)"));
+    let output = repo.strata(&["check"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("[anchor-syntax]"), "{text}");
+    assert!(text.contains("1 error"), "{text}");
+    assert!(!text.contains("[anchor-no-match]"), "{text}");
+    assert!(!text.contains("[anchor-unknown-step]"), "{text}");
+}
+
+#[test]
+fn which_surfaces_git_errors() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file(".git/config"), "[broken\n").unwrap();
+    let output = repo.strata(&["which", "src/pay.rs"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: git"));
+}
+
+#[test]
+fn check_and_which_work_outside_a_repository() {
+    let repo = common::anchored_catalog();
+    fs::remove_dir_all(repo.file(".git")).unwrap();
+    for arguments in [&["check", "--strict"][..], &["which", "src/pay.rs"]] {
+        let output = strata_command(&repo)
+            .args(arguments)
+            .env("GIT_CEILING_DIRECTORIES", repo.path().parent().unwrap())
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

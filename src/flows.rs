@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::anchors::{self, Target};
@@ -235,12 +236,14 @@ pub fn compare(old: &[Flow], new: &[Flow]) -> Vec<FlowChange> {
     changes
 }
 
+/// Changed code paths covered by one anchor target.
 #[derive(Clone, Debug)]
 pub struct StaleHit {
     pub target: Target,
     pub files: Vec<String>,
 }
 
+/// An untouched flow whose anchored code changed.
 #[derive(Clone, Debug)]
 pub struct Stale {
     pub flow: Flow,
@@ -249,42 +252,13 @@ pub struct Stale {
 
 /// Flows whose file did not change but whose anchors match a changed file. `catalog_prefix` is the catalog dir relative to the repo root ("" or "docs/flows/").
 pub fn stale_flows(current: &[Flow], catalog_prefix: &str, changed: &[String]) -> Vec<Stale> {
+    let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
     let mut stale = Vec::new();
     for flow in current {
-        let path = format!("{catalog_prefix}{}", flow.path);
-        if changed.contains(&path) {
+        if flow_is_touched(&changed_set, catalog_prefix, flow) {
             continue;
         }
-        let (anchors, errors) = anchors::flow_anchors(flow);
-        let mut hits: Vec<StaleHit> = Vec::new();
-        for anchor in anchors {
-            if errors.iter().any(|error| error.line == anchor.line) {
-                continue;
-            }
-            let mut files: Vec<_> = changed
-                .iter()
-                .filter(|path| {
-                    anchor
-                        .patterns
-                        .iter()
-                        .any(|pattern| anchors::pattern_matches(pattern, path))
-                })
-                .cloned()
-                .collect();
-            if let Some(hit) = hits.iter_mut().find(|hit| hit.target == anchor.target) {
-                hit.files.append(&mut files);
-            } else {
-                hits.push(StaleHit {
-                    target: anchor.target,
-                    files,
-                });
-            }
-        }
-        for hit in &mut hits {
-            hit.files.sort();
-            hit.files.dedup();
-        }
-        hits.retain(|hit| !hit.files.is_empty());
+        let hits = stale_hits(known_anchors(flow), changed);
         if !hits.is_empty() {
             stale.push(Stale {
                 flow: flow.clone(),
@@ -296,6 +270,50 @@ pub fn stale_flows(current: &[Flow], catalog_prefix: &str, changed: &[String]) -
     stale
 }
 
+/// The flow's grouped anchors whose step exists in its diagram; whole-flow anchors always count.
+fn known_anchors(flow: &Flow) -> Vec<anchors::Anchor> {
+    let diagram = diagram(flow).and_then(Result::ok);
+    anchors::grouped_anchors(flow)
+        .into_iter()
+        .filter(|anchor| match &anchor.target {
+            Target::Flow => true,
+            Target::Step(_) => diagram
+                .as_ref()
+                .is_some_and(|diagram| anchors::anchor_step_exists(diagram, &anchor.target)),
+        })
+        .collect()
+}
+
+fn flow_is_touched(changed: &HashSet<&str>, catalog_prefix: &str, flow: &Flow) -> bool {
+    changed.contains(format!("{catalog_prefix}{}", flow.path).as_str())
+}
+
+fn stale_hits(anchors: Vec<anchors::Anchor>, changed: &[String]) -> Vec<StaleHit> {
+    let mut hits = Vec::new();
+    for anchor in anchors {
+        let files = changed
+            .iter()
+            .filter(|path| anchors::any_pattern_matches(&anchor.patterns, path))
+            .cloned()
+            .collect();
+        merge_hit(&mut hits, anchor.target, files);
+    }
+    for hit in &mut hits {
+        hit.files.sort();
+        hit.files.dedup();
+    }
+    hits.retain(|hit| !hit.files.is_empty());
+    hits
+}
+
+fn merge_hit(hits: &mut Vec<StaleHit>, target: Target, mut files: Vec<String>) {
+    if let Some(hit) = hits.iter_mut().find(|hit| hit.target == target) {
+        hit.files.append(&mut files);
+    } else {
+        hits.push(StaleHit { target, files });
+    }
+}
+
 #[derive(Debug)]
 pub struct AnchoredFlow<'a> {
     pub flow: &'a Flow,
@@ -303,31 +321,22 @@ pub struct AnchoredFlow<'a> {
     pub whole_flow: bool,
 }
 
+/// Flows and existing steps whose valid anchors cover any supplied path.
 pub fn anchored_flows<'a>(flows: &'a [Flow], files: &[String]) -> Vec<AnchoredFlow<'a>> {
     let mut matches = Vec::new();
     for flow in flows {
-        let diagram = diagram(flow).and_then(Result::ok);
         let mut steps = Vec::new();
         let mut whole_flow = false;
-        for anchor in anchors::grouped_anchors(flow) {
-            let matches_file = anchor.patterns.iter().any(|pattern| {
-                files
-                    .iter()
-                    .any(|file| anchors::pattern_matches(pattern, file))
-            });
+        for anchor in known_anchors(flow) {
+            let matches_file = files
+                .iter()
+                .any(|file| anchors::any_pattern_matches(&anchor.patterns, file));
             if !matches_file {
                 continue;
             }
             match anchor.target {
                 Target::Flow => whole_flow = true,
-                Target::Step(id) => {
-                    if diagram
-                        .as_ref()
-                        .is_some_and(|diagram| diagram.nodes.iter().any(|node| node.id == id))
-                    {
-                        steps.push(id);
-                    }
-                }
+                Target::Step(id) => steps.push(id),
             }
         }
         if whole_flow || !steps.is_empty() {

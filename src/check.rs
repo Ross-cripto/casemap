@@ -333,7 +333,15 @@ fn check_anchor_paths(
     for anchor in anchors {
         for pattern in &anchor.patterns {
             if !has_match(pattern) {
-                problems.push(problem(file, Some(anchor.line), Code::AnchorNoMatch, format!("\"{pattern}\" matches no file in the repository; the code moved or the anchor is wrong")));
+                let message = format!(
+                    "\"{pattern}\" matches no file in the repository; the code moved or the anchor is wrong"
+                );
+                problems.push(problem(
+                    file,
+                    Some(anchor.line),
+                    Code::AnchorNoMatch,
+                    message,
+                ));
             }
         }
     }
@@ -347,7 +355,7 @@ fn check_anchor_steps(
 ) {
     for anchor in anchors {
         if let anchors::Target::Step(id) = &anchor.target
-            && !diagram.nodes.iter().any(|node| node.id == *id)
+            && !anchors::anchor_step_exists(diagram, &anchor.target)
         {
             problems.push(problem(
                 file,
@@ -402,7 +410,7 @@ fn check_diagram(
     problems: &mut Vec<Problem>,
     has_match: &mut dyn FnMut(&str) -> bool,
 ) {
-    let (anchors, errors) = anchors::parse_anchors(source, offset);
+    let (parsed_anchors, errors) = anchors::parse_anchors(source, offset);
     for error in errors {
         problems.push(problem(
             file,
@@ -411,7 +419,7 @@ fn check_diagram(
             error.message,
         ));
     }
-    check_anchor_paths(file, &anchors, has_match, problems);
+    check_anchor_paths(file, &parsed_anchors, has_match, problems);
     let fence_line = offset.max(1);
     for (index, line) in source.lines().enumerate() {
         if line.trim_start().starts_with("%%") {
@@ -440,7 +448,7 @@ fn check_diagram(
     }
     match flows::parse_diagram(source, offset) {
         Ok(diagram) => {
-            check_anchor_steps(file, &anchors, &diagram, problems);
+            check_anchor_steps(file, &parsed_anchors, &diagram, problems);
             if diagram.nodes.is_empty() {
                 problems.push(problem(
                     file,
@@ -554,6 +562,32 @@ fn check_nodes(
     }
 }
 
+fn ids_appear_in_order(tokens: &[&str], from: &str, to: &str) -> bool {
+    for (index, token) in tokens.iter().enumerate() {
+        if *token == from && tokens[index + 1..].contains(&to) {
+            return true;
+        }
+    }
+    false
+}
+
+fn edge_line(source: &str, from: &str, to: &str, bidirectional: bool) -> Option<usize> {
+    for (index, line) in source.lines().enumerate() {
+        if line.trim_start().starts_with("%%") {
+            continue;
+        }
+        for statement in parser::split_statements(line) {
+            let tokens = parser::id_tokens_outside_labels(&statement);
+            if ids_appear_in_order(&tokens, from, to)
+                || (bidirectional && ids_appear_in_order(&tokens, to, from))
+            {
+                return Some(index + 1);
+            }
+        }
+    }
+    None
+}
+
 fn check_edges_into_actor(
     file: &str,
     source: &str,
@@ -568,11 +602,14 @@ fn check_edges_into_actor(
         if target.shape == Shape::Stadium {
             actors.push(target);
         }
-        if edge.arrow_from && origin.shape == Shape::Stadium {
+        if edge.arrow_from && edge.from != edge.to && origin.shape == Shape::Stadium {
             actors.push(origin);
         }
         for actor in actors {
-            let line = node_file_line(source, offset, &actor.id);
+            let line = edge_line(source, &origin.id, &target.id, edge.arrow_from).map_or_else(
+                || node_file_line(source, offset, &actor.id),
+                |line| offset + line,
+            );
             problems.push(problem(file, Some(line), Code::EdgeIntoActor,
                 format!("edge into the actor \"{}\"; end the branch or loop back to the step the user retries", actor.id)));
         }
@@ -960,7 +997,7 @@ mod tests {
             single_flow_case(
                 Code::EdgeIntoActor,
                 "checkout.md",
-                Some(7),
+                Some(11),
                 &VALID.replace("```\n", "done --> actor\n```\n"),
                 &[Code::EdgeIntoActor],
             ),
@@ -1042,6 +1079,53 @@ mod tests {
                     case.code, case.file, case.problems
                 )
             })
+    }
+
+    #[test]
+    fn edge_into_actor_points_at_the_edge_line() {
+        for (source, expected) in [
+            (
+                "flowchart TD\nactor([Customer]) --> pay[Pay]\nother[actor pay]\npay --> actor\n",
+                vec![Some(4)],
+            ),
+            (
+                "flowchart TD\nactor([Customer])\npay[Pay]\npay <--> actor\n",
+                vec![Some(4)],
+            ),
+            (
+                "flowchart TD\nactor([Customer])\npay[Pay]\nactor <--> pay\n",
+                vec![Some(4)],
+            ),
+            (
+                "flowchart TD\nactor([Customer])\nactor <--> actor\n",
+                vec![Some(3)],
+            ),
+            (
+                "flowchart TD\nactor([Customer]); pay[Pay]\n%% pay --> actor\npay[actor] -->|actor pay| actor\n",
+                vec![Some(4)],
+            ),
+        ] {
+            let lines: Vec<_> = check_flow("x.mmd", source)
+                .into_iter()
+                .filter(|problem| problem.code == Code::EdgeIntoActor)
+                .map(|problem| problem.line)
+                .collect();
+            assert_eq!(lines, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn mmd_anchors_report_unknown_steps() {
+        let problems = check_flow(
+            "x.mmd",
+            "flowchart TD\n%% @code missing src/x.rs\nactor([Customer]) --> pay[Pay]\n",
+        );
+        let anchor_problems: Vec<_> = problems
+            .iter()
+            .filter(|problem| problem.code == Code::AnchorUnknownStep)
+            .collect();
+        assert_eq!(anchor_problems.len(), 1);
+        assert_eq!(anchor_problems[0].line, Some(2));
     }
 
     #[test]
@@ -1317,8 +1401,8 @@ mod tests {
             warnings,
             vec![
                 (Code::UnlabelledStep, Some(7)),
-                (Code::EdgeIntoActor, Some(7)),
-                (Code::UnlabelledBranch, Some(8))
+                (Code::UnlabelledBranch, Some(8)),
+                (Code::EdgeIntoActor, Some(10))
             ]
         );
         let text = VALID.replace("pay[Pay]", &format!("pay[{}]", "界".repeat(21)));
