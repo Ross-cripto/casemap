@@ -824,6 +824,9 @@ mod tests {
         );
         let broken_base = BaseChanges {
             base: "1234567890".into(),
+            changed: vec![],
+            root: Default::default(),
+            prefix: String::new(),
             changes: flows::compare(&current, &current),
             old: current.clone(),
             stale: vec![],
@@ -847,6 +850,9 @@ mod tests {
         );
         let changes = BaseChanges {
             base: "1234567890".into(),
+            changed: vec![],
+            root: Default::default(),
+            prefix: String::new(),
             changes: flows::compare(&[previous], &current),
             old: vec![],
             stale: vec![],
@@ -865,6 +871,9 @@ mod tests {
         let old = vec![pay.clone()];
         let removed = BaseChanges {
             base: "1234567890".into(),
+            changed: vec![],
+            root: Default::default(),
+            prefix: String::new(),
             changes: flows::compare(&old, &[]),
             old,
             stale: vec![],

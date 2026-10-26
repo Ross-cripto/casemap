@@ -95,7 +95,7 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
 5. Add anchors to each flow you wrote.
 6. Run `casemap check --strict` and fix every problem it reports.
-7. Finish with the list from `casemap flows`, the candidates you did not write, and the open questions.
+7. Finish with the list from `casemap flows`, the summary line of `casemap coverage`, the candidates you did not write, and the open questions.
 
 ## Keep it true (every task that changes behaviour)
 
@@ -106,7 +106,7 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 
 3. Describe the result only. Never mark what changed; `casemap diff` computes that from git.
 4. Refactors, performance work and test-only changes do not touch flows. Say "no flows affected" in your final message.
-5. Run `casemap check --strict` (it must pass) and `casemap diff`, or `casemap diff main` on a branch. Quote its first line in your final message.
+5. Run `casemap check --strict` (it must pass) and `casemap diff`, or `casemap diff main` on a branch. Quote its first line in your final message. On a branch, also run `casemap coverage main`; anchor new code to the flow it serves, or say why no flow applies.
 
    If `casemap diff` lists flows as "possibly stale", open each one. Update it if the behaviour changed. If it still holds, say so in your final message; never make a cosmetic edit just to silence the warning.
 
@@ -120,6 +120,7 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 | `casemap check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
 | `casemap diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
 | `casemap which <file>` | Which flows and steps are anchored to a file |
+| `casemap coverage [REF]` | Code no flow covers: the whole repository, or the files changed since REF |
 | `casemap browse` | Explore the catalog interactively (for humans; agents use the other commands) |
 
 Add `--flows <dir>` when the catalog lives somewhere else.

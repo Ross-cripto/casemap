@@ -235,3 +235,17 @@ pub fn anchored_catalog() -> TempRepo {
     repo.git(&["commit", "-qm", "anchored flow"]);
     repo
 }
+
+pub fn coverage_catalog() -> TempRepo {
+    let repo = anchored_catalog();
+    for path in [
+        "src/a.rs",
+        "src/z.rs",
+        "src/a.test.ts",
+        "README.md",
+        "root.py",
+    ] {
+        fs::write(repo.file(path), "sample\n").unwrap();
+    }
+    repo
+}

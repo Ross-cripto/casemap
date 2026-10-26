@@ -137,8 +137,15 @@ fn catalog_diagrams() -> Vec<Diagram> {
             flows: 1,
             problems: Vec::new(),
         };
-        let shipped =
-            flows::render_markdown(&[change], &[], "main", "abcdef123", &report, "docs/flows");
+        let shipped = flows::render_markdown(&flows::MarkdownInput {
+            changes: &[change],
+            stale: &[],
+            since: "main",
+            base: "abcdef123",
+            report: &report,
+            catalog: "docs/flows",
+            uncovered: &[],
+        });
         let source = shipped
             .split("\n```mermaid\n")
             .nth(1)

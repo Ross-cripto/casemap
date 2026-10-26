@@ -340,6 +340,9 @@ mod tests {
             .clone();
         BaseChanges {
             base: "1234567890abcdef".into(),
+            changed: vec![],
+            root: Default::default(),
+            prefix: String::new(),
             changes: flows::compare(&old, current),
             old,
             stale: vec![flows::Stale {

@@ -284,6 +284,18 @@ fn known_anchors(flow: &Flow) -> Vec<anchors::Anchor> {
         .collect()
 }
 
+pub(crate) fn known_patterns(flows: &[Flow]) -> Vec<String> {
+    flows
+        .iter()
+        .flat_map(known_anchors)
+        .flat_map(|anchor| anchor.patterns)
+        .collect()
+}
+
+pub fn has_known_anchors(flows: &[Flow]) -> bool {
+    flows.iter().any(|flow| !known_anchors(flow).is_empty())
+}
+
 fn flow_is_touched(changed: &HashSet<&str>, catalog_prefix: &str, flow: &Flow) -> bool {
     changed.contains(format!("{catalog_prefix}{}", flow.path).as_str())
 }
@@ -514,25 +526,38 @@ pub const QUIET_MARKER: &str = "<!-- casemap:quiet -->";
 
 const CHECK_HEADING: &str = "\n#### Check\n\n";
 const STALE_HEADING: &str = "\n#### ⚠️ Possibly stale\n\n";
+const UNCOVERED_HEADING: &str = "\n#### 🧭 Changed code no flow covers\n\n";
 const MERMAID_FENCE: &str = "```mermaid\n";
 
 fn local_diff_hint(since: &str) -> String {
     inline_code(&format!("casemap diff {since}"))
 }
 
-pub fn render_markdown(
-    changes: &[FlowChange],
-    stale: &[Stale],
-    since: &str,
-    base: &str,
-    report: &crate::check::Report,
-    catalog: &str,
-) -> String {
+pub struct MarkdownInput<'a> {
+    pub changes: &'a [FlowChange],
+    pub stale: &'a [Stale],
+    pub uncovered: &'a [String],
+    pub since: &'a str,
+    pub base: &'a str,
+    pub report: &'a crate::check::Report,
+    pub catalog: &'a str,
+}
+
+pub fn render_markdown(input: &MarkdownInput<'_>) -> String {
+    let MarkdownInput {
+        changes,
+        stale,
+        uncovered,
+        since,
+        base,
+        report,
+        catalog,
+    } = *input;
     let changed = changes
         .iter()
         .filter(|change| !matches!(change, FlowChange::Unchanged { .. }))
         .count();
-    if changed == 0 && stale.is_empty() && report.problems.is_empty() {
+    if changed == 0 && stale.is_empty() && report.problems.is_empty() && uncovered.is_empty() {
         return format!(
             "{COMMENT_MARKER}\n{QUIET_MARKER}\n### 🗺️ casemap · no use-case changes · check ok\n"
         );
@@ -545,14 +570,21 @@ pub fn render_markdown(
     } else {
         format!("{} ({short_sha})", inline_code(since))
     };
+    let coverage_summary = if uncovered.is_empty() {
+        String::new()
+    } else {
+        let suffix = if uncovered.len() == 1 { "" } else { "s" };
+        format!(" · {} file{suffix} not covered by a flow", uncovered.len())
+    };
     let mut output = format!(
-        "{COMMENT_MARKER}\n### 🗺️ casemap · {changed} use case{suffix} changed · {} possibly stale · check {check}\nCompared with {comparison}.\n",
+        "{COMMENT_MARKER}\n### 🗺️ casemap · {changed} use case{suffix} changed · {} possibly stale · check {check}{coverage_summary}\nCompared with {comparison}.\n",
         stale.len()
     );
     for change in changes {
         output.push_str(&markdown_change(change, catalog, since));
     }
     output.push_str(&markdown_stale(stale, catalog));
+    output.push_str(&markdown_uncovered(uncovered));
     output.push_str(&markdown_check(report, catalog));
     cap_markdown(&mut output, since);
     output
@@ -707,6 +739,17 @@ fn markdown_stale(stale: &[Stale], catalog: &str) -> String {
     output
 }
 
+fn markdown_uncovered(uncovered: &[String]) -> String {
+    if uncovered.is_empty() {
+        return String::new();
+    }
+    let mut output = UNCOVERED_HEADING.to_string();
+    for path in uncovered {
+        output.push_str(&format!("- {}\n", inline_code(path)));
+    }
+    output
+}
+
 fn markdown_check(report: &crate::check::Report, catalog: &str) -> String {
     let mut output = CHECK_HEADING.to_string();
     if report.problems.is_empty() {
@@ -751,6 +794,12 @@ fn cap_markdown(output: &mut String, since: &str) {
         "stale flows",
         &local_diff_hint(since),
     );
+    truncate_list(
+        output,
+        UNCOVERED_HEADING,
+        "files",
+        &inline_code(&format!("casemap coverage {since}")),
+    );
 }
 
 fn omit_flow_sections(output: &mut String, since: &str) {
@@ -760,6 +809,7 @@ fn omit_flow_sections(output: &mut String, since: &str) {
     }
     let section_end = output
         .find(STALE_HEADING)
+        .or_else(|| output.find(UNCOVERED_HEADING))
         .or_else(|| output.find(CHECK_HEADING))
         .unwrap_or(output.len());
     let mut end = section_end;

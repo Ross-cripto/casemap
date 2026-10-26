@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"coverage\", \"main\"])"
+---
+$ casemap coverage main
+[exit 0]
+--- stdout
+changed code no flow covers since main ([SHA]): 3 of 3 files
+  root.py
+  src/a.rs
+  src/z.rs
+--- stderr
+[end]
