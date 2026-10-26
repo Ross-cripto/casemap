@@ -52,7 +52,7 @@ pub fn assign(lay: &mut Layout, d: &crate::model::Diagram) {
                     (odd(h.max(need + lid)), w)
                 }
             }
-            ItemKind::Dummy => (1, 0),
+            ItemKind::Dummy | ItemKind::LoopTurn => (1, 0),
             ItemKind::Label(t) => {
                 let tw = UnicodeWidthStr::width(t.as_str()) as i32 + 2;
                 if vertical { (odd(tw), 1) } else { (1, tw) }

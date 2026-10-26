@@ -48,10 +48,18 @@ enum Mode {
 }
 
 pub fn assign(lay: &mut Layout, d: &Diagram) {
+    const LOOP_LANE_GAP: i32 = 1;
+    const FORWARD_LANE_GAP: i32 = 2;
+    let has_loops = lay.reversed.iter().any(|&reversed| reversed);
     let sp = if lay.direction.is_vertical() {
         Spacing {
             node: 4,
-            thin: 2,
+            // Returns add a lane beside their target, so thin items use tighter clearance.
+            thin: if has_loops {
+                LOOP_LANE_GAP
+            } else {
+                FORWARD_LANE_GAP
+            },
             border: 2,
         }
     } else {
@@ -65,6 +73,9 @@ pub fn assign(lay: &mut Layout, d: &Diagram) {
     let mut up = vec![Vec::new(); n];
     let mut down = vec![Vec::new(); n];
     for s in &lay.segs {
+        if matches!(lay.items[s.from].kind, ItemKind::LoopTurn) && s.last && !s.first {
+            continue;
+        }
         down[s.from].push(s.to);
         up[s.to].push(s.from);
     }
@@ -311,6 +322,9 @@ fn straighten_long_edges(lay: &mut Layout, sp: &Spacing) {
     let mut chains: Vec<Vec<usize>> = vec![Vec::new(); n_edges];
     let mut ends: Vec<(Option<usize>, Option<usize>)> = vec![(None, None); n_edges];
     for s in &lay.segs {
+        if s.first && matches!(lay.items[s.from].kind, ItemKind::LoopTurn) {
+            chains[s.edge].push(s.from);
+        }
         if !lay.items[s.to].is_node() {
             chains[s.edge].push(s.to);
         }

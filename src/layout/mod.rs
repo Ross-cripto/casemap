@@ -20,6 +20,8 @@ pub enum ItemKind {
     Node(usize),
     /// A point where a long edge passes through a layer.
     Dummy,
+    /// Joins a return chain to its target's upstream side without a source stub.
+    LoopTurn,
     /// A long-edge pass-through carrying the edge's label text.
     Label(String),
     /// One side of a cluster box in one layer.
@@ -79,7 +81,7 @@ pub struct Layout {
     pub segs: Vec<Seg>,
     pub out_segs: Vec<Vec<usize>>,
     pub in_segs: Vec<Vec<usize>>,
-    /// Per diagram edge: drawn against the flow to break a cycle.
+    /// Per diagram edge: reoriented for ranking and routed as a return path.
     pub reversed: Vec<bool>,
 }
 
@@ -91,7 +93,7 @@ impl Layout {
         }
         let e = &d.edges[s.edge];
         if self.reversed[s.edge] {
-            e.arrow_to
+            false
         } else {
             e.arrow_from
         }
@@ -104,7 +106,11 @@ impl Layout {
         }
         let e = &d.edges[s.edge];
         if self.reversed[s.edge] {
-            e.arrow_from
+            if self.items[s.to].kind == ItemKind::Node(e.to) {
+                e.arrow_to
+            } else {
+                e.arrow_from
+            }
         } else {
             e.arrow_to
         }
@@ -175,7 +181,8 @@ pub fn layout(d: &Diagram) -> Layout {
             (a, b, if e.label.is_some() { 2 } else { 1 })
         })
         .collect();
-    let ranks = rank::assign(n, &ranked);
+    let mut ranks = rank::assign(n, &ranked);
+    reserve_loop_layer(d, &reversed, &mut ranks);
 
     // 3. Items for real nodes.
     let mut items: Vec<Item> = Vec::new();
@@ -194,49 +201,14 @@ pub fn layout(d: &Diagram) -> Layout {
 
     // 4. Split long edges into per-layer segments.
     let mut segs = Vec::new();
-    for (e, &(a, b, _)) in ranked.iter().enumerate() {
-        let (ia, ib) = (node_item[a], node_item[b]);
-        let (ra, rb) = (items[ia].rank, items[ib].rank);
-        let span = rb - ra;
-        let path = common_prefix(&items[ia].path, &items[ib].path);
-        let label_rank = d.edges[e]
-            .label
-            .as_ref()
-            .filter(|_| span >= 2)
-            .map(|_| if reversed[e] { rb - 1 } else { ra + 1 });
-        let mut prev = ia;
-        for step in 1..span {
-            let r = ra + step;
-            let kind = if Some(r) == label_rank {
-                ItemKind::Label(d.edges[e].label.clone().unwrap_or_default())
-            } else {
-                ItemKind::Dummy
-            };
-            let id = items.len();
-            items.push(Item {
-                kind,
-                rank: r,
-                path: path.clone(),
-                ext_o: 1,
-                ext_r: 1,
-                pos: 0,
-            });
-            segs.push(Seg {
-                from: prev,
-                to: id,
-                edge: e,
-                first: step == 1,
-                last: false,
-            });
-            prev = id;
+    for (edge, endpoints) in d.edges.iter().enumerate() {
+        let source_item = node_item[endpoints.from];
+        let target_item = node_item[endpoints.to];
+        if reversed[edge] {
+            split_loop(d, edge, source_item, target_item, &mut items, &mut segs);
+            continue;
         }
-        segs.push(Seg {
-            from: prev,
-            to: ib,
-            edge: e,
-            first: span == 1,
-            last: true,
-        });
+        split_chain(d, edge, source_item, target_item, &mut items, &mut segs);
     }
 
     // 5. Cluster border chains, one left and one right border per spanned rank.
@@ -287,7 +259,108 @@ pub fn layout(d: &Diagram) -> Layout {
     size::assign(&mut lay, d);
     position::assign(&mut lay, d);
     order::refine_routed(d, &mut lay);
+    order::place_loops_outside(d, &mut lay);
     lay
+}
+
+/// A loop targeting the first layer needs room for a forward-pointing entry.
+fn reserve_loop_layer(diagram: &Diagram, reversed: &[bool], ranks: &mut [usize]) {
+    let needs_layer = diagram
+        .edges
+        .iter()
+        .enumerate()
+        .any(|(edge, endpoints)| reversed[edge] && ranks[endpoints.to] == 0);
+    if needs_layer {
+        for rank in ranks {
+            *rank += 1;
+        }
+    }
+}
+
+/// Both branches descend from the turn so the target uses a normal incoming port.
+fn split_loop(
+    diagram: &Diagram,
+    edge: usize,
+    source: usize,
+    target: usize,
+    items: &mut Vec<Item>,
+    segments: &mut Vec<Seg>,
+) {
+    let turn = items.len();
+    items.push(Item {
+        kind: ItemKind::LoopTurn,
+        rank: items[target].rank - 1,
+        path: common_prefix(&items[target].path, &items[source].path),
+        ext_o: 1,
+        ext_r: 0,
+        pos: 0,
+    });
+    split_chain(diagram, edge, turn, source, items, segments);
+    segments.push(Seg {
+        from: turn,
+        to: target,
+        edge,
+        first: false,
+        last: true,
+    });
+}
+
+/// A label stays beside its original source even when a return chain descends in layout order.
+fn split_chain(
+    diagram: &Diagram,
+    edge: usize,
+    source: usize,
+    target: usize,
+    items: &mut Vec<Item>,
+    segments: &mut Vec<Seg>,
+) {
+    let source_rank = items[source].rank;
+    let target_rank = items[target].rank;
+    let span = target_rank - source_rank;
+    let path = common_prefix(&items[source].path, &items[target].path);
+    let label_rank = diagram.edges[edge]
+        .label
+        .as_ref()
+        .filter(|_| span >= 2)
+        .map(|_| {
+            if matches!(items[source].kind, ItemKind::LoopTurn) {
+                target_rank - 1
+            } else {
+                source_rank + 1
+            }
+        });
+    let mut previous = source;
+    for rank in source_rank + 1..target_rank {
+        let kind = if Some(rank) == label_rank {
+            ItemKind::Label(diagram.edges[edge].label.clone().unwrap_or_default())
+        } else {
+            ItemKind::Dummy
+        };
+        let item = items.len();
+        items.push(Item {
+            kind,
+            rank,
+            path: path.clone(),
+            ext_o: 1,
+            ext_r: 1,
+            pos: 0,
+        });
+        segments.push(Seg {
+            from: previous,
+            to: item,
+            edge,
+            first: previous == source,
+            last: false,
+        });
+        previous = item;
+    }
+    segments.push(Seg {
+        from: previous,
+        to: target,
+        edge,
+        first: span == 1,
+        last: true,
+    });
 }
 
 fn common_prefix(a: &[usize], b: &[usize]) -> Vec<usize> {
@@ -296,4 +369,33 @@ fn common_prefix(a: &[usize], b: &[usize]) -> Vec<usize> {
         .take_while(|(x, y)| x == y)
         .map(|(x, _)| *x)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ItemKind, layout};
+    use crate::{Options, parser, render_diagram};
+
+    #[test]
+    fn loop_to_first_node_reserves_an_upstream_layer() {
+        let diagram = parser::parse("graph TD\n A --> B --> C --> D\n D -->|again| A").unwrap();
+        let layout = layout(&diagram);
+        let target = layout
+            .items
+            .iter()
+            .find(|item| item.kind == ItemKind::Node(0))
+            .unwrap();
+        assert_eq!(target.rank, 1);
+        let arrows: Vec<_> = layout
+            .segs
+            .iter()
+            .filter(|segment| segment.edge == 3 && layout.arrow_at_dst(&diagram, segment))
+            .collect();
+        assert_eq!(arrows.len(), 1);
+        assert_eq!(layout.items[arrows[0].from].rank, 0);
+        assert_eq!(layout.items[arrows[0].to].kind, ItemKind::Node(0));
+        let output = render_diagram(&diagram, &Options::default());
+        assert_eq!(output.matches('▼').count(), 4, "{output}");
+        assert!(!output.contains('▲'), "{output}");
+    }
 }

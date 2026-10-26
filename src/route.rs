@@ -78,7 +78,11 @@ pub fn route(d: &Diagram, lay: &Layout) -> Routing {
             })
             .collect();
         prefs.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let slots = ports(lay, d, item, &prefs.iter().map(|p| p.0).collect::<Vec<_>>());
+        let slots = if matches!(lay.items[item].kind, ItemKind::LoopTurn) {
+            vec![loop_return_port(lay, item); prefs.len()]
+        } else {
+            ports(lay, d, item, &prefs.iter().map(|p| p.0).collect::<Vec<_>>())
+        };
         let rank = lay.items[item].rank;
         for (&(_, ui), &o) in prefs.iter().zip(&slots) {
             let u = &units[ui];
@@ -105,7 +109,7 @@ pub fn route(d: &Diagram, lay: &Layout) -> Routing {
         if ins.is_empty() {
             continue;
         }
-        ins.sort_by_key(|&s| (groups[seg_group[s]].src_o, s));
+        ins.sort_by_key(|&segment| incoming_order(lay, &groups[seg_group[segment]], item, segment));
         let prefs: Vec<f64> = ins
             .iter()
             .map(|&s| groups[seg_group[s]].src_o as f64)
@@ -125,13 +129,41 @@ pub fn route(d: &Diagram, lay: &Layout) -> Routing {
             .filter(|&g| groups[g].layer == l)
             .collect();
         src_arrow[l] = ids.iter().any(|&g| groups[g].arrow_src);
-        tracks[l] = assign_tracks(&mut groups, &ids);
+        tracks[l] = assign_tracks(&mut groups, &ids, lay);
     }
     Routing {
         groups,
         tracks,
         src_arrow,
     }
+}
+
+/// A turn has no upstream stem; its bus starts at the return leg itself.
+fn loop_return_port(layout: &Layout, turn: usize) -> i32 {
+    let segment = layout.out_segs[turn]
+        .iter()
+        .map(|&index| &layout.segs[index])
+        .find(|segment| segment.first)
+        .expect("loop turn has a return branch");
+    layout.items[segment.to].center()
+}
+
+/// Return turns nest outside each other, so their target ports reverse side order.
+fn incoming_order(
+    layout: &Layout,
+    group: &Group,
+    target: usize,
+    segment: usize,
+) -> (u8, i32, usize) {
+    if !matches!(layout.items[group.src].kind, ItemKind::LoopTurn) {
+        return (1, group.src_o, segment);
+    }
+    let side = if group.src_o < layout.items[target].center() {
+        0
+    } else {
+        2
+    };
+    (side, -group.src_o, segment)
 }
 
 /// Port positions for an item's side, one per preference (sorted ascending).
@@ -228,7 +260,7 @@ fn assign_slots(prefs: &[(f64, f64)], lo: i32, hi: i32) -> Vec<i32> {
     out
 }
 
-fn assign_tracks(groups: &mut [Group], ids: &[usize]) -> usize {
+fn assign_tracks(groups: &mut [Group], ids: &[usize], layout: &Layout) -> usize {
     let bent: Vec<usize> = ids
         .iter()
         .copied()
@@ -255,8 +287,9 @@ fn assign_tracks(groups: &mut [Group], ids: &[usize]) -> usize {
                 continue;
             }
             let (ga, gb) = (&groups[bent[a]], &groups[bent[b]]);
-            let b_above_a =
-                inside(gb.src_o, spans[a]) || ga.dests.iter().any(|d| inside(d.o, spans[b]));
+            let has_source_drop = !matches!(layout.items[gb.src].kind, ItemKind::LoopTurn);
+            let b_above_a = (has_source_drop && inside(gb.src_o, spans[a]))
+                || ga.dests.iter().any(|d| inside(d.o, spans[b]));
             if b_above_a {
                 succ[b].push(a);
                 preds[a].push(b);
@@ -303,7 +336,7 @@ fn assign_tracks(groups: &mut [Group], ids: &[usize]) -> usize {
 
 /// Shares the exact routed-cell objective with quality measurements so that
 /// ordering cannot improve a proxy while adding visible bus crossings.
-pub(crate) fn count_crossings(routing: &Routing) -> usize {
+pub(crate) fn count_crossings(routing: &Routing, layout: &Layout) -> usize {
     let mut crossings = BTreeSet::new();
     for (horizontal_index, horizontal) in routing.groups.iter().enumerate() {
         let Some(track) = horizontal.track else {
@@ -315,13 +348,20 @@ pub(crate) fn count_crossings(routing: &Routing) -> usize {
             }
             for dest in &vertical.dests {
                 if vertical.src_o == dest.o {
+                    if matches!(layout.items[vertical.src].kind, ItemKind::LoopTurn)
+                        && vertical.track.is_some_and(|turn_track| track <= turn_track)
+                    {
+                        continue;
+                    }
                     record_crossing(&mut crossings, horizontal, track, dest.o);
                     continue;
                 }
                 let Some(vertical_track) = vertical.track else {
                     continue;
                 };
-                if track < vertical_track {
+                if track < vertical_track
+                    && !matches!(layout.items[vertical.src].kind, ItemKind::LoopTurn)
+                {
                     record_crossing(&mut crossings, horizontal, track, vertical.src_o);
                 }
                 if track > vertical_track {
@@ -347,7 +387,54 @@ fn record_crossing(
 
 #[cfg(test)]
 mod tests {
-    use super::assign_slots;
+    use super::{Dest, Group, Routing, assign_slots, count_crossings};
+    use crate::layout::{self, ItemKind};
+    use crate::model::{LineStyle, Mark};
+    use crate::parser;
+
+    #[test]
+    fn loop_turn_has_no_vertical_leg_above_its_track() {
+        let diagram = parser::parse("graph TD\n A --> B --> C\n C --> B").unwrap();
+        let layout = layout::layout(&diagram);
+        let turn = layout
+            .items
+            .iter()
+            .position(|item| item.kind == ItemKind::LoopTurn)
+            .unwrap();
+        let routing = Routing {
+            groups: vec![
+                Group {
+                    layer: 0,
+                    src: 0,
+                    src_o: 15,
+                    dests: vec![Dest { o: 0, arrow: false }],
+                    style: LineStyle::Solid,
+                    mark: Mark::Same,
+                    arrow_src: false,
+                    track: Some(0),
+                },
+                Group {
+                    layer: 0,
+                    src: turn,
+                    src_o: 10,
+                    dests: vec![
+                        Dest {
+                            o: 10,
+                            arrow: false,
+                        },
+                        Dest { o: 20, arrow: true },
+                    ],
+                    style: LineStyle::Solid,
+                    mark: Mark::Same,
+                    arrow_src: false,
+                    track: Some(1),
+                },
+            ],
+            tracks: vec![2],
+            src_arrow: vec![false],
+        };
+        assert_eq!(count_crossings(&routing, &layout), 0);
+    }
 
     #[test]
     fn slots_follow_preferences_with_spacing() {

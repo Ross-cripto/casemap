@@ -12,7 +12,7 @@
 use unicode_width::UnicodeWidthStr;
 
 use crate::layout::{self, ItemKind, Layout};
-use crate::model::{Diagram, Shape};
+use crate::model::{Diagram, Direction, Shape};
 use crate::route::{self, Routing};
 use crate::{Options, render_diagram};
 
@@ -36,6 +36,8 @@ pub struct Metrics {
     pub extra_layers: usize,
     /// Number of true entries in `Layout.reversed`, after folding self-loops.
     pub back_edges: usize,
+    /// Rendered arrowheads pointing against the diagram's flow direction.
+    pub upstream_arrows: usize,
 }
 
 /// Uses the rendering pipeline's self-loop folding, direction, Unicode and
@@ -53,13 +55,29 @@ pub fn measure(diagram: &Diagram) -> Metrics {
             .max()
             .unwrap_or(0),
         height: rendered.lines().count(),
-        crossings: route::count_crossings(&routing),
+        crossings: route::count_crossings(&routing, &layout),
         bends: count_bends(&routing),
         back_edges: layout.reversed.iter().filter(|&&reversed| reversed).count(),
+        upstream_arrows: count_upstream_arrows(&rendered, diagram.direction, false),
         ..Metrics::default()
     };
     measure_layers(&prepared, &layout, &mut metrics);
     metrics
+}
+
+/// Counts the visible glyphs so routing flags cannot hide missing arrowheads.
+fn count_upstream_arrows(rendered: &str, direction: Direction, ascii: bool) -> usize {
+    let arrow = match (direction, ascii) {
+        (Direction::TopDown, false) => '▲',
+        (Direction::BottomUp, false) => '▼',
+        (Direction::LeftRight, false) => '◀',
+        (Direction::RightLeft, false) => '▶',
+        (Direction::TopDown, true) => '^',
+        (Direction::BottomUp, true) => 'v',
+        (Direction::LeftRight, true) => '<',
+        (Direction::RightLeft, true) => '>',
+    };
+    rendered.chars().filter(|&glyph| glyph == arrow).count()
 }
 
 fn measure_layers(diagram: &Diagram, layout: &Layout, metrics: &mut Metrics) {
@@ -106,4 +124,37 @@ fn count_bends(routing: &Routing) -> usize {
                 * 2
         })
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_upstream_arrows;
+    use crate::{Direction, Options, parser, render_diagram};
+
+    #[test]
+    fn upstream_arrows_follow_direction_and_character_set() {
+        let mut diagram = parser::parse("graph TD\n A <--> B").unwrap();
+        for direction in [
+            Direction::TopDown,
+            Direction::BottomUp,
+            Direction::LeftRight,
+            Direction::RightLeft,
+        ] {
+            diagram.direction = direction;
+            for ascii in [false, true] {
+                let rendered = render_diagram(
+                    &diagram,
+                    &Options {
+                        ascii,
+                        ..Options::default()
+                    },
+                );
+                assert_eq!(
+                    count_upstream_arrows(&rendered, direction, ascii),
+                    1,
+                    "{direction:?} ascii={ascii}\n{rendered}"
+                );
+            }
+        }
+    }
 }
