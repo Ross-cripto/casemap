@@ -9,6 +9,8 @@
 //! ordered so a vertical never cuts through a horizontal it could have
 //! avoided, and non-overlapping runs share a track.
 
+use std::collections::BTreeSet;
+
 use crate::layout::{ItemKind, Layout, size::port_inset};
 use crate::model::{Diagram, LineStyle, Mark, Shape};
 
@@ -297,6 +299,50 @@ fn assign_tracks(groups: &mut [Group], ids: &[usize]) -> usize {
         groups[g].track = Some(track[k]);
     }
     track.iter().max().map_or(0, |t| t + 1)
+}
+
+/// Shares the exact routed-cell objective with quality measurements so that
+/// ordering cannot improve a proxy while adding visible bus crossings.
+pub(crate) fn count_crossings(routing: &Routing) -> usize {
+    let mut crossings = BTreeSet::new();
+    for (horizontal_index, horizontal) in routing.groups.iter().enumerate() {
+        let Some(track) = horizontal.track else {
+            continue;
+        };
+        for (vertical_index, vertical) in routing.groups.iter().enumerate() {
+            if horizontal_index == vertical_index || horizontal.layer != vertical.layer {
+                continue;
+            }
+            for dest in &vertical.dests {
+                if vertical.src_o == dest.o {
+                    record_crossing(&mut crossings, horizontal, track, dest.o);
+                    continue;
+                }
+                let Some(vertical_track) = vertical.track else {
+                    continue;
+                };
+                if track < vertical_track {
+                    record_crossing(&mut crossings, horizontal, track, vertical.src_o);
+                }
+                if track > vertical_track {
+                    record_crossing(&mut crossings, horizontal, track, dest.o);
+                }
+            }
+        }
+    }
+    crossings.len()
+}
+
+fn record_crossing(
+    crossings: &mut BTreeSet<(usize, usize, i32)>,
+    horizontal: &Group,
+    track: usize,
+    order: i32,
+) {
+    let (left, right) = horizontal.span();
+    if left < order && order < right {
+        crossings.insert((horizontal.layer, track, order));
+    }
 }
 
 #[cfg(test)]

@@ -4,9 +4,22 @@
 
 use std::cmp::Ordering;
 
-use super::{ItemKind, Layout};
+use super::{ItemKind, Layout, position};
+use crate::{model::Diagram, route};
 
 pub fn minimize(lay: &mut Layout) {
+    minimize_with_discovery(lay, Discovery::Declaration);
+}
+
+#[derive(Clone, Copy)]
+enum Discovery {
+    Declaration,
+    BackEdgesFirst,
+    BackEdgesLast,
+    Reverse,
+}
+
+fn minimize_with_discovery(lay: &mut Layout, discovery: Discovery) {
     let n = lay.items.len();
     let nl = lay.layers.len();
     if nl == 0 {
@@ -19,7 +32,7 @@ pub fn minimize(lay: &mut Layout) {
         up[s.to].push(s.from);
     }
 
-    initial_order(lay, &down);
+    initial_order(lay, &discovery_children(lay, &down, discovery));
     let mut best = lay.layers.clone();
     let mut best_c = total_crossings(lay);
 
@@ -44,6 +57,27 @@ pub fn minimize(lay: &mut Layout) {
         }
     }
     lay.layers = best;
+}
+
+/// Keeps feedback chains together at a layer's outside when declaration order
+/// threads them through forward branches.
+fn discovery_children(lay: &Layout, down: &[Vec<usize>], discovery: Discovery) -> Vec<Vec<usize>> {
+    let mut children = down.to_vec();
+    for (item, neighbours) in children.iter_mut().enumerate() {
+        match discovery {
+            Discovery::Declaration => {}
+            Discovery::BackEdgesFirst | Discovery::BackEdgesLast => {
+                neighbours.sort_by_key(|&child| {
+                    let reversed = lay.out_segs[item].iter().any(|&segment| {
+                        lay.segs[segment].to == child && lay.reversed[lay.segs[segment].edge]
+                    });
+                    matches!(discovery, Discovery::BackEdgesFirst) != reversed
+                });
+            }
+            Discovery::Reverse => neighbours.reverse(),
+        }
+    }
+    children
 }
 
 fn index_map(lay: &Layout) -> Vec<usize> {
@@ -229,4 +263,64 @@ pub fn total_crossings(lay: &Layout) -> usize {
         }
     }
     total
+}
+
+struct RoutedScore {
+    crossings: usize,
+    order_extent: i32,
+    tracks: usize,
+}
+
+impl RoutedScore {
+    fn measure(diagram: &Diagram, layout: &Layout) -> Self {
+        let routing = route::route(diagram, layout);
+        Self {
+            crossings: route::count_crossings(&routing),
+            order_extent: layout
+                .items
+                .iter()
+                .map(|item| item.pos + item.ext_o)
+                .max()
+                .unwrap_or(0),
+            tracks: routing.tracks.iter().sum(),
+        }
+    }
+
+    fn improves(&self, best: &Self) -> bool {
+        self.crossings < best.crossings
+            && self.order_extent <= best.order_extent
+            && self.tracks <= best.tracks
+    }
+}
+
+/// Compares feedback-chain discovery orders using routed geometry because
+/// equal layer crossing counts can hide different bus and port crossings.
+pub(super) fn refine_routed(diagram: &Diagram, layout: &mut Layout) {
+    let mut best_score = RoutedScore::measure(diagram, layout);
+    if best_score.crossings == 0 {
+        return;
+    }
+    let original_items = layout.items.clone();
+    let mut best_items = original_items.clone();
+    let mut best_layers = layout.layers.clone();
+    for discovery in [
+        Discovery::BackEdgesFirst,
+        Discovery::BackEdgesLast,
+        Discovery::Reverse,
+    ] {
+        if best_score.crossings == 0 {
+            break;
+        }
+        layout.items = original_items.clone();
+        minimize_with_discovery(layout, discovery);
+        position::assign(layout, diagram);
+        let score = RoutedScore::measure(diagram, layout);
+        if score.improves(&best_score) {
+            best_score = score;
+            best_items = layout.items.clone();
+            best_layers = layout.layers.clone();
+        }
+    }
+    layout.items = best_items;
+    layout.layers = best_layers;
 }
