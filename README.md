@@ -375,11 +375,70 @@ Use-case flows live in docs/flows/ (casemap skill): update them when behaviour c
 For agents without skill support, `casemap guide` prints the skill body.
 `casemap guide --flows flows` renders its paths for a custom catalog.
 
+## Agent hooks
+
+`casemap hook stop` checks uncommitted changes against `HEAD` when a coding
+agent is about to finish. It reports catalog check errors, possibly stale
+flows whose anchored code changed, and changed code no flow covers (when the
+catalog has known anchors). It blocks once per new set of warnings, remembering
+them per session in the git directory. The agent can update flows, anchor code,
+or explain why the flow still holds or no flow applies. The same warnings do not stop it
+twice; a clean state clears the memory. Internal errors silently let the agent
+finish. If writing the warning memory fails, the hook still blocks and may
+repeat the warnings on the next stop.
+
+Install the Stop hook for both Claude Code and Codex:
+
+```sh
+casemap init --hooks
+```
+
+This merges the hook into `.claude/settings.json` and `.codex/hooks.json`,
+preserving existing settings and hooks. Adding the entry rewrites the JSON
+with 2-space indentation and sorted keys. An existing casemap Stop command
+leaves the file untouched; use `--force` to replace that command, for example after changing `--flows`.
+Custom catalog paths are quoted only when needed; quoted paths assume a POSIX shell.
+Codex asks you to trust project hooks once: run `/hooks` in Codex.
+
+For manual setup, merge this JSON into **each** of `.claude/settings.json`
+(Claude Code) and `.codex/hooks.json` (Codex):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "casemap hook stop", "timeout": 30 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+For a custom catalog, use `casemap init --hooks --flows docs/use-cases`, or
+set the command to `casemap hook stop --flows 'docs/use-cases'` manually.
+
+You can also validate flows with the [pre-commit](https://pre-commit.com/)
+framework. Install casemap on `PATH` and add this to `.pre-commit-config.yaml`
+(pin `rev` to a release or commit containing the hook definition):
+
+```yaml
+repos:
+  - repo: https://github.com/Ross-cripto/casemap
+    rev: main
+    hooks:
+      - id: casemap-check
+```
+
 ## Commands
 
 | Command | Result |
 |---|---|
 | `casemap init [--ci] [--force] [--agent claude\|codex]` | Create the catalog and install the agent skill; `--ci` adds the PR workflow; `--force` updates differing skills and the requested workflow; `--agent` opens that agent in a terminal |
+| `casemap init --hooks` | Install the skill and merge Stop hooks for Claude Code and Codex |
+| `casemap hook stop` | Check uncommitted changes for agents; block once per new warning set |
 | `casemap browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
 | `casemap flows [NAME]` | List the catalog, or render one use case |
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
@@ -453,7 +512,7 @@ Global flags can appear before or after a subcommand:
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
 
-The command words `init`, `flows`, `check`, `diff`, `which`, `guide` and `completions`
+The command words `init`, `flows`, `check`, `diff`, `which`, `hook`, `guide` and `completions`
 are reserved. To render a file with one of those names, use `./diff` or
 `casemap -- diff`. `help` remains a file name; use `--help` or `-h` to print help.
 `init` requires a relative catalog path because the installed skill is committed.

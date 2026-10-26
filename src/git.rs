@@ -76,6 +76,11 @@ pub fn toplevel(dir: &Path) -> Result<PathBuf, GitError> {
     ))
 }
 
+pub fn git_path(dir: &Path, name: &str) -> Result<PathBuf, GitError> {
+    let path = run(dir, &["rev-parse", "--git-path", name])?;
+    Ok(dir.join(path.trim_end_matches(['\r', '\n'])))
+}
+
 pub fn prefix(dir: &Path) -> Result<String, GitError> {
     Ok(run(dir, &["rev-parse", "--show-prefix"])?
         .trim_end_matches(['\r', '\n'])

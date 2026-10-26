@@ -14,6 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 #[cfg(feature = "tui")]
 mod browse;
+mod hook;
 mod onboard;
 use casemap::markdown::is_markdown_path;
 use casemap::{Direction, Options, ParseError, anchors, check, coverage, git, skill};
@@ -82,9 +83,16 @@ enum Commands {
         #[arg(long)]
         ci: bool,
         #[arg(long)]
+        hooks: bool,
+        #[arg(long)]
         force: bool,
         #[arg(long, value_enum)]
         agent: Option<onboard::Agent>,
+    },
+    /// Agent integration hooks (installed by `casemap init --hooks`).
+    Hook {
+        #[command(subcommand)]
+        event: HookEvent,
     },
     /// List the flow catalog, or render one flow.
     Flows {
@@ -139,11 +147,26 @@ enum Commands {
     Completions { shell: clap_complete::Shell },
 }
 
+#[derive(Debug, Subcommand)]
+enum HookEvent {
+    /// Run when a coding agent is about to finish: block once if the use-case map needs attention.
+    Stop,
+}
+
 fn parse_direction(value: &str) -> Result<Direction, String> {
     Direction::parse(value).ok_or_else(|| "expects one of TD, BT, LR, RL".into())
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("hook") {
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(cli) = Cli::try_parse() {
+                let _ = run(cli);
+            }
+        }));
+        return ExitCode::SUCCESS;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -217,14 +240,25 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             strict,
             format,
         ),
-        Some(Commands::Init { force, agent, ci }) => {
-            let outcome = init_catalog(directory, force, agent, ci)?;
+        Some(Commands::Init {
+            force,
+            agent,
+            ci,
+            hooks,
+        }) => {
+            let outcome = init_catalog(directory, force, agent, ci, hooks)?;
             finish_onboarding(outcome, onboarding_opts)
         }
         Some(Commands::Flows { name, format }) => {
             show_flows(directory, name.as_deref(), format, &opts)
         }
         Some(Commands::Check { strict, format }) => check_catalog(directory, strict, format, color),
+        Some(Commands::Hook {
+            event: HookEvent::Stop,
+        }) => {
+            hook::stop(cli.flows.as_deref());
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Commands::Guide) => {
             print_guide(directory);
             Ok(ExitCode::SUCCESS)
@@ -409,6 +443,12 @@ struct BaseChanges {
     prefix: String,
 }
 
+fn has_code_anchors(current: &[Flow]) -> bool {
+    current
+        .iter()
+        .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
+}
+
 fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseChanges> {
     let base = casemap::git::merge_base(dir, rev)?;
     let old = casemap::git::files_at(dir, &base)?
@@ -417,10 +457,7 @@ fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseC
         .collect::<Vec<_>>();
     let changes = casemap::flows::compare(&old, current);
     let (root, _, prefix) = code_root(dir)?;
-    let (changed, stale) = if current
-        .iter()
-        .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
-    {
+    let (changed, stale) = if has_code_anchors(current) {
         let changed = git::changed_files(&root, &base)?;
         let stale = casemap::flows::stale_flows(current, &prefix, &changed);
         (changed, stale)
@@ -1474,6 +1511,7 @@ fn init_catalog(
     force: bool,
     agent: Option<onboard::Agent>,
     ci: bool,
+    hooks: bool,
 ) -> anyhow::Result<onboard::Outcome> {
     let interactive = interactive_session();
     let agents = if interactive {
@@ -1491,8 +1529,14 @@ fn init_catalog(
             initialized.failed = true;
         }
     }
+    if hooks {
+        initialized.failed |= hook::install_hooks(&initialized.root, &initialized.display, force);
+    }
     if chosen_agent.is_none() {
         print_next_steps(&initialized.display);
+    }
+    if hooks {
+        println!("Codex asks you to trust project hooks once: run /hooks in Codex.");
     }
     if initialized.failed {
         return Ok(onboard::Outcome::Exit(ExitCode::FAILURE));
