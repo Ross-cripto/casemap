@@ -203,7 +203,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             base.reference,
             base.sha
                 .chars()
-                .take(strata::flows::SHORT_SHA_LEN)
+                .take(casemap::flows::SHORT_SHA_LEN)
                 .collect::<String>()
         ),
         None => "no git".into(),
@@ -283,11 +283,11 @@ q / Ctrl-C            Quit (Ctrl-C also works during search)";
 mod tests {
     use super::*;
     use crate::BaseChanges;
+    use casemap::{Options, anchors, check, flows};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::Path;
-    use strata::{Options, anchors, check, flows};
 
     fn fixture_app() -> App {
         fixture_app_with_options(&Options {

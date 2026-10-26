@@ -2,9 +2,9 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"--no-color\"], &[], Some(\"graph TD\\n a -->\"))"
 ---
-$ strata --no-color
+$ casemap --no-color
 [exit 1]
 --- stdout
 --- stderr
-strata: line 2: link has no target node
+casemap: line 2: link has no target node
 [end]

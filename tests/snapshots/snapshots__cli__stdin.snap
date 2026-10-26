@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"--no-color\"], &[], Some(include_str!(\"../examples/simple.mmd\")))"
 ---
-$ strata --no-color
+$ casemap --no-color
 [exit 0]
 --- stdout
                  ┌─────────┐

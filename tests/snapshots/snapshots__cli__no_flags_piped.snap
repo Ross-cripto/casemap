@@ -3,7 +3,7 @@ source: tests/snapshots.rs
 assertion_line: 475
 expression: "cli(&[\"examples/simple.mmd\"], &[], None)"
 ---
-$ strata examples/simple.mmd
+$ casemap examples/simple.mmd
 [exit 0]
 --- stdout
                  ┌─────────┐

@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"flows\", \"--flows\", \"tests/fixtures/flows/after\", \"--no-color\"], &[],\nNone)"
 ---
-$ strata flows --flows tests/fixtures/flows/after --no-color
+$ casemap flows --flows tests/fixtures/flows/after --no-color
 [exit 0]
 --- stdout
 checkout  Checkout — A customer pays for the cart.

@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "repo_transcript(&repo, &[\"check\", \"--no-color\"])"
 ---
-$ strata check --no-color
+$ casemap check --no-color
 [exit 1]
 --- stdout
 docs/flows/Bad.md: warning: name flow files in kebab-case [file-name]

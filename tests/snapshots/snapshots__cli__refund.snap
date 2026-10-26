@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"flows\", \"refund\", \"--flows\", \"tests/fixtures/flows/after\",\n\"--no-color\"], &[], None)"
 ---
-$ strata flows refund --flows tests/fixtures/flows/after --no-color
+$ casemap flows refund --flows tests/fixtures/flows/after --no-color
 [exit 0]
 --- stdout
 Refund

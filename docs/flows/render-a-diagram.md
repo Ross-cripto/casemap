@@ -1,10 +1,10 @@
 # Render a diagram
 
-A developer points strata at a Mermaid or Markdown file and gets the diagram in the terminal.
+A developer points casemap at a Mermaid or Markdown file and gets the diagram in the terminal.
 
 ```mermaid
 flowchart TD
-    dev([Developer runs strata FILE]) --> kind{Markdown file?}
+    dev([Developer runs casemap FILE]) --> kind{Markdown file?}
     kind -->|no| parse[Parse the flowchart]
     kind -->|yes| blocks[Extract mermaid blocks]
     blocks --> parse

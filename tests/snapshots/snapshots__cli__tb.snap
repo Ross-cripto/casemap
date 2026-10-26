@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "cli(&[\"--dir\", \"TB\", \"--no-color\", \"examples/simple.mmd\"], &[], None)"
 ---
-$ strata --dir TB --no-color examples/simple.mmd
+$ casemap --dir TB --no-color examples/simple.mmd
 [exit 0]
 --- stdout
                  ┌─────────┐

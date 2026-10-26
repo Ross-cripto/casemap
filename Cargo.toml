@@ -1,12 +1,12 @@
 [package]
-name = "strata"
+name = "casemap"
 version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 description = "The living map of your app's use cases: check, render and diff Mermaid flows"
 license = "MIT"
-repository = "https://github.com/Ross-cripto/strata"
-homepage = "https://github.com/Ross-cripto/strata"
+repository = "https://github.com/Ross-cripto/casemap"
+homepage = "https://github.com/Ross-cripto/casemap"
 readme = "README.md"
 keywords = ["mermaid", "flowchart", "documentation", "cli", "tui"]
 categories = ["command-line-utilities", "development-tools", "visualization"]
@@ -52,6 +52,6 @@ path = "tests/cli.rs"
 required-features = ["cli"]
 
 [[bin]]
-name = "strata"
+name = "casemap"
 path = "src/main.rs"
 required-features = ["cli"]

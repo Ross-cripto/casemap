@@ -1,11 +1,11 @@
 #[cfg_attr(not(feature = "cli"), allow(unused_imports))]
 mod common;
 
-use std::fs;
-use strata::anchors::{
+use casemap::anchors::{
     self, Anchor, Target, flow_anchors, normalise_pattern, parse_anchors, pattern_matches,
 };
-use strata::{Direction, Options, flows, git};
+use casemap::{Direction, Options, flows, git};
+use std::fs;
 
 #[test]
 fn parses_step_and_flow_anchors() {
@@ -192,7 +192,7 @@ const WHOLE_FLOW_ANCHOR: &str = "%% @code * src/**\n";
 
 fn insert_anchor_in_every_block(source: &str) -> String {
     let mut updated = source.to_owned();
-    let blocks = strata::markdown::mermaid_blocks(source);
+    let blocks = casemap::markdown::mermaid_blocks(source);
     for block in blocks.into_iter().rev() {
         let content_start: usize = source
             .split_inclusive('\n')
@@ -253,15 +253,15 @@ fn anchors_do_not_change_rendering() {
                 };
                 if is_markdown {
                     assert_eq!(
-                        strata::render_markdown(&source, &options).unwrap(),
-                        strata::render_markdown(&anchored, &options).unwrap(),
+                        casemap::render_markdown(&source, &options).unwrap(),
+                        casemap::render_markdown(&anchored, &options).unwrap(),
                         "{}",
                         path.display()
                     );
                 } else {
                     assert_eq!(
-                        strata::render_str(&source, &options).unwrap(),
-                        strata::render_str(&anchored, &options).unwrap(),
+                        casemap::render_str(&source, &options).unwrap(),
+                        casemap::render_str(&anchored, &options).unwrap(),
                         "{}",
                         path.display()
                     );
@@ -284,7 +284,7 @@ fn anchors_do_not_change_rendering() {
             let after = flows::diagram(&flows::parse_flow(name, after))
                 .unwrap()
                 .unwrap();
-            strata::diff::diff(&before, &after).union
+            casemap::diff::diff(&before, &after).union
         };
         let anchored_previous = common::append_step(&previous, "%% @code * src/**\n");
         let anchored_current = common::append_step(&current, "%% @code * src/**\n");
@@ -299,8 +299,8 @@ fn anchors_do_not_change_rendering() {
                 ..Options::default()
             };
             assert_eq!(
-                strata::render_diagram(&union(&previous, &current), &options),
-                strata::render_diagram(&union(&anchored_previous, &anchored_current), &options)
+                casemap::render_diagram(&union(&previous, &current), &options),
+                casemap::render_diagram(&union(&anchored_previous, &anchored_current), &options)
             );
         }
     }

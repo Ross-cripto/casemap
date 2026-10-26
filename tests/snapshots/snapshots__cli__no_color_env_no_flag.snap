@@ -3,7 +3,7 @@ source: tests/snapshots.rs
 assertion_line: 467
 expression: "cli(&[\"examples/simple.mmd\"], &[(\"NO_COLOR\", \"1\")], None)"
 ---
-$ strata examples/simple.mmd
+$ casemap examples/simple.mmd
 [exit 0]
 --- stdout
                  ┌─────────┐

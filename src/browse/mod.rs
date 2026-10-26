@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::bail;
+use casemap::flows::{self, Flow, FlowChange};
+use casemap::{Diagram, Options, anchors, check, diff, git};
 use ratatui::crossterm::event::{self, Event};
-use strata::flows::{self, Flow, FlowChange};
-use strata::{Diagram, Options, anchors, check, diff, git};
 
 use crate::{BaseChanges, DEFAULT_REF, Wake};
 use app::{Action, App, BaseInfo, DiagramView, Entry, Loaded, Marker};
@@ -50,7 +50,7 @@ impl ReloadWorker {
         let loader = Arc::clone(&self.loader);
         let (sender, receiver) = mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new()
-            .name("strata-reload".into())
+            .name("casemap-reload".into())
             .spawn(move || {
                 let result = match loader.lock() {
                     Ok(mut loader) => loader(),
@@ -127,7 +127,7 @@ pub(crate) fn run(dir: &Path, reference: Option<&str>, opts: &Options) -> anyhow
         git::merge_base(dir, reference)?;
     }
     if !io::stdout().is_terminal() {
-        bail!("strata browse needs a terminal");
+        bail!("casemap browse needs a terminal");
     }
     let (mut session, mut app) = BrowserSession::new(dir, reference, opts)?;
     let _guard = TerminalGuard;
@@ -387,7 +387,7 @@ fn format_problem(problem: &check::Problem) -> String {
 
 fn normal_view(flow: &Flow, opts: &Options) -> DiagramView {
     let rendered = match flows::diagram(flow) {
-        Some(Ok(diagram)) => strata::render_diagram(&diagram, opts),
+        Some(Ok(diagram)) => casemap::render_diagram(&diagram, opts),
         Some(Err(error)) => format!("parse error, {error}"),
         None => "no mermaid block".into(),
     };
@@ -456,7 +456,7 @@ fn render_difference(
     opts: &Options,
 ) -> DiagramView {
     DiagramView {
-        text: ansi::ansi_to_text(&strata::render_diagram(&difference.union, opts)),
+        text: ansi::ansi_to_text(&casemap::render_diagram(&difference.union, opts)),
         summary,
         details: difference
             .details()
@@ -489,12 +489,12 @@ mod tests {
 
     fn run_with_git_ceiling(test_name: &str) -> bool {
         let test_name = format!("browse::tests::{test_name}");
-        if std::env::var("STRATA_BROWSE_GIT_TEST").as_deref() == Ok(&test_name) {
+        if std::env::var("CASEMAP_BROWSE_GIT_TEST").as_deref() == Ok(&test_name) {
             return false;
         }
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &test_name, "--nocapture"])
-            .env("STRATA_BROWSE_GIT_TEST", &test_name)
+            .env("CASEMAP_BROWSE_GIT_TEST", &test_name)
             .env("GIT_CEILING_DIRECTORIES", std::env::temp_dir())
             .output()
             .unwrap();
@@ -513,9 +513,9 @@ mod tests {
             .env("GIT_CEILING_DIRECTORIES", std::env::temp_dir())
             .args([
                 "-c",
-                "user.name=strata",
+                "user.name=casemap",
                 "-c",
-                "user.email=strata@example.com",
+                "user.email=casemap@example.com",
                 "-c",
                 "commit.gpgsign=false",
             ])
@@ -796,7 +796,7 @@ mod tests {
             .iter()
             .find(|flow| flow.name == "pay-for-an-order")
             .unwrap();
-        let previous = strata::flows::parse_flow(
+        let previous = casemap::flows::parse_flow(
             "pay-for-an-order.md",
             "# Broken base\n\nDescription.\n\n```mermaid\ngraph TD\na -->\n```",
         );

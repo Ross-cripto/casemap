@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use strata::{Direction, Options, parser};
+use casemap::{Direction, Options, parser};
 
 fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -40,7 +40,7 @@ fn one_arrowhead_per_arrow_end() {
             .map(|e| usize::from(e.arrow_to) + usize::from(e.arrow_from))
             .sum();
         for dir in all_directions() {
-            let out = strata::render_diagram(
+            let out = casemap::render_diagram(
                 &d,
                 &Options {
                     direction: dir,
@@ -61,7 +61,7 @@ fn every_label_is_visible() {
     for (name, src) in sources() {
         let d = parser::parse(&src).unwrap();
         for dir in all_directions() {
-            let out = strata::render_diagram(
+            let out = casemap::render_diagram(
                 &d,
                 &Options {
                     direction: dir,
@@ -94,7 +94,7 @@ fn no_dangling_line_ends() {
     // Half-cell glyphs only appear when a line stops without meeting anything.
     for (name, src) in sources() {
         for dir in all_directions() {
-            let out = strata::render_str(
+            let out = casemap::render_str(
                 &src,
                 &Options {
                     direction: dir,
@@ -114,8 +114,8 @@ fn no_dangling_line_ends() {
 #[test]
 fn rendering_is_deterministic() {
     for (name, src) in sources() {
-        let a = strata::render_str(&src, &Options::default()).unwrap();
-        let b = strata::render_str(&src, &Options::default()).unwrap();
+        let a = casemap::render_str(&src, &Options::default()).unwrap();
+        let b = casemap::render_str(&src, &Options::default()).unwrap();
         assert_eq!(a, b, "{name}");
     }
 }
@@ -123,7 +123,7 @@ fn rendering_is_deterministic() {
 #[test]
 fn ascii_mode_is_pure_ascii() {
     let src = fs::read_to_string("examples/architecture.mmd").unwrap();
-    let out = strata::render_str(
+    let out = casemap::render_str(
         &src,
         &Options {
             ascii: true,
@@ -142,6 +142,6 @@ fn handles_degenerate_inputs() {
         "graph LR\n  a --> a",
         "flowchart TD\n subgraph empty\n end",
     ] {
-        strata::render_str(src, &Options::default()).unwrap();
+        casemap::render_str(src, &Options::default()).unwrap();
     }
 }

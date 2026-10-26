@@ -1,4 +1,4 @@
-//! Parser for the Mermaid flowchart subset strata understands.
+//! Parser for the Mermaid flowchart subset casemap understands.
 //!
 //! Supported: `flowchart`/`graph` headers with TD/TB/BT/LR/RL, node shapes
 //! (`[]`, `()`, `([])`, `[[]]`, `[()]`, `(())`, `{}`, `{{}}`, `>]`, `[/ /]`),

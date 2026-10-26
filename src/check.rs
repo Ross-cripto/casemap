@@ -431,7 +431,7 @@ fn check_diagram(
                     file,
                     Some(offset + index + 1),
                     Code::Styling,
-                    "styling is ignored by strata; remove it",
+                    "styling is ignored by casemap; remove it",
                 ));
             }
         }

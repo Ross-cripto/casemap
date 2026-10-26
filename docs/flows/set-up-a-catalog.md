@@ -1,10 +1,10 @@
 # Set up a catalog
 
-A developer runs strata init in a repository and gets a flow catalog and the agent skill installed.
+A developer runs casemap init in a repository and gets a flow catalog and the agent skill installed.
 
 ```mermaid
 flowchart TD
-    dev([Developer runs strata init]) --> dir{Catalog exists?}
+    dev([Developer runs casemap init]) --> dir{Catalog exists?}
     dir -->|no| create[Create the catalog folder]
     dir -->|yes| skill{Skill already installed?}
     create --> skill
@@ -16,5 +16,5 @@ flowchart TD
     install --> next[Print the next steps]
     keep --> next
     warn --> next
-    %% @code install src/skill.rs skills/strata-flows/SKILL.md
+    %% @code install src/skill.rs skills/casemap/SKILL.md
 ```

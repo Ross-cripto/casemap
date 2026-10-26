@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: "repo_transcript(&repo, &[\"which\", \"src/pay.rs\", \"src/other.rs\"])"
 ---
-$ strata which src/pay.rs src/other.rs
+$ casemap which src/pay.rs src/other.rs
 [exit 0]
 --- stdout
 src/pay.rs

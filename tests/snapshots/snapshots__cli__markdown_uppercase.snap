@@ -1,8 +1,8 @@
 ---
 source: tests/snapshots.rs
-expression: "transcript(\"README.MD --no-color\",\n&repo.strata(&[\"README.MD\", \"--no-color\"]).into())"
+expression: "transcript(\"README.MD --no-color\",\n&repo.casemap(&[\"README.MD\", \"--no-color\"]).into())"
 ---
-$ strata README.MD --no-color
+$ casemap README.MD --no-color
 [exit 0]
 --- stdout
 Render

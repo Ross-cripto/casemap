@@ -1,44 +1,44 @@
-# strata
+# casemap
 
 The living map of your app's use cases, in your terminal.
 
-Every use case gets one Markdown file in `docs/flows/` with a Mermaid flowchart of its steps. Your coding agent writes them and keeps them current as it changes the code; strata checks them, renders them in the terminal and shows what each branch did to them. They are plain Mermaid, so GitHub renders the same files in the browser and in pull requests.
+Every use case gets one Markdown file in `docs/flows/` with a Mermaid flowchart of its steps. Your coding agent writes them and keeps them current as it changes the code; casemap checks them, renders them in the terminal and shows what each branch did to them. They are plain Mermaid, so GitHub renders the same files in the browser and in pull requests.
 
 ## Quick start
 
 Install the CLI, then run it from your repository root:
 
 ```sh
-brew install Ross-cripto/tap/strata
-strata init
+brew install Ross-cripto/tap/casemap
+casemap init
 ```
 
 Without Homebrew, use the installer for your platform or build from source:
 
 ```sh
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Ross-cripto/strata/releases/latest/download/strata-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Ross-cripto/casemap/releases/latest/download/casemap-installer.sh | sh
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/Ross-cripto/strata/releases/latest/download/strata-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Ross-cripto/casemap/releases/latest/download/casemap-installer.ps1 | iex"
 # From source (Rust 1.88 or newer)
-cargo install --git https://github.com/Ross-cripto/strata
+cargo install --git https://github.com/Ross-cripto/casemap
 ```
 
-Prebuilt binaries for macOS, Linux and Windows are attached to each [release](https://github.com/Ross-cripto/strata/releases).
+Prebuilt binaries for macOS, Linux and Windows are attached to each [release](https://github.com/Ross-cripto/casemap/releases).
 
 Ask your coding agent: **"document the use-case flows of this repo"**.
 
 ```sh
-strata browse         # see the use cases
-strata check          # validate the catalog
-strata diff main      # see what your branch changed
+casemap browse         # see the use cases
+casemap check          # validate the catalog
+casemap diff main      # see what your branch changed
 ```
 
-`strata init` creates `docs/flows/` with a `.gitkeep` and installs the
-`strata-flows` skill for Claude Code, Codex and other agents. It keeps existing
-flows and differing skills; use `strata init --force` to update those skills.
+`casemap init` creates `docs/flows/` with a `.gitkeep` and installs the
+`casemap` skill for Claude Code, Codex and other agents. It keeps existing
+flows and differing skills; use `casemap init --force` to update those skills.
 
-A real `strata diff --no-color` excerpt from the checkout fixtures, with the
+A real `casemap diff --no-color` excerpt from the checkout fixtures, with the
 drawing omitted:
 
 ```text
@@ -61,7 +61,7 @@ The base SHA depends on your repository.
 
 ## Browse
 
-`strata browse [--base REF]` opens a full-screen catalog browser. The default base
+`casemap browse [--base REF]` opens a full-screen catalog browser. The default base
 is `HEAD`; `--base main` compares against its merge base with HEAD. Use `--flows
 DIR`, `--ascii`, `--no-color` or `--dir TD|BT|LR|RL` as needed. `NO_COLOR` also
 selects a plain UI; `--color` has no effect here.
@@ -108,10 +108,10 @@ possibly stale, `~` modified, `+` new, `-` removed, and `·` (`.` in ASCII) unch
 Removed flows appear last. Diagrams pan without wrapping. Below 80 columns,
 Tab switches between the list and diagram views.
 
-Bare `strata` opens the browser only when stdin **and** stdout are terminals,
+Bare `casemap` opens the browser only when stdin **and** stdout are terminals,
 `CI` is unset, `TERM` is not `dumb`, the catalog (`--flows` or `docs/flows`) exists,
 and neither FILE nor `--watch` is supplied. Otherwise it reads stdin as before.
-Explicit `strata browse` requires terminal stdout. Build with
+Explicit `casemap browse` requires terminal stdout. Build with
 `--no-default-features --features cli` for the CLI without the browser; library
 embedders can use `default-features = false`.
 
@@ -141,7 +141,7 @@ flowchart TD
 - Keep it to 3 to 15 steps, using the user's words and behaviour verified in code.
 - Keep node ids stable: change labels to rename steps. Keep file paths stable,
   because renaming a file reads as removing one flow and adding another.
-- Describe the current behaviour. strata computes changes from git.
+- Describe the current behaviour. Casemap computes changes from git.
 
 ## Keep flows true: anchors
 
@@ -155,7 +155,7 @@ flow's first Mermaid block, usually at the end before the closing fence:
 ```
 
 A target is a node id, or `*` for the whole flow. Several patterns on one line
-and repeated lines for the same target add up. `strata flows NAME` shows them
+and repeated lines for the same target add up. `casemap flows NAME` shows them
 in a Code footer. Mermaid and GitHub ignore the comments; rendering is unchanged.
 Anchors in prose or any other block are errors.
 
@@ -171,13 +171,13 @@ Paths are relative to the repository root and always match from that root:
   Absolute paths, drive prefixes, `.` or `..` segments, and backslashes are rejected.
 - Patterns are separated by whitespace, so anchor paths cannot contain spaces.
 
-`strata check` reports `anchor-syntax`, `anchor-unknown-step`, and
+`casemap check` reports `anchor-syntax`, `anchor-unknown-step`, and
 `anchor-no-match` as errors. It indexes tracked and untracked files through git,
 excluding ignored files and files deleted from disk. Outside git, or without the
 git binary, it walks the current directory without following directory symlinks.
 Update anchors when code moves or is renamed.
 
-`strata diff` compares anchored paths with code changed since the merge base,
+`casemap diff` compares anchored paths with code changed since the merge base,
 including deleted files, both sides of a rename, and non-ignored untracked files.
 It appends an advisory section when a flow file was untouched:
 
@@ -192,13 +192,13 @@ working tree. A touched flow is never reported stale, even when only its prose
 or anchors changed. Review stale flows: update them when behaviour changed; if
 they still hold, report that instead of making a cosmetic edit to silence the warning.
 
-`strata diff --strict` also exits 1 for possibly stale flows. Use it for local
+`casemap diff --strict` also exits 1 for possibly stale flows. Use it for local
 agent runs or teams that require acknowledgement of every anchored change.
-**`strata check --strict` remains the recommended CI gate.** Running
+**`casemap check --strict` remains the recommended CI gate.** Running
 `diff --strict` in CI requires `actions/checkout` with `fetch-depth: 0` so git
 can find the merge base.
 
-Run `strata which src/checkout/payment.ts` before editing to find anchored flows
+Run `casemap which src/checkout/payment.ts` before editing to find anchored flows
 and steps. It only knows anchored flows. Arguments are literal paths relative to
 the current directory, or absolute paths; directories expand to indexed files,
 and deleted paths still match anchors. Paths outside the repository are rejected.
@@ -210,25 +210,25 @@ Pass several paths for separate result blocks, or `--format json` for JSON v1:
 
 ## For agents
 
-The `strata-flows` skill teaches how to identify use cases, group entry points
+The `casemap` skill teaches how to identify use cases, group entry points
 into user journeys, write the format above, and maintain affected flows in the
 same change as the code. It also teaches how to check the files and report what
 changed, including open questions about behaviour that was not verified.
 
-`strata init` installs the skill at the repository root in
-`.claude/skills/strata-flows/SKILL.md` for Claude Code and
-`.agents/skills/strata-flows/SKILL.md` for Codex and other agents. From a
+`casemap init` installs the skill at the repository root in
+`.claude/skills/casemap/SKILL.md` for Claude Code and
+`.agents/skills/casemap/SKILL.md` for Codex and other agents. From a
 subdirectory, it still installs skills at the root while creating the catalog
 relative to the current directory. The installed skill records that catalog's
-path relative to the root. Run strata from the root when following the skill.
+path relative to the root. Run casemap from the root when following the skill.
 
 To install only the skill through the skills CLI:
 
 ```sh
-npx skills add Ross-cripto/strata
+npx skills add Ross-cripto/casemap
 ```
 
-Both installers use the source at `skills/strata-flows/SKILL.md`. `strata init`
+Both installers use the source at `skills/casemap/SKILL.md`. `casemap init`
 prints a reminder when git ignores an installed skill, so you can make it
 available to teammates. It follows symlinked skill directories, including those
 created by the skills CLI.
@@ -237,28 +237,28 @@ For agents to keep flows current on every task, add this line to `AGENTS.md`
 and `CLAUDE.md` (init prints it, and leaves those files for you to edit):
 
 ```text
-Use-case flows live in docs/flows/ (strata-flows skill): update them when behaviour changes and run `strata check`.
+Use-case flows live in docs/flows/ (casemap skill): update them when behaviour changes and run `casemap check`.
 ```
 
-For agents without skill support, `strata guide` prints the skill body.
-`strata guide --flows flows` renders its paths for a custom catalog.
+For agents without skill support, `casemap guide` prints the skill body.
+`casemap guide --flows flows` renders its paths for a custom catalog.
 
 ## Commands
 
 | Command | Result |
 |---|---|
-| `strata init [--force]` | Create the catalog and install the agent skill; `--force` updates differing skills |
-| `strata browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
-| `strata flows [NAME]` | List the catalog, or render one use case |
-| `strata flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
-| `strata check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
-| `strata diff [REF] [--strict]` | Compare with the merge base of REF and HEAD; `--strict` also exits 1 for possibly stale flows |
-| `strata which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
-| `strata guide` | Print the agent skill body |
-| `strata FILE` | Render a Mermaid file, or every Mermaid block of a Markdown file |
-| `strata completions SHELL` | Generate completions for bash, zsh, fish, powershell or elvish |
+| `casemap init [--force]` | Create the catalog and install the agent skill; `--force` updates differing skills |
+| `casemap browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
+| `casemap flows [NAME]` | List the catalog, or render one use case |
+| `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
+| `casemap check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
+| `casemap diff [REF] [--strict]` | Compare with the merge base of REF and HEAD; `--strict` also exits 1 for possibly stale flows |
+| `casemap which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
+| `casemap guide` | Print the agent skill body |
+| `casemap FILE` | Render a Mermaid file, or every Mermaid block of a Markdown file |
+| `casemap completions SHELL` | Generate completions for bash, zsh, fish, powershell or elvish |
 
-`strata check` prints each problem with its catalog path, line when available,
+`casemap check` prints each problem with its catalog path, line when available,
 severity and code, followed by a summary such as `checked 3 flows: ok`.
 Exit 1 means errors, warnings with `--strict`, or a command failure such as a
 missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
@@ -287,12 +287,12 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `unlabelled-step` | warning | A step's label is just its id |
 | `too-many-steps` | warning | More than 15 steps |
 | `too-few-steps` | warning | Fewer than 3 steps |
-| `styling` | warning | Diagram styling is ignored by strata |
+| `styling` | warning | Diagram styling is ignored by casemap |
 | `file-name` | warning | The file stem is not kebab-case |
 | `long-label` | warning | A node label line is wider than 40 display columns |
 | `edge-into-actor` | warning | An edge targets a stadium actor node |
 
-Tools can read one-line JSON from `strata check --format json`:
+Tools can read one-line JSON from `casemap check --format json`:
 
 ```json
 {"version":1,"catalog":"docs/flows","flows":3,"errors":1,"warnings":0,"problems":[{"path":"docs/flows/checkout.md","line":5,"severity":"error","code":"parse-error","message":"link has no target node"}]}
@@ -301,7 +301,7 @@ Tools can read one-line JSON from `strata check --format json`:
 `path` and `line` are `null` when absent. A missing catalog exits 1, reports the
 error on stderr, and leaves stdout empty, including in JSON mode.
 
-`strata flows --format json` returns catalog metadata:
+`casemap flows --format json` returns catalog metadata:
 
 ```json
 {"version":1,"flows":[{"name":"checkout","path":"docs/flows/checkout.md","title":"Checkout","description":"A customer pays for the cart.","has_diagram":true}]}
@@ -322,7 +322,7 @@ Global flags can appear before or after a subcommand:
 
 The command words `init`, `flows`, `check`, `diff`, `which`, `guide` and `completions`
 are reserved. To render a file with one of those names, use `./diff` or
-`strata -- diff`. `help` remains a file name; use `--help` or `-h` to print help.
+`casemap -- diff`. `help` remains a file name; use `--help` or `-h` to print help.
 `init` requires a relative catalog path because the installed skill is committed.
 
 ## The renderer
@@ -331,9 +331,9 @@ Mermaid flowcharts render as clean, readable terminal diagrams. Keep a diagram
 open in a side pane while you (or your agent) work on the code:
 
 ```sh
-strata docs/architecture.mmd           # render once
-strata --watch docs/architecture.mmd   # redraw on every save
-cat flow.mmd | strata --dir=LR         # stdin, override direction
+casemap docs/architecture.mmd           # render once
+casemap --watch docs/architecture.mmd   # redraw on every save
+cat flow.mmd | casemap --dir=LR          # stdin, override direction
 ```
 
 The source of truth is plain Mermaid in your repo, so diagrams diff, review
@@ -357,8 +357,8 @@ other flows still render; the command exits 1. With no changes it prints
 one line, `no flow changes since HEAD (<sha7>)`, and exits 0.
 
 Catalogs contain top-level `.md` or `.mmd` files. `.mmd` files use the whole
-file as their diagram. `strata FILE.md` renders every Mermaid block under
-its nearest heading, and `strata --watch FILE.md` redraws them on save.
+file as their diagram. `casemap FILE.md` renders every Mermaid block under
+its nearest heading, and `casemap --watch FILE.md` redraws them on save.
 
 ### How the layout works
 
@@ -387,21 +387,21 @@ not the edge.
 The CLI is a thin wrapper around the crate, so a TUI or an MCP server can embed it:
 
 ```rust
-let options = strata::Options::default();
-let text = strata::render_str(source, &options)?;
-let document = strata::render_markdown(markdown, &options)?;
+let options = casemap::Options::default();
+let text = casemap::render_str(source, &options)?;
+let document = casemap::render_markdown(markdown, &options)?;
 
-let old = strata::parser::parse(old_source)?;
-let new = strata::parser::parse(new_source)?;
-let changes = strata::diff::diff(&old, &new);
+let old = casemap::parser::parse(old_source)?;
+let new = casemap::parser::parse(new_source)?;
+let changes = casemap::diff::diff(&old, &new);
 let summary = changes.summary();
-let drawing = strata::render_diagram(&changes.union, &options);
+let drawing = casemap::render_diagram(&changes.union, &options);
 ```
 
 For the library only, disable the default CLI feature:
 
 ```toml
-strata = { version = "0.5", default-features = false }
+casemap = { version = "0.5", default-features = false }
 ```
 
 To install from a local checkout, run `cargo install --path .`.
@@ -457,6 +457,6 @@ The workflow builds the binaries, the shell and PowerShell installers and the Ho
 
 ## Roadmap
 
-1. Done: code anchors and `strata which` connect use cases to their code, with validation and stale detection.
+1. Done: code anchors and `casemap which` connect use cases to their code, with validation and stale detection.
 2. Done: an interactive browser for exploring the catalog and diagrams wider than the terminal.
 3. Done: packaged releases with prebuilt binaries, installers and a Homebrew tap.

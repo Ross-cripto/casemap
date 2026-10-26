@@ -4,7 +4,7 @@ A developer explores use cases, pans wide diagrams and inspects changes in a ter
 
 ```mermaid
 flowchart TD
-    who([Developer runs strata browse]) --> catalog{Catalog exists?}
+    who([Developer runs casemap browse]) --> catalog{Catalog exists?}
     catalog -->|no| fail[Report the missing catalog]
     catalog -->|yes| base{Explicit base valid?}
     base -->|no| fail

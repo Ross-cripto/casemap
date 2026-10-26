@@ -52,8 +52,8 @@ fn sgr(mut style: Style, codes: &str) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use casemap::{Direction, Options, diff, flows};
     use std::path::Path;
-    use strata::{Direction, Options, diff, flows};
 
     fn plain(text: &Text<'_>) -> Vec<String> {
         text.lines
@@ -177,7 +177,7 @@ mod tests {
         );
         for path in paths {
             let source = std::fs::read_to_string(path).unwrap();
-            assert_render_matches(|options| strata::render_str(&source, options).unwrap());
+            assert_render_matches(|options| casemap::render_str(&source, options).unwrap());
         }
         let previous = flows::load_dir(Path::new("tests/fixtures/flows/before")).unwrap();
         let current = flows::load_dir(Path::new("tests/fixtures/flows/after")).unwrap();
@@ -203,7 +203,7 @@ mod tests {
                     &flows::diagram(new).unwrap().unwrap(),
                 )
             };
-            assert_render_matches(|options| strata::render_diagram(&difference.union, options));
+            assert_render_matches(|options| casemap::render_diagram(&difference.union, options));
         }
     }
 }

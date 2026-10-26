@@ -3,7 +3,7 @@ source: tests/snapshots.rs
 assertion_line: 519
 expression: "cli(&[\"flows\", \"refund\", \"--flows\", \"tests/fixtures/flows/after\", \"--ascii\",\n\"--dir\", \"LR\", \"--no-color\"], &[], None)"
 ---
-$ strata flows refund --flows tests/fixtures/flows/after --ascii --dir LR --no-color
+$ casemap flows refund --flows tests/fixtures/flows/after --ascii --dir LR --no-color
 [exit 0]
 --- stdout
 Refund
