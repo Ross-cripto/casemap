@@ -11,6 +11,40 @@ use std::collections::HashMap;
 
 use crate::model::{Cluster, Diagram, Direction, Edge, LineStyle, Mark, Node, Shape};
 
+pub const RESERVED_IDS: &[&str] = &[
+    "click",
+    "end",
+    "style",
+    "class",
+    "classDef",
+    "linkStyle",
+    "subgraph",
+    "graph",
+    "flowchart",
+    "direction",
+    "default",
+];
+
+fn starts_with_keyword_node(statement: &str) -> bool {
+    for keyword in RESERVED_IDS {
+        let Some(prefix) = statement.get(..keyword.len()) else {
+            continue;
+        };
+        if !prefix.eq_ignore_ascii_case(keyword) {
+            continue;
+        }
+        let rest = statement[keyword.len()..].trim_start();
+        if rest.starts_with(['[', '(', '{', '>']) {
+            return true;
+        }
+        let mut cursor = Cursor::new(rest);
+        if parse_link(&mut cursor).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("line {line}: {message}")]
 pub struct ParseError {
@@ -64,6 +98,9 @@ pub fn first_statement(source: &str) -> Option<(usize, &str)> {
 }
 
 fn parse_header(stmt: &str) -> Option<Direction> {
+    if starts_with_keyword_node(stmt) {
+        return None;
+    }
     let mut words = stmt.split_whitespace();
     let kw = words.next()?.to_ascii_lowercase();
     if kw != "flowchart" && kw != "graph" {
@@ -140,7 +177,12 @@ pub(crate) fn id_tokens_outside_labels(statement: &str) -> Vec<&str> {
 }
 
 pub(crate) fn statement_mentions_id(statement: &str, id: &str) -> bool {
-    id_tokens_outside_labels(statement).contains(&id)
+    let statement = statement.trim();
+    if is_header(statement) || !id_tokens_outside_labels(statement).contains(&id) {
+        return false;
+    }
+    let mut builder = Builder::default();
+    builder.statement(statement).is_ok() && builder.nodes.iter().any(|node| node.id == id)
 }
 
 #[derive(Default)]
@@ -173,6 +215,9 @@ impl Builder {
     }
 
     fn statement(&mut self, stmt: &str) -> Result<(), String> {
+        if starts_with_keyword_node(stmt) {
+            return self.chain(stmt);
+        }
         let (first, rest) = match stmt.find(char::is_whitespace) {
             Some(i) => (&stmt[..i], stmt[i..].trim()),
             None => (stmt, ""),
@@ -278,6 +323,7 @@ impl Builder {
         if id.is_empty() {
             return Err(format!("expected a node id near '{}'", cur.rest()));
         }
+        cur.skip_ws();
         let shape = parse_shape(cur)?;
         if cur.starts_with(":::") {
             cur.advance(3);
@@ -632,6 +678,40 @@ mod tests {
             "\"&<>#;`|"
         );
         assert_eq!(decode_entities(&"#".repeat(100_000)), "#".repeat(100_000));
+    }
+
+    #[test]
+    fn keyword_followed_by_an_arrow_is_an_edge() {
+        for keyword in [
+            "click",
+            "end",
+            "style",
+            "class",
+            "classDef",
+            "linkStyle",
+            "subgraph",
+            "graph",
+            "flowchart",
+            "direction",
+            "default",
+        ] {
+            for statement in [
+                format!("{keyword} --> b[B]"),
+                format!("{keyword}[Keyword] --> b[B]"),
+                format!("{keyword} [Keyword] --> b[B]"),
+            ] {
+                let diagram = parse(&format!("flowchart TD\n{statement}")).unwrap();
+                assert_eq!(diagram.edges.len(), 1, "{statement}");
+                assert_eq!(diagram.nodes[diagram.edges[0].from].id, keyword);
+            }
+        }
+    }
+
+    #[test]
+    fn styling_directives_are_dropped() {
+        let diagram = parse("flowchart TD\na[A] --> b[B]\nclick a callback\nclass a,b c").unwrap();
+        assert_eq!(diagram.nodes.len(), 2);
+        assert_eq!(diagram.edges.len(), 1);
     }
 
     #[test]

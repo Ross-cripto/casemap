@@ -22,6 +22,7 @@ One actor, one goal, an outcome the actor can see, done in one sitting.
 - A read-only lookup that only leads into another flow belongs to that flow. Give it its own file only when looking something up is the goal ("Browse articles").
 - For an API without a UI, the actor is the API client ("Client registers an account"), and steps describe the response in plain words: a 422 becomes "Show that the email is already taken", a 401 becomes "Reject the request as not signed in".
 - For a CLI, group flags by the goal they serve, not one flow per flag. Flags that only change how the output looks belong in the flow they modify, or in one "Customise …" flow. The actor is the person running it (`([User runs hexyl FILE])`), and a run ends at its output or its error message; there is no retry loop.
+- When something other than a person starts the flow (a webhook, another service, a schedule), make it the actor: `([Payment provider sends a webhook])`. If a person continues it later, show that as a step, not a second actor.
 - A CLI or library usually has 3 to 10 flows; a web app 8 to 25. More than 30 means you are splitting per endpoint or screen.
 
 Flows are user-level journeys, not architecture diagrams. No services, databases, queues, functions, files, endpoints or status codes as steps, and do not copy architecture diagrams into the catalog. Labels use the user's words: the text on the screen, the CLI output, the email they receive.
@@ -54,14 +55,16 @@ flowchart TD
 - Shapes: the actor or trigger as a stadium `([...])`, steps as rectangles `[...]`, decisions as diamonds `{...}` with every exit labelled (`-->|yes|`).
 - 3 to 15 steps. Never pad a flow to reach the minimum: merge a tiny flow into the one it belongs to, or keep it short. Split a bigger flow into separate use cases; the larger part keeps the file.
 - Keep every label within 40 columns (wide characters count double) so the flow fits a side pane.
+- When on-screen text is longer than 40 columns, shorten it but keep its meaning.
 - Never draw an edge back into the actor. End a failure branch at the step the user sees, or loop back to the step where they retry, as `error --> pay` does in the example.
 - Show a sign-in requirement as one decision, and only where a signed-out user can reach it. Do not draw middleware, validation layers or retries as steps.
 - Node ids are short, lowercase and stable (`pay`, `confirm`). casemap compares flows by id, so rename a step by changing its label, never its id.
+- Node ids must not be Mermaid keywords (`click`, `end`, `style`, `class`, `default`…); `casemap check` reports them.
 - No subgraphs, styling (`classDef`, `style`, `linkStyle`, `:::`), `click` or mermaid config blocks.
 - Include the main path, the decisions, and the failures the user actually sees. Not every exception or retry.
 - Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question.
 
-Anchor steps to the code that implements them, with `%% @code <step> <path>` lines at the end of the block (the paths above are placeholders: use the real paths you read). `%% @code * <path>` anchors the whole flow. Paths are relative to the repository root; a folder means everything inside it, `*` matches within a folder and `**` across folders, and every other character (brackets included) is literal. Anchor the steps a future change is most likely to touch, not every step. Mermaid and GitHub ignore these lines.
+Anchor steps to the code that implements them, with `%% @code <step> <path>` lines at the end of the block (the paths above are placeholders: use the real paths you read). `%% @code * <path>` anchors the whole flow. Paths are relative to the repository root; a folder means everything inside it, `*` matches within a folder and `**` across folders, and every other character (brackets included) is literal. Anchor the steps a future change is most likely to touch, not every step. Mermaid and GitHub ignore these lines. For framework routes with brackets, write the path as it is: `%% @code page app/product/[handle]/page.tsx`.
 
 A typical mistake and its fix:
 
@@ -90,7 +93,7 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
    - CLI commands and subcommands
    - UI routes, pages and screens
    - background jobs, schedulers, queue and event consumers, webhooks
-   When it is safe, run the program on a small sample and copy its real output text into your labels.
+   When it is safe, run the program on a small sample and copy its real output text into your labels. If running it needs a build or services you do not have, read the code instead.
 3. Group them into use cases. Several entry points often serve one use case, and one entry point can appear in several.
 4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
 5. Add anchors to each flow you wrote.
@@ -111,6 +114,8 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
    If `casemap diff` lists flows as "possibly stale", open each one. Update it if the behaviour changed. If it still holds, say so in your final message; never make a cosmetic edit just to silence the warning.
 
 If a casemap hook stops you with warnings, act on each one: update the flow, anchor the code, or say in your reply why it still holds. The same warnings will not stop you twice.
+
+Commit new or changed flows with the code. `casemap diff` and the hook compare against committed flows, so until a flow is committed it reads as new and nothing is reported as stale.
 
 ## Commands
 

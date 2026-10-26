@@ -17,6 +17,7 @@ pub const EXCLUDED_SEGMENTS: &[&str] = &[
     "spec",
     "specs",
     "vendor",
+    "migrations",
     "node_modules",
     "target",
     "dist",
@@ -59,6 +60,8 @@ pub fn is_code_path(path: &str, catalog_prefix: &str, selection: &Selection) -> 
                 .any(|excluded| excluded.eq_ignore_ascii_case(segment))
         })
         && !is_test_name(name, extension)
+        && !name.contains(".config.")
+        && !name.ends_with(".d.ts")
 }
 
 fn is_test_name(name: &str, extension: &str) -> bool {

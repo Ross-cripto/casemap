@@ -897,6 +897,13 @@ fn truncate_list(output: &mut String, heading: &str, kind: &str, hint: &str) {
     }
 }
 
+pub fn compare_titles(left: &Flow, right: &Flow) -> std::cmp::Ordering {
+    left.title
+        .to_lowercase()
+        .cmp(&right.title.to_lowercase())
+        .then_with(|| left.path.cmp(&right.path))
+}
+
 pub fn render_list(flows: &[Flow]) -> String {
     let width = flows.iter().map(|flow| flow.name.len()).max().unwrap_or(0);
     let mut output = String::new();
