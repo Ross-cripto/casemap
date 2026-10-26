@@ -1,0 +1,13 @@
+---
+source: tests/snapshots.rs
+assertion_line: 606
+expression: "repo_transcript(&repo, &[\"diff\", \"--format\", \"markdown\"])"
+---
+$ casemap diff --format markdown
+[exit 0]
+--- stdout
+<!-- casemap:pr-comment -->
+<!-- casemap:quiet -->
+### 🗺️ casemap · no use-case changes · check ok
+--- stderr
+[end]

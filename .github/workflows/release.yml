@@ -298,3 +298,12 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+  custom-move-action-tag:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/move-action-tag.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit

@@ -1,0 +1,20 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"diff\", \"--format\", \"markdown\"])"
+---
+$ casemap diff --format markdown
+[exit 1]
+--- stdout
+<!-- casemap:pr-comment -->
+### 🗺️ casemap · 1 use case changed · 0 possibly stale · check 1 error, 0 warnings
+Compared with `HEAD` ([SHA]).
+
+#### ✗ Broken · `docs/flows/broken.md` (parse error)
+
+`line 7: link has no target node`
+
+#### Check
+
+- `docs/flows/broken.md:7` error: link has no target node [parse-error]
+--- stderr
+[end]

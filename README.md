@@ -212,6 +212,95 @@ Pass several paths for separate result blocks, or `--format json` for JSON v1:
 {"version":1,"paths":[{"path":"src/pay.rs","flows":[{"name":"pay","path":"docs/flows/pay.md","title":"Pay for an order","steps":["pay"],"whole_flow":false}]}]}
 ```
 
+## On pull requests
+
+Run `casemap init --ci` to install the agent skill and add
+`.github/workflows/casemap.yml`, or add the workflow yourself:
+
+```yaml
+name: casemap
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  flows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: Ross-cripto/casemap@v0
+        with:
+          flows: docs/flows
+```
+
+The Action keeps one comment updated on each pull request, with coloured Mermaid
+flow changes, possibly stale flows and the `check` result. It also writes the
+report to the job summary. Fork PRs with read-only tokens fall back to that
+summary with a notice. Linux and macOS runners are supported. Checkout must use
+`fetch-depth: 0` so the base revision and its merge base are available.
+
+Only `check` errors, including broken diagrams, fail the flow review job.
+Warnings and possibly stale flows are advisory. For local runs,
+`casemap diff main --format markdown` prints the same report;
+adding `--strict` also fails on possibly stale flows.
+
+A modified flow with an added review step looks like this in the comment:
+
+### 🗺️ casemap · 1 use case changed · 0 possibly stale · check ok
+Compared with `main` (abc1234).
+
+#### ~ Check out a cart · `docs/flows/check-out-a-cart.md`
++1 step, +2 links, -1 link
+
+```mermaid
+flowchart TD
+    n0(["Customer opens the cart"])
+    n1["Review the order"]
+    n2["Enter payment details"]
+    n0 --> n1
+    n1 --> n2
+    n0 --> n2
+classDef added fill:#dcfce7,stroke:#16a34a,color:#14532d
+classDef removed fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-dasharray:4 3
+class n1 added
+linkStyle 0,1 stroke:#16a34a,stroke-width:2px
+linkStyle 2 stroke:#dc2626,stroke-width:2px,stroke-dasharray:4 3
+```
+
+<details><summary>Changes</summary>
+
+- + step review "Review the order"
+- + link cart -> review
+- + link review -> pay
+- - link cart -> pay
+</details>
+
+#### Check
+
+ok
+
+The Action accepts these inputs:
+
+| Input | Default | Purpose |
+|---|---|---|
+| `version` | `latest` | Release version to install, without `v`, such as `0.5.1` |
+| `casemap` | empty | Path to an existing binary; skips installation |
+| `flows` | `docs/flows` | Flow catalog directory |
+| `base` | `origin/${{ github.base_ref }}` | Revision to compare with (using its merge base with HEAD) |
+| `comment` | `true` | Set to `false` to write only the job summary |
+| `bot-login` | `github-actions[bot]` | Login that owns comments posted with an app token or PAT |
+| `token` | `${{ github.token }}` | Token for reading and updating the PR comment |
+
+The moving `v0` Action tag follows releases. A quiet first report creates no
+comment; an existing comment is updated even when the PR becomes quiet.
+`init --ci` keeps a differing workflow unless you pass `--force`.
+
 ## For agents
 
 The `casemap` skill teaches how to identify use cases, group entry points
@@ -251,12 +340,12 @@ For agents without skill support, `casemap guide` prints the skill body.
 
 | Command | Result |
 |---|---|
-| `casemap init [--force] [--agent claude\|codex]` | Create the catalog and install the agent skill; `--force` updates differing skills; `--agent` opens that agent in a terminal |
+| `casemap init [--ci] [--force] [--agent claude\|codex]` | Create the catalog and install the agent skill; `--ci` adds the PR workflow; `--force` updates differing skills and the requested workflow; `--agent` opens that agent in a terminal |
 | `casemap browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
 | `casemap flows [NAME]` | List the catalog, or render one use case |
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
 | `casemap check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
-| `casemap diff [REF] [--strict]` | Compare with the merge base of REF and HEAD; `--strict` also exits 1 for possibly stale flows |
+| `casemap diff [REF] [--strict] [--format text\|markdown]` | Compare with the merge base of REF and HEAD; `--format markdown` writes the PR comment and also fails on check errors (unlike text mode); `--strict` also exits 1 for possibly stale flows |
 | `casemap which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
 | `casemap guide` | Print the agent skill body |
 | `casemap FILE` | Render a Mermaid file, or every Mermaid block of a Markdown file |
@@ -400,6 +489,7 @@ let new = casemap::parser::parse(new_source)?;
 let changes = casemap::diff::diff(&old, &new);
 let summary = changes.summary();
 let drawing = casemap::render_diagram(&changes.union, &options);
+let mermaid = casemap::mermaid::write(&changes.union);
 ```
 
 For the library only, disable the default CLI feature:

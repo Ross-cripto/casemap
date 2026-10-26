@@ -1,0 +1,107 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"diff\", \"main\", \"--format\", \"markdown\"])"
+---
+$ casemap diff main --format markdown
+[exit 0]
+--- stdout
+<!-- casemap:pr-comment -->
+### 🗺️ casemap · 3 use cases changed · 0 possibly stale · check ok
+Compared with `main` ([SHA]).
+
+#### ~ Checkout · `docs/flows/checkout.md`
++1 step, -1 step, \~1 step, +3 links, -3 links, \~1 link
+
+```mermaid
+flowchart TD
+    n0(["Customer opens cart"])
+    n1{"Payment ok?"}
+    n2["Fraud check"]
+    n3["Order confirmed and emailed"]
+    n4["Show payment error"]
+    n5["Enter address"]
+    n0 --> n1
+    n1 -->|"yes"| n2
+    n2 --> n3
+    n1 -->|"declined"| n4
+    n0 --> n5
+    n5 --> n1
+    n1 -->|"yes"| n3
+classDef added fill:#dcfce7,stroke:#16a34a,color:#14532d
+classDef removed fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-dasharray:4 3
+classDef changed fill:#fef3c7,stroke:#d97706,color:#78350f
+class n2 added
+class n5 removed
+class n3 changed
+linkStyle 0,1,2 stroke:#16a34a,stroke-width:2px
+linkStyle 4,5,6 stroke:#dc2626,stroke-width:2px,stroke-dasharray:4 3
+linkStyle 3 stroke:#d97706,stroke-width:2px
+```
+
+<details><summary>Changes</summary>
+
+- + step fraud "Fraud check"
+- \~ step confirm "Order confirmed" -\> "Order confirmed and emailed"
+- - step address "Enter address"
+- + link cart -\> pay
+- + link pay -\> fraud "yes"
+- + link fraud -\> confirm
+- \~ link pay -\> error "no" -\> "declined"
+- - link cart -\> address
+- - link address -\> pay
+- - link pay -\> confirm "yes"
+</details>
+
+#### − Legacy export · `docs/flows/legacy-export.md` (removed)
+-2 steps, -1 link
+
+```mermaid
+flowchart LR
+    n0(["Admin"])
+    n1["Export CSV"]
+    n0 --> n1
+classDef removed fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-dasharray:4 3
+class n0,n1 removed
+linkStyle 0 stroke:#dc2626,stroke-width:2px,stroke-dasharray:4 3
+```
+
+<details><summary>Changes</summary>
+
+- - step admin "Admin"
+- - step export "Export CSV"
+- - link admin -\> export
+</details>
+
+#### + Refund · `docs/flows/refund.md` (new)
++4 steps, +3 links
+
+```mermaid
+flowchart TD
+    n0(["Customer requests refund"])
+    n1{"Within 30 days?"}
+    n2["Refund to card"]
+    n3["Explain the refund policy"]
+    n0 --> n1
+    n1 -->|"yes"| n2
+    n1 -->|"no"| n3
+classDef added fill:#dcfce7,stroke:#16a34a,color:#14532d
+class n0,n1,n2,n3 added
+linkStyle 0,1,2 stroke:#16a34a,stroke-width:2px
+```
+
+<details><summary>Changes</summary>
+
+- + step ask "Customer requests refund"
+- + step check "Within 30 days?"
+- + step refund "Refund to card"
+- + step reject "Explain the refund policy"
+- + link ask -\> check
+- + link check -\> refund "yes"
+- + link check -\> reject "no"
+</details>
+
+#### Check
+
+ok
+--- stderr
+[end]

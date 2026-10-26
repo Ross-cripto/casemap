@@ -318,10 +318,48 @@ impl Builder {
 fn unquote(s: &str) -> String {
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1].to_string()
+        decode_entities(&s[1..s.len() - 1])
     } else {
-        s.to_string()
+        decode_entities(s)
     }
+}
+
+const MAX_ENTITY_DISTANCE: usize = 8;
+
+fn decode_entities(text: &str) -> String {
+    let mut output = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find('#') {
+        output.push_str(&remaining[..start]);
+        remaining = &remaining[start..];
+        if let Some(end) = remaining
+            .bytes()
+            .take(MAX_ENTITY_DISTANCE + 1)
+            .position(|byte| byte == b';')
+        {
+            let entity = &remaining[1..end];
+            let decoded = match entity {
+                "quot" => Some('"'),
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "35" => Some('#'),
+                "59" => Some(';'),
+                "96" => Some('`'),
+                "124" => Some('|'),
+                _ => None,
+            };
+            if let Some(character) = decoded {
+                output.push(character);
+                remaining = &remaining[end + 1..];
+                continue;
+            }
+        }
+        output.push('#');
+        remaining = &remaining[1..];
+    }
+    output.push_str(remaining);
+    output
 }
 
 fn split_label(text: &str) -> Vec<String> {
@@ -329,7 +367,10 @@ fn split_label(text: &str) -> Vec<String> {
     for br in ["<br/>", "<br />", "<br>", "\\n"] {
         t = t.replace(br, "\n");
     }
-    let lines: Vec<String> = t.split('\n').map(|l| l.trim().to_string()).collect();
+    let lines: Vec<String> = t
+        .split('\n')
+        .map(|line| decode_entities(line.trim()))
+        .collect();
     if lines.iter().all(|l| l.is_empty()) {
         vec![String::new()]
     } else {
@@ -571,6 +612,27 @@ fn is_id_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_mermaid_entities_once_and_keeps_unknown_sequences() {
+        let diagram = parse("graph TD\na[\"#quot;#amp;#lt;#gt;#124;#9731;#unknown;#x41;#1114112;#amp;quot;\"] -->|\"#quot;#124;#35;\"| b").unwrap();
+        assert_eq!(
+            diagram.nodes[0].label,
+            ["\"&<>|#9731;#unknown;#x41;#1114112;&quot;"]
+        );
+        assert_eq!(diagram.edges[0].label.as_deref(), Some("\"|#"));
+    }
+
+    #[test]
+    fn entities_never_produce_control_characters() {
+        let literal = "#12;#27;#0;#1;#unknown;#000000035;#abcdefghij;#";
+        assert_eq!(decode_entities(literal), literal);
+        assert_eq!(
+            decode_entities("#quot;#amp;#lt;#gt;#35;#59;#96;#124;"),
+            "\"&<>#;`|"
+        );
+        assert_eq!(decode_entities(&"#".repeat(100_000)), "#".repeat(100_000));
+    }
 
     #[test]
     fn parses_chains_shapes_and_labels() {

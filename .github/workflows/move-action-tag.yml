@@ -1,0 +1,29 @@
+name: Move the v0 action tag
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  move-action-tag:
+    if: startsWith(fromJson(inputs.plan).announcement_tag, 'v0.') && !fromJson(inputs.plan).announcement_is_prerelease
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - name: Move the v0 action tag
+        shell: bash
+        run: |
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)
+          type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.type)
+          # Annotated tags point to a tag object; resolve it to the commit.
+          if [ "$type" = tag ]; then sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .object.sha); fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/v0" -f sha="$sha" -F force=true \
+            || gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/v0 -f sha="$sha"

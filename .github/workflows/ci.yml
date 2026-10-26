@@ -34,6 +34,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: python3 -m pip install --quiet pyyaml
+      - run: python3 -m unittest tests/action.py
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo clippy --no-default-features --locked -- -D warnings

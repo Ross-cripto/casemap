@@ -6,3 +6,4 @@
 /target
 *.snap.new
 *.pending-snap
+tests/__pycache__/

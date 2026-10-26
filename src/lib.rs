@@ -19,6 +19,7 @@ pub mod flows;
 pub mod git;
 pub mod layout;
 pub mod markdown;
+pub mod mermaid;
 pub mod model;
 pub mod parser;
 pub mod paths;

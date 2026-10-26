@@ -494,25 +494,357 @@ pub fn render_report(
     for entry in stale {
         output.push_str(&format!("  {} ({})\n", entry.flow.title, entry.flow.path));
         for hit in &entry.hits {
-            let listed: Vec<_> = hit
-                .files
-                .iter()
-                .take(MAX_STALE_FILES)
-                .map(String::as_str)
-                .collect();
-            output.push_str(&format!(
-                "    {}: {}",
-                hit.target.label(),
-                listed.join(", ")
-            ));
-            let remaining = hit.files.len().saturating_sub(MAX_STALE_FILES);
-            if remaining > 0 {
-                output.push_str(&format!(", … (+{remaining} more)"));
-            }
+            output.push_str(&format!("    {}", describe_stale_hit(hit)));
             output.push('\n');
         }
     }
     output
+}
+
+/// Leaves room below GitHub's maximum comment size.
+pub const COMMENT_LIMIT: usize = 60_000;
+/// Counts UTF-16 units to stay below Mermaid's JavaScript string size limit.
+pub const DIAGRAM_LIMIT: usize = 45_000;
+/// Matches Mermaid's default maximum edge count on GitHub.
+pub const DIAGRAM_EDGE_LIMIT: usize = 500;
+/// `action.yml` matches this first line; keep both in sync.
+pub const COMMENT_MARKER: &str = "<!-- casemap:pr-comment -->";
+/// `action.yml` matches this whole line; keep both in sync.
+pub const QUIET_MARKER: &str = "<!-- casemap:quiet -->";
+
+const CHECK_HEADING: &str = "\n#### Check\n\n";
+const STALE_HEADING: &str = "\n#### ⚠️ Possibly stale\n\n";
+const MERMAID_FENCE: &str = "```mermaid\n";
+
+fn local_diff_hint(since: &str) -> String {
+    inline_code(&format!("casemap diff {since}"))
+}
+
+pub fn render_markdown(
+    changes: &[FlowChange],
+    stale: &[Stale],
+    since: &str,
+    base: &str,
+    report: &crate::check::Report,
+    catalog: &str,
+) -> String {
+    let changed = changes
+        .iter()
+        .filter(|change| !matches!(change, FlowChange::Unchanged { .. }))
+        .count();
+    if changed == 0 && stale.is_empty() && report.problems.is_empty() {
+        return format!(
+            "{COMMENT_MARKER}\n{QUIET_MARKER}\n### 🗺️ casemap · no use-case changes · check ok\n"
+        );
+    }
+    let suffix = if changed == 1 { "" } else { "s" };
+    let check = markdown_check_summary(report);
+    let short_sha: String = base.chars().take(SHORT_SHA_LEN).collect();
+    let comparison = if base.starts_with(since) {
+        short_sha
+    } else {
+        format!("{} ({short_sha})", inline_code(since))
+    };
+    let mut output = format!(
+        "{COMMENT_MARKER}\n### 🗺️ casemap · {changed} use case{suffix} changed · {} possibly stale · check {check}\nCompared with {comparison}.\n",
+        stale.len()
+    );
+    for change in changes {
+        output.push_str(&markdown_change(change, catalog, since));
+    }
+    output.push_str(&markdown_stale(stale, catalog));
+    output.push_str(&markdown_check(report, catalog));
+    cap_markdown(&mut output, since);
+    output
+}
+
+fn markdown_text(text: &str) -> String {
+    let mut output = String::new();
+    for character in text.chars() {
+        match character {
+            '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' | '@' | '\\' | '~' | '&' => {
+                output.push('\\');
+                output.push(character);
+            }
+            '\n' | '\r' => output.push(' '),
+            _ => output.push(character),
+        }
+    }
+    output
+}
+
+fn inline_code(text: &str) -> String {
+    let longest_run = text
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest_run + 1);
+    let text = text.replace(['\n', '\r'], " ");
+    if text.starts_with('`') || text.ends_with('`') {
+        format!("{fence} {text} {fence}")
+    } else {
+        format!("{fence}{text}{fence}")
+    }
+}
+
+fn markdown_check_summary(report: &crate::check::Report) -> String {
+    if report.problems.is_empty() {
+        return "ok".into();
+    }
+    let errors = report.errors();
+    let warnings = report.warnings();
+    let error_suffix = if errors == 1 { "" } else { "s" };
+    let warning_suffix = if warnings == 1 { "" } else { "s" };
+    format!("{errors} error{error_suffix}, {warnings} warning{warning_suffix}")
+}
+
+fn flow_location(catalog: &str, flow: &Flow) -> String {
+    inline_code(&format!("{}/{}", catalog.trim_end_matches('/'), flow.path))
+}
+
+fn markdown_diff(
+    flow: &Flow,
+    difference: &DiagramDiff,
+    symbol: &str,
+    suffix: &str,
+    catalog: &str,
+    since: &str,
+) -> String {
+    let source = crate::mermaid::write(&diff::unmarked(&difference.union));
+    let block = format!("{MERMAID_FENCE}{source}```");
+    let diagram = if block.encode_utf16().count() > DIAGRAM_LIMIT
+        || difference.union.edges.len() > DIAGRAM_EDGE_LIMIT
+    {
+        format!(
+            "_Diagram too large for GitHub; run {} locally._",
+            local_diff_hint(since)
+        )
+    } else {
+        block
+    };
+    let mut output = format!(
+        "\n#### {symbol} {} · {}{suffix}\n{}\n\n{diagram}\n\n<details><summary>Changes</summary>\n\n",
+        markdown_text(&flow.title),
+        flow_location(catalog, flow),
+        markdown_text(&difference.summary()),
+    );
+    for (_, detail) in difference.details() {
+        output.push_str(&format!("- {}\n", markdown_text(&detail)));
+    }
+    output.push_str("</details>\n");
+    output
+}
+
+fn markdown_change(change: &FlowChange, catalog: &str, since: &str) -> String {
+    match change {
+        FlowChange::Modified { flow, diff } => markdown_diff(flow, diff, "~", "", catalog, since),
+        FlowChange::New { flow, diff, .. } => {
+            markdown_diff(flow, diff, "+", " (new)", catalog, since)
+        }
+        FlowChange::Removed { flow } => {
+            if let Some(Ok(old)) = diagram(flow) {
+                let empty = diff::empty_like(&old);
+                markdown_diff(
+                    flow,
+                    &diff::diff(&old, &empty),
+                    "−",
+                    " (removed)",
+                    catalog,
+                    since,
+                )
+            } else {
+                format!(
+                    "\n#### − {} · {} (removed)\n",
+                    markdown_text(&flow.title),
+                    flow_location(catalog, flow)
+                )
+            }
+        }
+        FlowChange::Broken { flow, error } => format!(
+            "\n#### ✗ {} · {} (parse error)\n\n{}\n",
+            markdown_text(&flow.title),
+            flow_location(catalog, flow),
+            inline_code(&error.to_string())
+        ),
+        FlowChange::Unchanged { .. } => String::new(),
+    }
+}
+
+fn describe_stale_hit(hit: &StaleHit) -> String {
+    let listed = hit
+        .files
+        .iter()
+        .take(MAX_STALE_FILES)
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut text = format!("{}: {}", hit.target.label(), listed.join(", "));
+    let remaining = hit.files.len().saturating_sub(MAX_STALE_FILES);
+    if remaining > 0 {
+        text.push_str(&format!(", … (+{remaining} more)"));
+    }
+    text
+}
+
+fn markdown_stale(stale: &[Stale], catalog: &str) -> String {
+    if stale.is_empty() {
+        return String::new();
+    }
+    let mut output = STALE_HEADING.to_string();
+    for entry in stale {
+        let hits = entry
+            .hits
+            .iter()
+            .map(describe_stale_hit)
+            .collect::<Vec<_>>();
+        output.push_str(&format!(
+            "- **{}** ({}): {}\n",
+            markdown_text(&entry.flow.title),
+            flow_location(catalog, &entry.flow),
+            markdown_text(&hits.join("; "))
+        ));
+    }
+    output
+}
+
+fn markdown_check(report: &crate::check::Report, catalog: &str) -> String {
+    let mut output = CHECK_HEADING.to_string();
+    if report.problems.is_empty() {
+        output.push_str("ok\n");
+        return output;
+    }
+    for problem in &report.problems {
+        let mut location = match &problem.file {
+            Some(file) => format!("{}/{file}", catalog.trim_end_matches('/')),
+            None => catalog.to_string(),
+        };
+        if let Some(line) = problem.line {
+            location.push_str(&format!(":{line}"));
+        }
+        let severity = match problem.code.severity() {
+            crate::check::Severity::Error => "error",
+            crate::check::Severity::Warning => "warning",
+        };
+        output.push_str(&format!(
+            "- {} {severity}: {} [{}]\n",
+            inline_code(&location),
+            markdown_text(&problem.message),
+            problem.code.as_str()
+        ));
+    }
+    output
+}
+
+fn cap_markdown(output: &mut String, since: &str) {
+    omit_diagrams(output, since);
+    omit_change_lists(output);
+    omit_flow_sections(output, since);
+    truncate_list(
+        output,
+        CHECK_HEADING,
+        "problems",
+        &inline_code("casemap check"),
+    );
+    truncate_list(
+        output,
+        STALE_HEADING,
+        "stale flows",
+        &local_diff_hint(since),
+    );
+}
+
+fn omit_flow_sections(output: &mut String, since: &str) {
+    let mut length = output.chars().count();
+    if length <= COMMENT_LIMIT {
+        return;
+    }
+    let section_end = output
+        .find(STALE_HEADING)
+        .or_else(|| output.find(CHECK_HEADING))
+        .unwrap_or(output.len());
+    let mut end = section_end;
+    let mut omitted = 0;
+    let mut sections = output[..section_end].rmatch_indices("\n#### ").peekable();
+    while let Some((start, _)) = sections.next() {
+        omitted += 1;
+        length -= output[start..end].chars().count();
+        end = start;
+        let notice = format!(
+            "\n_… and {omitted} more changed flows; run {} locally._\n",
+            local_diff_hint(since)
+        );
+        let dropped_everything = sections.peek().is_none();
+        if length + notice.chars().count() <= COMMENT_LIMIT || dropped_everything {
+            output.replace_range(start..section_end, &notice);
+            return;
+        }
+    }
+}
+
+fn omit_diagrams(output: &mut String, since: &str) {
+    let replacement = format!(
+        "\n_Diagram omitted to fit GitHub's comment limit; run {} locally._",
+        local_diff_hint(since)
+    );
+    let opening = format!("\n{MERMAID_FENCE}");
+    while output.chars().count() > COMMENT_LIMIT {
+        let Some(start) = output.rfind(&opening) else {
+            break;
+        };
+        let content_start = start + opening.len();
+        let Some(end) = output[content_start..].find("\n```") else {
+            break;
+        };
+        output.replace_range(start..content_start + end + "\n```".len(), &replacement);
+    }
+}
+
+fn omit_change_lists(output: &mut String) {
+    while output.chars().count() > COMMENT_LIMIT {
+        let Some(start) = output.rfind("\n<details>") else {
+            break;
+        };
+        let Some(end) = output[start..].find("\n</details>") else {
+            break;
+        };
+        output.replace_range(start..start + end + "\n</details>".len(), "");
+    }
+}
+
+fn list_bounds(output: &str, heading: &str) -> Option<(usize, usize)> {
+    let section_start = output.find(heading)?;
+    let start = section_start + heading.len();
+    let end = output[start..]
+        .find("\n#### ")
+        .map_or(output.len(), |offset| start + offset);
+    Some((start, end))
+}
+
+fn truncate_list(output: &mut String, heading: &str, kind: &str, hint: &str) {
+    let mut length = output.chars().count();
+    if length <= COMMENT_LIMIT {
+        return;
+    }
+    let Some((start, end)) = list_bounds(output, heading) else {
+        return;
+    };
+    let mut lines: Vec<_> = output[start..end].split_inclusive('\n').collect();
+    let mut omitted = 0;
+    let mut kept_bytes = end - start;
+    while let Some(line) = lines.pop() {
+        if !line.starts_with("- ") {
+            continue;
+        }
+        omitted += 1;
+        kept_bytes -= line.len();
+        length -= line.chars().count();
+        let notice = format!("- … and {omitted} more {kind}; run {hint} locally.\n");
+        let dropped_everything = lines.is_empty();
+        if length + notice.chars().count() <= COMMENT_LIMIT || dropped_everything {
+            output.replace_range(start + kept_bytes..end, &notice);
+            return;
+        }
+    }
 }
 
 pub fn render_list(flows: &[Flow]) -> String {
@@ -534,6 +866,14 @@ pub fn render_list(flows: &[Flow]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_text_escapes_special_characters() {
+        assert_eq!(
+            markdown_text("`*_[]<>#|@\\~&\n\r"),
+            r"\`\*\_\[\]\<\>\#\|\@\\\~\&  "
+        );
+    }
 
     #[test]
     fn parses_title_description_and_first_block() {
