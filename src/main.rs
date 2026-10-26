@@ -9,7 +9,10 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
-use strata::flows::Flow;
+use strata::flows::{Flow, FlowChange, Stale};
+
+#[cfg(feature = "tui")]
+mod browse;
 use strata::markdown::is_markdown_path;
 use strata::{Direction, Options, ParseError, anchors, check, git, skill};
 
@@ -27,7 +30,7 @@ const WATCH_MAX_DRAIN: Duration = Duration::from_millis(500);
     after_help = "Quick start:
   strata init           create docs/flows/ and install the agent skill
   (ask your agent)      \"document the use-case flows of this repo\"
-  strata flows          see them
+  strata browse         see them
   strata check          validate them
   strata diff main      what a branch did to them",
     args_override_self = true,
@@ -76,6 +79,11 @@ enum Commands {
         name: Option<String>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Explore the flow catalog interactively.
+    Browse {
+        #[arg(long)]
+        base: Option<String>,
     },
     /// Validate the flow catalog for agents and CI.
     Check {
@@ -138,6 +146,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         ascii: cli.ascii,
         direction: cli.dir,
     };
+    #[cfg(feature = "tui")]
+    let browse_opts = Options {
+        color: !cli.no_color && std::env::var_os("NO_COLOR").is_none(),
+        ..opts.clone()
+    };
     let directory = cli
         .flows
         .as_deref()
@@ -149,6 +162,17 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             strict,
             &opts,
         ),
+        Some(Commands::Browse { base }) => {
+            #[cfg(feature = "tui")]
+            {
+                browse::run(directory, base.as_deref(), &browse_opts)
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = base;
+                bail!("strata was built without the tui feature")
+            }
+        }
         Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
         Some(Commands::Init { force }) => init_catalog(directory, force),
         Some(Commands::Flows { name, format }) => {
@@ -163,7 +187,22 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             clap_complete::generate(shell, &mut Cli::command(), "strata", &mut io::stdout());
             Ok(ExitCode::SUCCESS)
         }
-        None => render_file(cli.file.as_deref(), cli.watch, &opts),
+        None => {
+            #[cfg(feature = "tui")]
+            if browse::app::bare_mode(
+                io::stdin().is_terminal(),
+                io::stdout().is_terminal(),
+                std::env::var_os("CI").is_some(),
+                std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
+                directory.is_dir(),
+                cli.watch,
+                cli.file.is_some(),
+            ) == browse::app::BareMode::Browse
+            {
+                return browse::run(directory, None, &browse_opts);
+            }
+            render_file(cli.file.as_deref(), cli.watch, &opts)
+        }
     }
 }
 
@@ -248,24 +287,47 @@ fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
     Ok(strata::flows::load_dir(dir)?)
 }
 
-fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::Result<ExitCode> {
-    let new = load_catalog(dir)?;
+struct BaseChanges {
+    base: String,
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    old: Vec<Flow>,
+    changes: Vec<FlowChange>,
+    stale: Vec<Stale>,
+}
+
+fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseChanges> {
     let base = strata::git::merge_base(dir, rev)?;
     let old = strata::git::files_at(dir, &base)?
         .into_iter()
         .map(|(path, text)| strata::flows::parse_flow(&path, &text))
         .collect::<Vec<_>>();
-    let changes = strata::flows::compare(&old, &new);
-    let stale = if new
+    let changes = strata::flows::compare(&old, current);
+    let stale = if current
         .iter()
         .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
     {
         let (root, _, prefix) = code_root(dir)?;
         let changed = git::changed_files(&root, &base)?;
-        strata::flows::stale_flows(&new, &prefix, &changed)
+        strata::flows::stale_flows(current, &prefix, &changed)
     } else {
         Vec::new()
     };
+    Ok(BaseChanges {
+        base,
+        old,
+        changes,
+        stale,
+    })
+}
+
+fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::Result<ExitCode> {
+    let new = load_catalog(dir)?;
+    let BaseChanges {
+        base,
+        changes,
+        stale,
+        ..
+    } = base_changes(dir, rev, &new)?;
     print!(
         "{}",
         strata::flows::render_report(&changes, &stale, rev, &base, opts)
@@ -362,43 +424,64 @@ fn code_root(catalog_dir: &Path) -> anyhow::Result<(PathBuf, FileSource, String)
 }
 
 struct LazyCodeIndex {
-    root: PathBuf,
-    source: FileSource,
+    catalog_dir: PathBuf,
+    location: Option<(PathBuf, FileSource)>,
     files: Option<Vec<String>>,
     error: Option<anyhow::Error>,
 }
 
 impl LazyCodeIndex {
-    fn new(catalog_dir: &Path) -> anyhow::Result<Self> {
-        let (root, source, _) = code_root(catalog_dir)?;
-        Ok(Self {
-            root,
-            source,
+    fn deferred(catalog_dir: &Path) -> Self {
+        Self {
+            catalog_dir: catalog_dir.to_path_buf(),
+            location: None,
             files: None,
             error: None,
-        })
+        }
+    }
+
+    fn root(&mut self) -> anyhow::Result<&Path> {
+        self.ensure_location()?;
+        Ok(&self.location.as_ref().expect("location was resolved").0)
+    }
+
+    fn ensure_location(&mut self) -> anyhow::Result<()> {
+        if self.location.is_none() {
+            let (root, source, _) = code_root(&self.catalog_dir)?;
+            self.location = Some((root, source));
+        }
+        Ok(())
     }
 
     fn files(&mut self) -> anyhow::Result<&[String]> {
         if self.files.is_none() {
-            self.files = Some(code_files(&self.root, self.source)?);
+            self.ensure_location()?;
+            let (root, source) = self.location.as_ref().expect("location was resolved");
+            self.files = Some(code_files(root, *source)?);
         }
         Ok(self.files.as_deref().unwrap_or_default())
     }
 
+    /// Answers true after an index failure so no false anchor-no-match is reported; take_error returns the failure.
     fn has_match(&mut self, pattern: &str) -> bool {
         if self.error.is_some() {
             return true;
         }
-        let patterns = [pattern.to_owned()];
         match self.files() {
             Ok(files) => files
                 .iter()
-                .any(|path| anchors::any_pattern_matches(&patterns, path)),
+                .any(|path| anchors::pattern_matches(pattern, path)),
             Err(error) => {
                 self.error = Some(error);
                 true
             }
+        }
+    }
+
+    fn finish(mut self) -> anyhow::Result<()> {
+        match self.take_error() {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -464,8 +547,8 @@ struct WhichPath<'a> {
 
 fn which_flows(dir: &Path, paths: &[PathBuf], format: Format) -> anyhow::Result<ExitCode> {
     let flows = load_catalog(dir)?;
-    let mut index = LazyCodeIndex::new(dir)?;
-    let root = index.root.clone();
+    let mut index = LazyCodeIndex::deferred(dir);
+    let root = index.root()?.to_path_buf();
     let mut results = Vec::new();
     for path in paths {
         let relative = root_relative_path(path, &root)?;
@@ -625,27 +708,21 @@ fn check_summary(report: &check::Report) -> String {
     format!("checked {} flows: {result}", report.flows)
 }
 
+fn check_report(dir: &Path) -> anyhow::Result<check::Report> {
+    require_catalog(dir)?;
+    let mut index = LazyCodeIndex::deferred(dir);
+    let report = check::check_catalog_with(dir, &mut |pattern| index.has_match(pattern))?;
+    index.finish()?;
+    Ok(report)
+}
+
 fn check_catalog(
     dir: &Path,
     strict: bool,
     format: Format,
     color: bool,
 ) -> anyhow::Result<ExitCode> {
-    require_catalog(dir)?;
-    let mut index = None;
-    // the catalog error is more fundamental than an index error
-    let report = check::check_catalog_with(dir, &mut |pattern| match index
-        .get_or_insert_with(|| LazyCodeIndex::new(dir))
-    {
-        Ok(index) => index.has_match(pattern),
-        Err(_) => true,
-    })?;
-    if let Some(index) = index {
-        let mut index = index?;
-        if let Some(error) = index.take_error() {
-            return Err(error);
-        }
-    }
+    let report = check_report(dir)?;
     match format {
         Format::Text => print_check_text(dir, &report, color),
         Format::Json => print_check_json(dir, &report),
@@ -948,7 +1025,7 @@ fn install_all_skills(root: &Path, desired: &str, force: bool) -> bool {
 fn print_next_steps(catalog: &str) {
     println!("\nNext: ask your coding agent to \"document the use-case flows of this repo\".");
     println!(
-        "Then: `strata flows` to see them, `strata check` to validate them, `strata diff` after each change."
+        "Then: `strata browse` to see them, `strata check` to validate them, `strata diff` after each change."
     );
     println!(
         "\nOptional, so agents always keep flows current, add this line to AGENTS.md and CLAUDE.md:"

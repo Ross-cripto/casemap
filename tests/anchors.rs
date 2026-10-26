@@ -400,6 +400,7 @@ fn drive_prefix_only_in_first_segment() {
     assert_eq!(normalise_pattern("docs/a:b.md").unwrap(), "docs/a:b.md");
     assert_eq!(normalise_pattern("docs/C:/x").unwrap(), "docs/C:/x");
     assert!(normalise_pattern("C:").is_err());
+    assert!(normalise_pattern("C:foo").is_err());
     assert!(normalise_pattern("c:/x").is_err());
     assert_eq!(normalise_pattern("**/**/a/**/**").unwrap(), "**/a/**");
 }
