@@ -8,7 +8,7 @@ use casemap::{Diagram, Direction, flows, parser};
 
 const MINIMUM_DIAGRAMS: usize = 29 + 10 + 1;
 
-const STEP_ONE_BUDGETS: &[(&str, usize, usize)] = &[
+const WIDTH_AND_CROSSING_BUDGETS: &[(&str, usize, usize)] = &[
     ("docs/flows/browse-the-catalog.md", 112, 1),
     ("docs/flows/check-the-catalog.md", 76, 0),
     ("docs/flows/keep-the-map-true.md", 68, 0),
@@ -117,11 +117,11 @@ const STEP_ONE_BUDGETS: &[(&str, usize, usize)] = &[
         146,
         1,
     ),
-    ("tests/fixtures/corpus/shiori/manage-tags.md", 101, 2),
+    ("tests/fixtures/corpus/shiori/manage-tags.md", 101, 0),
     (
         "tests/fixtures/corpus/shiori/manage-user-accounts.md",
         80,
-        1,
+        0,
     ),
     ("tests/fixtures/corpus/shiori/read-a-saved-page.md", 106, 0),
     (
@@ -224,6 +224,38 @@ fn write_row(output: &mut String, path: &str, metrics: &Metrics, path_width: usi
     .unwrap();
 }
 
+fn node_center(layout: &layout::Layout, diagram: &Diagram, id: &str) -> i32 {
+    let node = diagram.nodes.iter().position(|node| node.id == id).unwrap();
+    layout
+        .items
+        .iter()
+        .find(|item| item.kind == ItemKind::Node(node))
+        .unwrap()
+        .center()
+}
+
+fn assert_fanout_spine(source: &str, continuation: &str, side_branches: [&str; 2]) {
+    for direction in [
+        Direction::TopDown,
+        Direction::BottomUp,
+        Direction::LeftRight,
+        Direction::RightLeft,
+    ] {
+        let mut diagram = parser::parse(source).unwrap();
+        diagram.direction = direction;
+        let layout = layout::layout(&diagram);
+        let center = |id: &str| node_center(&layout, &diagram, id);
+        let spine_center = center(continuation);
+        assert_eq!(center("decision"), spine_center, "{direction:?}");
+        let side_centers = [center(side_branches[0]), center(side_branches[1])];
+        assert!(
+            side_centers.iter().any(|&value| value < spine_center)
+                && side_centers.iter().any(|&value| value > spine_center),
+            "{direction:?}: branches {side_centers:?}, spine {spine_center}"
+        );
+    }
+}
+
 #[test]
 fn corpus() {
     let rows: Vec<_> = diagrams()
@@ -233,6 +265,179 @@ fn corpus() {
     let report = table(&rows);
     println!("{report}");
     insta::assert_snapshot!(report);
+}
+
+#[test]
+fn chained_decisions_keep_a_straight_spine() {
+    let source = "flowchart TD
+        first{First decision?} -->|no| first_error[First error]
+        first -->|yes| second{Second decision?}
+        second -->|no| second_error[Second error]
+        second -->|yes| third{Third decision?}
+        third -->|no| third_error[Third error]
+        third -->|yes| fourth{Fourth decision?}
+        fourth -->|no| fourth_error[Fourth error]
+        fourth -->|yes| done[Done]
+        done --> finish[Finished]";
+    for direction in [
+        Direction::TopDown,
+        Direction::BottomUp,
+        Direction::LeftRight,
+        Direction::RightLeft,
+    ] {
+        let mut diagram = parser::parse(source).unwrap();
+        diagram.direction = direction;
+        let layout = layout::layout(&diagram);
+        let mut centers = Vec::new();
+        for id in ["first", "second", "third", "fourth", "done", "finish"] {
+            centers.push(node_center(&layout, &diagram, id));
+        }
+        let spread = centers.iter().max().unwrap() - centers.iter().min().unwrap();
+        assert!(spread <= 1, "{direction:?}: spine centers {centers:?}");
+        let widest_box = layout
+            .items
+            .iter()
+            .filter(|item| item.is_node())
+            .map(|item| item.ext_o)
+            .max()
+            .unwrap();
+        let spacing = if direction.is_vertical() { 4 } else { 1 };
+        let metrics = measure(&diagram);
+        let order_extent = if direction.is_vertical() {
+            metrics.width
+        } else {
+            metrics.height
+        };
+        assert!(
+            order_extent <= (2 * widest_box + spacing) as usize,
+            "{direction:?}: extent {order_extent}, widest box {widest_box}"
+        );
+    }
+}
+
+#[test]
+fn fanout_places_short_branches_on_both_sides_of_the_spine() {
+    let source = "flowchart TD
+        decision{Choose a path} -->|first| first[First error]
+        decision -->|second| second[Second error]
+        decision -->|continue| next[Continue] --> finish[Finish]";
+    assert_fanout_spine(source, "next", ["first", "second"]);
+}
+
+#[test]
+fn broad_fanout_continuation_stays_on_the_spine() {
+    let source = "flowchart TD
+        decision{Choose a path} -->|short| short[Short branch]
+        decision -->|long| long[Long branch] --> middle[Middle] --> later[Later] --> end[End]
+        decision -->|broad| broad[Several outcomes]
+        broad --> first[First] & second[Second] & third[Third] & fourth[Fourth]";
+    assert_fanout_spine(source, "broad", ["short", "long"]);
+}
+
+#[test]
+fn equal_continuations_use_node_index_before_edge_order() {
+    let source = "flowchart TD
+        decision{Choose}
+        preferred[Preferred path]
+        other[Alternate path]
+        decision -->|other| other
+        decision -->|preferred| preferred
+        preferred --> preferred_end[Preferred end]
+        other --> other_end[Alternate end]";
+    for direction in [
+        Direction::TopDown,
+        Direction::BottomUp,
+        Direction::LeftRight,
+        Direction::RightLeft,
+    ] {
+        let mut diagram = parser::parse(source).unwrap();
+        diagram.direction = direction;
+        let layout = layout::layout(&diagram);
+        assert_eq!(
+            node_center(&layout, &diagram, "decision"),
+            node_center(&layout, &diagram, "preferred"),
+            "{direction:?}"
+        );
+        assert_ne!(
+            node_center(&layout, &diagram, "decision"),
+            node_center(&layout, &diagram, "other"),
+            "{direction:?}"
+        );
+    }
+}
+
+#[test]
+fn clusters_keep_members_inside_straight_borders() {
+    let mut paths = Vec::new();
+    collect_files(Path::new("examples"), "mmd", &mut paths);
+    collect_files(Path::new("tests/fixtures"), "mmd", &mut paths);
+    paths.sort();
+    for path in paths {
+        let mut diagram = parser::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        diagram.fold_self_loops();
+        for direction in [
+            Direction::TopDown,
+            Direction::BottomUp,
+            Direction::LeftRight,
+            Direction::RightLeft,
+        ] {
+            diagram.direction = direction;
+            let layout = layout::layout(&diagram);
+            for cluster in 0..diagram.clusters.len() {
+                let mut border_positions = None;
+                for layer in &layout.layers {
+                    let left = layer.iter().position(|&item| {
+                        layout.items[item].kind
+                            == ItemKind::Border {
+                                cluster,
+                                left: true,
+                            }
+                    });
+                    let right = layer.iter().position(|&item| {
+                        layout.items[item].kind
+                            == ItemKind::Border {
+                                cluster,
+                                left: false,
+                            }
+                    });
+                    if left.is_none() && right.is_none() {
+                        assert!(
+                            layer
+                                .iter()
+                                .all(|&item| !layout.items[item].path.contains(&cluster))
+                        );
+                        continue;
+                    }
+                    let left = left.expect("cluster has a left border");
+                    let right = right.expect("cluster has a right border");
+                    assert!(left < right, "{path:?} {direction:?}");
+                    let positions = (
+                        layout.items[layer[left]].pos,
+                        layout.items[layer[right]].pos,
+                    );
+                    if let Some(expected) = border_positions {
+                        assert_eq!(positions, expected, "{path:?} {direction:?}");
+                    }
+                    border_positions = Some(positions);
+                    for (slot, &item_index) in layer.iter().enumerate() {
+                        let item = &layout.items[item_index];
+                        assert_eq!(
+                            item.path.contains(&cluster),
+                            (left..=right).contains(&slot),
+                            "{path:?} {direction:?}: cluster {cluster} is contiguous"
+                        );
+                        if left < slot && slot < right {
+                            assert!(item.pos > positions.0, "{path:?} {direction:?}");
+                            assert!(
+                                item.pos + item.ext_o <= positions.1,
+                                "{path:?} {direction:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -375,9 +580,11 @@ fn assert_labels_next_to_source(diagram: &Diagram) -> usize {
 
 #[test]
 fn corpus_stays_within_quality_budgets() {
-    const MAXIMUM_CROSSINGS: usize = 7;
-    const MAXIMUM_WIDTH: usize = 4066;
-    const MAXIMUM_BENDS: usize = 653;
+    const MAXIMUM_CROSSINGS: usize = 4;
+    const MAXIMUM_WIDTH: usize = 3180;
+    const MAXIMUM_DIAGRAM_WIDTH: usize = 140;
+    const MAXIMUM_TERMINAL_BOOKMARK_WIDTH: usize = 120;
+    const MAXIMUM_BENDS: usize = 704;
     const MAXIMUM_EXTRA_LAYERS: usize = 457;
     const MAXIMUM_WIDTH_PERCENT: usize = 115;
 
@@ -387,7 +594,17 @@ fn corpus_stays_within_quality_budgets() {
         prepared.fold_self_loops();
         assert_labels_next_to_source(&prepared);
         let metrics = measure(&diagram);
-        let (_, baseline_width, baseline_crossings) = STEP_ONE_BUDGETS
+        assert!(
+            metrics.width <= MAXIMUM_DIAGRAM_WIDTH,
+            "{path}: {metrics:?}"
+        );
+        if path == "tests/fixtures/corpus/shiori/add-a-bookmark-from-the-terminal.md" {
+            assert!(
+                metrics.width <= MAXIMUM_TERMINAL_BOOKMARK_WIDTH,
+                "{metrics:?}"
+            );
+        }
+        let (_, baseline_width, baseline_crossings) = WIDTH_AND_CROSSING_BUDGETS
             .iter()
             .find(|(baseline_path, _, _)| *baseline_path == path)
             .unwrap_or_else(|| panic!("missing step-one budget for {path}"));

@@ -17,7 +17,7 @@ expression: rendered
 "│                              ││            ╭────────────────────────────────────────────────┬────────────────────────│"
 "│                              ││            ▼                                                ▼                        │"
 "│                              ││──────────────────────────────────┐    ┌───────────────────────────────────────────┐  │"
-"│                              ││he long labelled branch number 1  │    │ Follow the long labelled branch number 2  │  │"
+"│                              ││he long labelled branch number 2  │    │ Follow the long labelled branch number 3  │  │"
 "│                              ││──────────────────────────────────┘    └───────────────────────────────────────────┘  │"
 "│                              ││                                                                                      │"
 "│                              ││                                                                                      │"

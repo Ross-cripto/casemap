@@ -259,7 +259,7 @@ pub fn layout(d: &Diagram) -> Layout {
     size::assign(&mut lay, d);
     position::assign(&mut lay, d);
     order::refine_routed(d, &mut lay);
-    order::place_loops_outside(d, &mut lay);
+    order::refine_branch_sides(d, &mut lay);
     lay
 }
 
