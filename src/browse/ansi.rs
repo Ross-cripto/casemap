@@ -160,14 +160,24 @@ mod tests {
 
     #[test]
     fn converter_matches_plain_render() {
+        let mut paths = Vec::new();
         for directory in ["examples", "tests/fixtures"] {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let path = entry.unwrap().path();
                 if path.extension().is_some_and(|extension| extension == "mmd") {
-                    let source = std::fs::read_to_string(path).unwrap();
-                    assert_render_matches(|options| strata::render_str(&source, options).unwrap());
+                    paths.push(path);
                 }
             }
+        }
+        paths.sort();
+        let count = paths.len();
+        assert!(
+            count >= 6,
+            "converter sweep found only {count} Mermaid fixtures"
+        );
+        for path in paths {
+            let source = std::fs::read_to_string(path).unwrap();
+            assert_render_matches(|options| strata::render_str(&source, options).unwrap());
         }
         let previous = flows::load_dir(Path::new("tests/fixtures/flows/before")).unwrap();
         let current = flows::load_dir(Path::new("tests/fixtures/flows/after")).unwrap();

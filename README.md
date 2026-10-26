@@ -419,6 +419,8 @@ with committed and uncommitted changes. The test suite requires the `git` binary
 
 ## Known limits
 
+- browse restores the terminal on quit, Ctrl-C, errors and panics; a `kill` signal leaves it in the alternate screen (run `reset`).
+
 - Anchor paths cannot contain spaces; symbol anchors and line ranges are not supported.
 
 - Front matter needs a `key:` line immediately after the opening `---`; otherwise it is a thematic break.

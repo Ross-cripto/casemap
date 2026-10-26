@@ -14,7 +14,7 @@ expression: rendered
 "│                     │left/right, h/l                                  Pan one column           │                     │"
 "│                     │H/J/K/L                                          Pan ten columns/rows     │                     │"
 "│                     │PgUp/PgDn             Select by page             Pan by page              │                     │"
-"│                     │Home                  First flow                Reset pan                 │                     │"
+"│                     │Home                  First flow                 Reset pan                │                     │"
 "│                     │Tab                   Focus diagram              Focus list               │                     │"
 "│                     │Enter                 Open diagram (narrow)                               │                     │"
 "│                     │/                     Search title or name                                │                     │"
