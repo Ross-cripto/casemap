@@ -222,3 +222,16 @@ pub fn transcript(args: &str, run: &CliRun) -> String {
     )
     .replace('\x1b', "␛")
 }
+
+pub const ANCHORED_PAY: &str = "# Pay for an order\n\nA customer pays and sees the result.\n\n```mermaid\nflowchart TD\nactor([Customer]) --> pay[Pay]\npay --> done[Show result]\n%% @code pay src/pay.rs\n```\n";
+
+pub fn anchored_catalog() -> TempRepo {
+    let repo = TempRepo::new();
+    fs::create_dir(repo.file("src")).unwrap();
+    fs::write(repo.file("src/pay.rs"), "fn pay() {}\n").unwrap();
+    fs::write(repo.flow_path("pay.md"), ANCHORED_PAY).unwrap();
+    repo.git(&["init", "-q", "-b", BASE_BRANCH]);
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "anchored flow"]);
+    repo
+}

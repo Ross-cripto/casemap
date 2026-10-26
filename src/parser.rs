@@ -102,18 +102,45 @@ pub(crate) fn split_statements(line: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn statement_mentions_id(statement: &str, id: &str) -> bool {
-    let mut cursor = Cursor::new(statement);
-    while cursor.peek().is_some() {
-        let token = cursor.take_id();
-        if token == id {
-            return true;
+/// id tokens of a statement, ignoring text inside `[] () {} "" ||`.
+pub(crate) fn id_tokens_outside_labels(statement: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut depth = 0i32;
+    let mut in_quote = false;
+    let mut in_pipe = false;
+    let mut characters = statement.char_indices().peekable();
+    while let Some((start, character)) = characters.next() {
+        match character {
+            '"' => in_quote = !in_quote,
+            '|' if !in_quote => in_pipe = !in_pipe,
+            '[' | '(' | '{' if !in_quote && !in_pipe => depth += 1,
+            ']' | ')' | '}' if !in_quote && !in_pipe => depth -= 1,
+            _ => {}
         }
-        if token.is_empty() {
-            cursor.pos += 1;
+        let inside_label = depth > 0 || in_quote || in_pipe;
+        if inside_label || !is_id_char(character) {
+            continue;
         }
+        let mut end = start + character.len_utf8();
+        while let Some(&(position, next)) = characters.peek() {
+            let joiner = matches!(next, '-' | '.')
+                && statement[position + next.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_id_char);
+            if !is_id_char(next) && !joiner {
+                break;
+            }
+            end = position + next.len_utf8();
+            characters.next();
+        }
+        tokens.push(&statement[start..end]);
     }
-    false
+    tokens
+}
+
+pub(crate) fn statement_mentions_id(statement: &str, id: &str) -> bool {
+    id_tokens_outside_labels(statement).contains(&id)
 }
 
 #[derive(Default)]

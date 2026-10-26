@@ -11,7 +11,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
 use strata::flows::Flow;
 use strata::markdown::is_markdown_path;
-use strata::{Direction, Options, ParseError, check, git, skill};
+use strata::{Direction, Options, ParseError, anchors, check, git, skill};
 
 const DEFAULT_FLOWS_DIR: &str = skill::DEFAULT_CATALOG;
 const DEFAULT_REF: &str = "HEAD";
@@ -85,7 +85,19 @@ enum Commands {
         format: Format,
     },
     /// Show catalog changes since REF (default HEAD), including uncommitted edits.
-    Diff { rev: Option<String> },
+    Diff {
+        rev: Option<String>,
+        /// Also exit 1 when flows are possibly stale (for local agent runs).
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Which flows and steps are anchored to the given files (only anchored flows are known).
+    Which {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
     /// Print the strata-flows agent skill without its front matter.
     Guide,
     /// Generate shell completions.
@@ -131,9 +143,13 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         .as_deref()
         .unwrap_or_else(|| Path::new(DEFAULT_FLOWS_DIR));
     match cli.command {
-        Some(Commands::Diff { rev }) => {
-            diff_catalog(directory, rev.as_deref().unwrap_or(DEFAULT_REF), &opts)
-        }
+        Some(Commands::Diff { rev, strict }) => diff_catalog(
+            directory,
+            rev.as_deref().unwrap_or(DEFAULT_REF),
+            strict,
+            &opts,
+        ),
+        Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
         Some(Commands::Init { force }) => init_catalog(directory, force),
         Some(Commands::Flows { name, format }) => {
             show_flows(directory, name.as_deref(), format, &opts)
@@ -232,7 +248,7 @@ fn load_catalog(dir: &Path) -> anyhow::Result<Vec<Flow>> {
     Ok(strata::flows::load_dir(dir)?)
 }
 
-fn diff_catalog(dir: &Path, rev: &str, opts: &Options) -> anyhow::Result<ExitCode> {
+fn diff_catalog(dir: &Path, rev: &str, strict: bool, opts: &Options) -> anyhow::Result<ExitCode> {
     let new = load_catalog(dir)?;
     let base = strata::git::merge_base(dir, rev)?;
     let old = strata::git::files_at(dir, &base)?
@@ -240,13 +256,24 @@ fn diff_catalog(dir: &Path, rev: &str, opts: &Options) -> anyhow::Result<ExitCod
         .map(|(path, text)| strata::flows::parse_flow(&path, &text))
         .collect::<Vec<_>>();
     let changes = strata::flows::compare(&old, &new);
+    let stale = if new
+        .iter()
+        .any(|flow| !anchors::flow_anchors(flow).0.is_empty())
+    {
+        let (root, _) = code_root(dir)?;
+        let changed = git::changed_files(&root, &base)?;
+        strata::flows::stale_flows(&new, &git::prefix(dir)?, &changed)
+    } else {
+        Vec::new()
+    };
     print!(
         "{}",
-        strata::flows::render_report(&changes, rev, &base, opts)
+        strata::flows::render_report(&changes, &stale, rev, &base, opts)
     );
     if changes
         .iter()
         .any(|change| matches!(change, strata::flows::FlowChange::Broken { .. }))
+        || (strict && !stale.is_empty())
     {
         Ok(ExitCode::FAILURE)
     } else {
@@ -303,7 +330,169 @@ fn show_flows(
     }
     println!();
     print!("{}", strata::render_diagram(&diagram, opts));
+    print!("{}", anchors::render_footer(flow));
     Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Clone, Copy)]
+enum FileSource {
+    Git,
+    Walk,
+}
+
+fn code_root(catalog_dir: &Path) -> anyhow::Result<(PathBuf, FileSource)> {
+    match git::locate(catalog_dir) {
+        Ok(git::Location::Inside { root, .. }) => Ok((root, FileSource::Git)),
+        Ok(git::Location::NotARepository) | Err(git::GitError::Spawn { .. }) => Ok((
+            std::env::current_dir().context("reading the current directory")?,
+            FileSource::Walk,
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn code_files(root: &Path, source: FileSource) -> anyhow::Result<Vec<String>> {
+    match source {
+        FileSource::Git => Ok(git::repo_files(root)?),
+        FileSource::Walk => anchors::walk_files(root)
+            .with_context(|| format!("reading files in {}", root.display())),
+    }
+}
+
+fn root_relative_path(path: &Path, root: &Path) -> anyhow::Result<String> {
+    let absolute = std::env::current_dir()
+        .context("reading the current directory")?
+        .join(path);
+    let mut ancestor = absolute.as_path();
+    while std::fs::symlink_metadata(ancestor).is_err() {
+        ancestor = ancestor
+            .parent()
+            .with_context(|| format!("resolving {}", path.display()))?;
+    }
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("resolving {}", root.display()))?;
+    let mut resolved = ancestor
+        .canonicalize()
+        .with_context(|| format!("resolving {}", ancestor.display()))?;
+    let tail = absolute.strip_prefix(ancestor)?;
+    for component in tail.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => resolved.push(component),
+        }
+    }
+    let Ok(relative) = resolved.strip_prefix(&canonical_root) else {
+        bail!("{} is outside the repository", path.display());
+    };
+    Ok(slash_path(relative))
+}
+
+struct WhichPath<'a> {
+    path: String,
+    flows: Vec<strata::flows::AnchoredFlow<'a>>,
+}
+
+fn which_flows(dir: &Path, paths: &[PathBuf], format: Format) -> anyhow::Result<ExitCode> {
+    let flows = load_catalog(dir)?;
+    let (root, source) = code_root(dir)?;
+    let mut index = None;
+    let mut results = Vec::new();
+    for path in paths {
+        let relative = root_relative_path(path, &root)?;
+        let files = if root.join(&relative).is_dir() {
+            if index.is_none() {
+                index = Some(code_files(&root, source)?);
+            }
+            index
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|file| file_is_under_directory(file, &relative))
+                .cloned()
+                .collect()
+        } else {
+            vec![relative.clone()]
+        };
+        results.push(WhichPath {
+            path: if relative.is_empty() {
+                ".".into()
+            } else {
+                relative
+            },
+            flows: strata::flows::anchored_flows(&flows, &files),
+        });
+    }
+    match format {
+        Format::Text => print!("{}", render_which_text(&results)),
+        Format::Json => print_which_json(dir, &root, &results)?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn file_is_under_directory(file: &str, directory: &str) -> bool {
+    directory.is_empty()
+        || file
+            .strip_prefix(directory)
+            .is_some_and(|tail| tail.starts_with('/'))
+}
+
+fn which_annotation(flow: &strata::flows::AnchoredFlow<'_>) -> String {
+    let mut parts = Vec::new();
+    if flow.whole_flow {
+        parts.push("whole flow".to_string());
+    }
+    if !flow.steps.is_empty() {
+        parts.push(format!("steps: {}", flow.steps.join(", ")));
+    }
+    parts.join("; ")
+}
+
+fn render_which_text(results: &[WhichPath<'_>]) -> String {
+    let mut blocks = Vec::new();
+    for result in results {
+        if result.flows.is_empty() {
+            blocks.push(format!("{}: no anchored flow\n", result.path));
+            continue;
+        }
+        let mut block = format!("{}\n", result.path);
+        for flow in &result.flows {
+            block.push_str(&format!(
+                "  {}  {}  ({})\n",
+                flow.flow.path,
+                flow.flow.title,
+                which_annotation(flow)
+            ));
+        }
+        blocks.push(block);
+    }
+    blocks.join("\n")
+}
+
+fn print_which_json(dir: &Path, root: &Path, results: &[WhichPath<'_>]) -> anyhow::Result<()> {
+    let catalog = root_relative_path(dir, root)?;
+    let mut paths = Vec::new();
+    for result in results {
+        let flows: Vec<_> = result
+            .flows
+            .iter()
+            .map(|flow| {
+                serde_json::json!({
+                    "name": flow.flow.name,
+                    "path": slash_path(&Path::new(&catalog).join(&flow.flow.path)),
+                    "title": flow.flow.title,
+                    "steps": flow.steps,
+                    "whole_flow": flow.whole_flow,
+                })
+            })
+            .collect();
+        paths.push(serde_json::json!({"path": result.path, "flows": flows}));
+    }
+    println!("{}", serde_json::json!({"version": 1, "paths": paths}));
+    Ok(())
 }
 
 fn slash_path(path: &Path) -> String {
@@ -381,7 +570,24 @@ fn check_catalog(
     color: bool,
 ) -> anyhow::Result<ExitCode> {
     require_catalog(dir)?;
-    let report = check::check_catalog(dir)?;
+    let mut files = None;
+    let mut index_error = None;
+    let report = check::check_catalog_with(dir, &mut |pattern| {
+        if files.is_none() && index_error.is_none() {
+            match code_root(dir).and_then(|(root, source)| code_files(&root, source)) {
+                Ok(index) => files = Some(index),
+                Err(error) => index_error = Some(error),
+            }
+        }
+        files.as_ref().is_none_or(|index: &Vec<String>| {
+            index
+                .iter()
+                .any(|path| anchors::pattern_matches(pattern, path))
+        })
+    })?;
+    if let Some(error) = index_error {
+        return Err(error);
+    }
     match format {
         Format::Text => print_check_text(dir, &report, color),
         Format::Json => print_check_json(dir, &report),
@@ -454,52 +660,73 @@ fn create_catalog(dir: &Path, display: &str) -> Result<(), strata::flows::Catalo
     Ok(())
 }
 
-fn write_skill(path: &Path, desired: &str) -> io::Result<()> {
+fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => Some(metadata),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
+    Ok(())
+}
+
+fn existing_metadata(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".strata-tmp");
+    PathBuf::from(name)
+}
+
+fn remove_stale_temporary(path: &Path) -> io::Result<()> {
+    if existing_metadata(path)?.is_some() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn replace_through_temporary(
+    path: &Path,
+    temporary: &Path,
+    desired: &str,
+    metadata: Option<std::fs::Metadata>,
+) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temporary)?;
+    file.write_all(desired.as_bytes())?;
+    file.sync_all()?;
+    if let Some(metadata) = metadata {
+        std::fs::set_permissions(temporary, metadata.permissions())?;
+    }
+    drop(file);
+    if let Err(error) = std::fs::rename(temporary, path) {
+        eprintln!(
+            "warning: {}: cannot rename temporary skill: {error}; writing directly",
+            path.display()
+        );
+        std::fs::write(path, desired)?;
+    }
+    Ok(())
+}
+
+fn write_skill(path: &Path, desired: &str) -> io::Result<()> {
+    create_parent(path)?;
+    let metadata = existing_metadata(path)?;
     if metadata
         .as_ref()
         .is_some_and(|metadata| metadata.is_symlink())
     {
         return std::fs::write(path, desired);
     }
-    let mut temporary_name = path.as_os_str().to_os_string();
-    temporary_name.push(".strata-tmp");
-    let temporary = PathBuf::from(temporary_name);
-    if std::fs::symlink_metadata(&temporary).is_ok() {
-        std::fs::remove_file(&temporary)?;
-    }
-    let mut temporary_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    let result = (|| {
-        temporary_file.write_all(desired.as_bytes())?;
-        temporary_file.sync_all()?;
-        if let Some(metadata) = metadata {
-            std::fs::set_permissions(&temporary, metadata.permissions())?;
-        }
-        drop(temporary_file);
-        if let Err(error) = std::fs::rename(&temporary, path) {
-            eprintln!(
-                "warning: {}: cannot rename temporary skill: {error}; writing directly",
-                path.display()
-            );
-            let result = std::fs::write(path, desired);
-            let _ = std::fs::remove_file(&temporary);
-            return result;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
+    let temporary = temporary_path(path);
+    remove_stale_temporary(&temporary)?;
+    let result = replace_through_temporary(path, &temporary, desired, metadata);
+    let _ = std::fs::remove_file(&temporary);
     result
 }
 
@@ -622,14 +849,24 @@ fn normalise_catalog_path(prefix: &str, dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn ensure_inside_root(root: &Path, relative: &Path) -> anyhow::Result<()> {
-    let canonical_root = root.canonicalize()?;
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("resolving {}", root.display()))?;
     let mut ancestor = root.join(relative);
-    while !ancestor.exists() {
+    while std::fs::symlink_metadata(&ancestor).is_err() {
         if !ancestor.pop() {
             bail!("--flows must stay inside the repository");
         }
     }
-    if !ancestor.canonicalize()?.starts_with(canonical_root) {
+    let canonical_ancestor = match ancestor
+        .canonicalize()
+        .with_context(|| format!("resolving {}", ancestor.display()))
+    {
+        Ok(canonical) => canonical,
+        Err(_) if ancestor.is_symlink() => bail!("--flows must stay inside the repository"),
+        Err(error) => return Err(error),
+    };
+    if !canonical_ancestor.starts_with(canonical_root) {
         bail!("--flows must stay inside the repository");
     }
     Ok(())
@@ -945,7 +1182,13 @@ mod tests {
         for args in [["strata", "--watch", "diff"], ["strata", "diff", "--watch"]] {
             let cli = Cli::try_parse_from(args).unwrap();
             assert!(cli.watch);
-            assert!(matches!(cli.command, Some(Commands::Diff { rev: None })));
+            assert!(matches!(
+                cli.command,
+                Some(Commands::Diff {
+                    rev: None,
+                    strict: false
+                })
+            ));
         }
         let cli = Cli::try_parse_from(["strata", "--dir", "LR", "--dir", "TD"]).unwrap();
         assert_eq!(cli.dir, Some(Direction::TopDown));

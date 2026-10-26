@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use crate::anchors::{self, Target};
 use crate::diff::{self, DiagramDiff};
 use crate::render::bold_line;
 use crate::{Diagram, Options, ParseError, canvas, markdown, parser, paths};
 
 pub const SHORT_SHA_LEN: usize = 7;
+pub const MAX_STALE_FILES: usize = 5;
 
 #[derive(Clone, Debug)]
 pub struct Flow {
@@ -233,6 +235,113 @@ pub fn compare(old: &[Flow], new: &[Flow]) -> Vec<FlowChange> {
     changes
 }
 
+#[derive(Clone, Debug)]
+pub struct StaleHit {
+    pub target: Target,
+    pub files: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Stale {
+    pub flow: Flow,
+    pub hits: Vec<StaleHit>,
+}
+
+/// Flows whose file did not change but whose anchors match a changed file. `catalog_prefix` is the catalog dir relative to the repo root ("" or "docs/flows/").
+pub fn stale_flows(current: &[Flow], catalog_prefix: &str, changed: &[String]) -> Vec<Stale> {
+    let mut stale = Vec::new();
+    for flow in current {
+        let path = format!("{catalog_prefix}{}", flow.path);
+        if changed.contains(&path) {
+            continue;
+        }
+        let (anchors, errors) = anchors::flow_anchors(flow);
+        let mut hits: Vec<StaleHit> = Vec::new();
+        for anchor in anchors {
+            if errors.iter().any(|error| error.line == anchor.line) {
+                continue;
+            }
+            let mut files: Vec<_> = changed
+                .iter()
+                .filter(|path| {
+                    anchor
+                        .patterns
+                        .iter()
+                        .any(|pattern| anchors::pattern_matches(pattern, path))
+                })
+                .cloned()
+                .collect();
+            if let Some(hit) = hits.iter_mut().find(|hit| hit.target == anchor.target) {
+                hit.files.append(&mut files);
+            } else {
+                hits.push(StaleHit {
+                    target: anchor.target,
+                    files,
+                });
+            }
+        }
+        for hit in &mut hits {
+            hit.files.sort();
+            hit.files.dedup();
+        }
+        hits.retain(|hit| !hit.files.is_empty());
+        if !hits.is_empty() {
+            stale.push(Stale {
+                flow: flow.clone(),
+                hits,
+            });
+        }
+    }
+    stale.sort_by(|left, right| left.flow.path.cmp(&right.flow.path));
+    stale
+}
+
+#[derive(Debug)]
+pub struct AnchoredFlow<'a> {
+    pub flow: &'a Flow,
+    pub steps: Vec<String>,
+    pub whole_flow: bool,
+}
+
+pub fn anchored_flows<'a>(flows: &'a [Flow], files: &[String]) -> Vec<AnchoredFlow<'a>> {
+    let mut matches = Vec::new();
+    for flow in flows {
+        let diagram = diagram(flow).and_then(Result::ok);
+        let mut steps = Vec::new();
+        let mut whole_flow = false;
+        for anchor in anchors::grouped_anchors(flow) {
+            let matches_file = anchor.patterns.iter().any(|pattern| {
+                files
+                    .iter()
+                    .any(|file| anchors::pattern_matches(pattern, file))
+            });
+            if !matches_file {
+                continue;
+            }
+            match anchor.target {
+                Target::Flow => whole_flow = true,
+                Target::Step(id) => {
+                    if diagram
+                        .as_ref()
+                        .is_some_and(|diagram| diagram.nodes.iter().any(|node| node.id == id))
+                    {
+                        steps.push(id);
+                    }
+                }
+            }
+        }
+        if whole_flow || !steps.is_empty() {
+            matches.push(AnchoredFlow {
+                flow,
+                steps,
+                whole_flow,
+            });
+        }
+    }
+    matches.sort_by(|left, right| left.flow.path.cmp(&right.flow.path));
+    matches
+}
+
 enum SectionKind {
     Modified,
     New { base_broken: bool },
@@ -319,7 +428,7 @@ fn render_change(change: &FlowChange, opts: &Options) -> String {
     }
 }
 
-pub fn render_report(changes: &[FlowChange], since: &str, base: &str, opts: &Options) -> String {
+fn render_changes(changes: &[FlowChange], since: &str, base: &str, opts: &Options) -> String {
     let mut counts = Counts {
         modified: 0,
         added: 0,
@@ -347,6 +456,52 @@ pub fn render_report(changes: &[FlowChange], since: &str, base: &str, opts: &Opt
     }
     if !unchanged.is_empty() {
         output.push_str(&format!("unchanged: {}\n", unchanged.join(", ")));
+    }
+    output
+}
+
+pub fn render_report(
+    changes: &[FlowChange],
+    stale: &[Stale],
+    since: &str,
+    base: &str,
+    opts: &Options,
+) -> String {
+    let mut output = render_changes(changes, since, base, opts);
+    if stale.is_empty() {
+        return output;
+    }
+    let suffix = if stale.len() == 1 { "flow" } else { "flows" };
+    let header = format!(
+        "possibly stale: {} {suffix} whose anchored code changed but the flow did not",
+        stale.len()
+    );
+    output.push('\n');
+    if let Some(colour) = canvas::mark_sgr(crate::Mark::Changed).filter(|_| opts.color) {
+        output.push_str(&format!("{colour}{header}\x1b[0m\n"));
+    } else {
+        output.push_str(&format!("{header}\n"));
+    }
+    for entry in stale {
+        output.push_str(&format!("  {} ({})\n", entry.flow.title, entry.flow.path));
+        for hit in &entry.hits {
+            let listed: Vec<_> = hit
+                .files
+                .iter()
+                .take(MAX_STALE_FILES)
+                .map(String::as_str)
+                .collect();
+            output.push_str(&format!(
+                "    {}: {}",
+                hit.target.label(),
+                listed.join(", ")
+            ));
+            let remaining = hit.files.len().saturating_sub(MAX_STALE_FILES);
+            if remaining > 0 {
+                output.push_str(&format!(", … (+{remaining} more)"));
+            }
+            output.push('\n');
+        }
     }
     output
 }
@@ -414,7 +569,7 @@ mod tests {
         let current = parse_flow("bad.md", "# Bad\n\n```mermaid\ngraph TD\n a -->\n```");
         let changes = compare(&[], &[current]);
         assert!(matches!(&changes[0], FlowChange::Broken { error, .. } if error.line == 5));
-        let report = render_report(&changes, "HEAD", "123456789", &Options::default());
+        let report = render_report(&changes, &[], "HEAD", "123456789", &Options::default());
         assert!(
             report.contains("Bad (bad.md)  parse error, line 5:"),
             "{report}"

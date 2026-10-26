@@ -35,6 +35,7 @@ jobs:
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo clippy --no-default-features --locked -- -D warnings
       - run: cargo run --locked -q -- check --strict
+      - run: cargo run --locked -q -- which src/check.rs | grep -q check-the-catalog.md
 
   msrv:
     runs-on: ubuntu-latest

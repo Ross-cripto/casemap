@@ -1,6 +1,6 @@
 [package]
 name = "strata"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 description = "The living map of your app's use cases: check, render and diff Mermaid flows"

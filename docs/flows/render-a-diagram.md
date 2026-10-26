@@ -11,4 +11,7 @@ flowchart TD
     parse --> ok{Valid?}
     ok -->|yes| draw[Print the diagram]
     ok -->|no| error[Print the parse error and exit 1]
+    %% @code parse src/parser.rs
+    %% @code blocks src/markdown.rs
+    %% @code draw src/render.rs src/canvas.rs src/layout src/route.rs
 ```

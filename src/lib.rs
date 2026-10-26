@@ -11,6 +11,7 @@
 //! assert!(out.contains("API"));
 //! ```
 
+pub mod anchors;
 pub mod canvas;
 pub mod check;
 pub mod diff;

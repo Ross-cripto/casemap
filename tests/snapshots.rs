@@ -567,3 +567,22 @@ fn cli_check_json() {
         repo_transcript(&repo, &["check", "--format", "json"])
     );
 }
+
+#[test]
+fn cli_diff_stale() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    insta::assert_snapshot!(
+        "cli__diff_stale",
+        repo_transcript(&repo, &["diff", "--no-color"])
+    );
+}
+
+#[test]
+fn cli_which() {
+    let repo = common::anchored_catalog();
+    insta::assert_snapshot!(
+        "cli__which",
+        repo_transcript(&repo, &["which", "src/pay.rs", "src/other.rs"])
+    );
+}

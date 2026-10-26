@@ -1,0 +1,14 @@
+---
+source: tests/snapshots.rs
+expression: "repo_transcript(&repo, &[\"diff\", \"--no-color\"])"
+---
+$ strata diff --no-color
+[exit 0]
+--- stdout
+no flow changes since HEAD ([SHA])
+
+possibly stale: 1 flow whose anchored code changed but the flow did not
+  Pay for an order (pay.md)
+    pay: src/pay.rs
+--- stderr
+[end]

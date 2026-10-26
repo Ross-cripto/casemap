@@ -1137,3 +1137,324 @@ fn init_force_keeps_file_mode() {
         skill::render(skill::DEFAULT_CATALOG)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn init_rejects_dangling_symlink_catalog() {
+    let repo = init_repo();
+    std::os::unix::fs::symlink("missing", repo.file("out")).unwrap();
+    let output = repo.strata(&["init", "--flows", "out/flows"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--flows must stay inside the repository")
+    );
+    assert!(!repo.file(".agents").exists());
+}
+
+#[test]
+fn check_reports_anchor_no_match() {
+    let repo = common::anchored_catalog();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("src/pay.rs", "src/missing.rs"),
+    )
+    .unwrap();
+    let output = repo.strata(&["check"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("[anchor-no-match]"));
+}
+
+#[test]
+fn diff_reports_stale_flow_when_anchored_code_changes() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "fn pay() { changed(); }\n").unwrap();
+    let text = stdout(&repo.strata(&["diff"]));
+    assert!(text.starts_with("no flow changes since HEAD ("));
+    assert!(text.contains("possibly stale: 1 flow whose anchored code changed but the flow did not\n  Pay for an order (pay.md)\n    pay: src/pay.rs\n"), "{text}");
+}
+
+#[test]
+fn diff_does_not_flag_a_touched_flow() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file("src/pay.rs"), "changed\n").unwrap();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("sees the result", "gets the result"),
+    )
+    .unwrap();
+    assert!(!stdout(&repo.strata(&["diff", "--strict"])).contains("possibly stale:"));
+}
+
+#[test]
+fn diff_strict_fails_only_on_stale_or_broken() {
+    let repo = common::anchored_catalog();
+    assert_eq!(repo.strata(&["diff", "--strict"]).status.code(), Some(0));
+    fs::write(repo.file("src/pay.rs"), "changed\n").unwrap();
+    assert_eq!(repo.strata(&["diff"]).status.code(), Some(0));
+    assert_eq!(repo.strata(&["diff", "--strict"]).status.code(), Some(1));
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("pay[Pay]", "pay[Make payment]"),
+    )
+    .unwrap();
+    assert_eq!(repo.strata(&["diff", "--strict"]).status.code(), Some(0));
+    fs::write(
+        repo.flow_path("pay.md"),
+        "```mermaid\nflowchart TD\na -->\n```\n",
+    )
+    .unwrap();
+    for arguments in [&["diff"][..], &["diff", "--strict"]] {
+        let output = repo.strata(arguments);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("parse error"));
+    }
+}
+
+#[test]
+fn diff_counts_untracked_and_renamed_files() {
+    let repo = common::anchored_catalog();
+    repo.git(&["mv", "src/pay.rs", "src/payment.rs"]);
+    assert!(stdout(&repo.strata(&["diff"])).contains("pay: src/pay.rs"));
+    repo.git(&["reset", "--hard", "-q", "HEAD"]);
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("src/pay.rs", "src/**"),
+    )
+    .unwrap();
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "anchor folder"]);
+    fs::write(repo.file("src/new.rs"), "new\n").unwrap();
+    assert!(stdout(&repo.strata(&["diff"])).contains("pay: src/new.rs"));
+}
+
+#[test]
+fn diff_without_anchors_runs_no_extra_git() {
+    let repo = TempRepo::committed_before();
+    let sha = repo.git_stdout(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        stdout(&repo.strata(&["diff"])),
+        format!("no flow changes since HEAD ({})\n", &sha[..7])
+    );
+}
+
+#[test]
+fn which_lists_anchored_steps() {
+    let repo = common::anchored_catalog();
+    assert_eq!(
+        stdout(&repo.strata(&["which", "src/pay.rs"])),
+        "src/pay.rs\n  pay.md  Pay for an order  (steps: pay)\n"
+    );
+}
+
+#[test]
+fn which_reports_no_match() {
+    let repo = common::anchored_catalog();
+    assert_eq!(
+        stdout(&repo.strata(&["which", "src/other.rs"])),
+        "src/other.rs: no anchored flow\n"
+    );
+}
+
+#[test]
+fn which_accepts_absolute_paths() {
+    let repo = common::anchored_catalog();
+    let output = repo.strata(&["which", repo.file("src/pay.rs").to_str().unwrap()]);
+    assert_eq!(
+        stdout(&output),
+        "src/pay.rs\n  pay.md  Pay for an order  (steps: pay)\n"
+    );
+}
+
+#[test]
+fn which_rejects_paths_outside_the_repo() {
+    let repo = common::anchored_catalog();
+    for path in ["../outside.rs", "src/../../outside.rs"] {
+        let output = repo.strata(&["which", path]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains(&format!("{path} is outside the repository"))
+        );
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn which_expands_directories() {
+    let repo = common::anchored_catalog();
+    assert_eq!(
+        stdout(&repo.strata(&["which", "src"])),
+        "src\n  pay.md  Pay for an order  (steps: pay)\n"
+    );
+}
+
+#[test]
+fn which_json_shape() {
+    let repo = common::anchored_catalog();
+    let text = stdout(&repo.strata(&["which", "src/pay.rs", "--format", "json"]));
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"version":1,"paths":[{"path":"src/pay.rs","flows":[{"name":"pay","path":"docs/flows/pay.md","title":"Pay for an order","steps":["pay"],"whole_flow":false}]}]})
+    );
+}
+
+#[test]
+fn which_merges_targets_ignores_unknown_steps_and_accepts_deleted_paths() {
+    let repo = common::anchored_catalog();
+    let source = common::append_step(
+        common::ANCHORED_PAY,
+        "%% @code * src\n%% @code pay src/**\n%% @code missing src/pay.rs\n",
+    );
+    fs::write(repo.flow_path("pay.md"), source).unwrap();
+    fs::remove_file(repo.file("src/pay.rs")).unwrap();
+    assert_eq!(
+        stdout(&repo.strata(&["which", "src/pay.rs", "src/other.rs"])),
+        "src/pay.rs\n  pay.md  Pay for an order  (whole flow; steps: pay)\n\nsrc/other.rs\n  pay.md  Pay for an order  (whole flow; steps: pay)\n"
+    );
+}
+
+#[test]
+fn flows_name_prints_anchor_footer() {
+    let repo = common::anchored_catalog();
+    let source = common::append_step(
+        common::ANCHORED_PAY,
+        "%% @code * src\n%% @code pay src/other.rs\n",
+    );
+    fs::write(repo.flow_path("pay.md"), source).unwrap();
+    assert!(
+        stdout(&repo.strata(&["flows", "pay"]))
+            .ends_with("\nCode:\n  pay: src/pay.rs, src/other.rs\n  whole flow: src\n")
+    );
+}
+
+#[test]
+fn anchor_commands_use_the_catalog_repository_from_another_cwd() {
+    let repo = common::anchored_catalog();
+    let outside = TempRepo::new();
+    let catalog = repo.file("docs/flows");
+    let catalog = catalog.to_str().unwrap();
+    let output = outside.strata(&["check", "--strict", "--flows", catalog]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let output = outside.strata(&[
+        "which",
+        repo.file("src/pay.rs").to_str().unwrap(),
+        "--flows",
+        catalog,
+    ]);
+    assert!(stdout(&output).contains("steps: pay"));
+    fs::write(repo.file("src/pay.rs"), "changed").unwrap();
+    assert!(stdout(&outside.strata(&["diff", "--flows", catalog])).contains("pay: src/pay.rs"));
+}
+
+#[test]
+fn check_and_which_work_without_git() {
+    let repo = common::anchored_catalog();
+    fs::remove_dir_all(repo.file(".git")).unwrap();
+    for arguments in [&["check", "--strict"][..], &["which", "src/pay.rs"]] {
+        let output = strata_command(&repo)
+            .args(arguments)
+            .env("PATH", repo.file("no-git"))
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn which_expands_the_repository_root() {
+    let repo = common::anchored_catalog();
+    assert_eq!(
+        stdout(&repo.strata(&["which", "."])),
+        ".\n  pay.md  Pay for an order  (steps: pay)\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn which_directory_arguments_are_literal() {
+    let repo = common::anchored_catalog();
+    fs::create_dir(repo.file("src/a*")).unwrap();
+    fs::write(repo.file("src/a*/file.rs"), "").unwrap();
+    fs::create_dir(repo.file("src/abc")).unwrap();
+    fs::write(repo.file("src/abc/file.rs"), "").unwrap();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("src/pay.rs", "src/abc"),
+    )
+    .unwrap();
+    assert_eq!(
+        stdout(&repo.strata(&["which", "src/a*"])),
+        "src/a*: no anchored flow\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn which_resolves_symlink_paths_and_rejects_symlink_escapes() {
+    let repo = common::anchored_catalog();
+    std::os::unix::fs::symlink("src", repo.file("alias")).unwrap();
+    assert!(stdout(&repo.strata(&["which", "alias/pay.rs"])).starts_with("src/pay.rs\n"));
+    let outside = assert_fs::TempDir::new().unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.file("outside")).unwrap();
+    let output = repo.strata(&["which", "outside/deleted.rs"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("outside/deleted.rs is outside the repository")
+    );
+}
+
+#[test]
+fn check_builds_the_file_index_lazily_and_propagates_index_errors() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.file(".git/config"), "[broken\n").unwrap();
+    let output = repo.strata(&["check"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("strata: git "));
+    assert!(output.stdout.is_empty());
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", ""),
+    )
+    .unwrap();
+    assert_eq!(repo.strata(&["check", "--strict"]).status.code(), Some(0));
+}
+
+#[test]
+fn anchors_do_not_change_rendering() {
+    let repo = common::anchored_catalog();
+    let without_anchors = common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", "");
+    fs::write(repo.file("baseline.md"), &without_anchors).unwrap();
+    let block = strata::markdown::mermaid_blocks(&without_anchors).remove(0);
+    fs::write(repo.file("baseline.mmd"), &block.source).unwrap();
+    fs::write(
+        repo.file("anchored.mmd"),
+        format!("{}%% @code * src\n", block.source),
+    )
+    .unwrap();
+    for direction in ["TD", "BT", "LR", "RL"] {
+        for mode in ["--no-color", "--color", "--ascii"] {
+            for (baseline, anchored) in [
+                ("baseline.md", "docs/flows/pay.md"),
+                ("baseline.mmd", "anchored.mmd"),
+            ] {
+                assert_eq!(
+                    stdout(&repo.strata(&[baseline, "--dir", direction, mode])),
+                    stdout(&repo.strata(&[anchored, "--dir", direction, mode]))
+                );
+            }
+        }
+    }
+}

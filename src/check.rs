@@ -4,7 +4,7 @@ use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::flows::{CatalogError, Entry};
-use crate::{Diagram, flows, markdown, model::Shape, parser};
+use crate::{Diagram, anchors, flows, markdown, model::Shape, parser};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -37,11 +37,14 @@ pub enum Code {
     FileName,
     LongLabel,
     EdgeIntoActor,
+    AnchorSyntax,
+    AnchorUnknownStep,
+    AnchorNoMatch,
 }
 
 impl Code {
     /// Must list every variant exactly once; the exhaustive test mapping enforces this.
-    pub const ALL: [Code; 23] = [
+    pub const ALL: [Code; 26] = [
         Self::MissingTitle,
         Self::MissingDescription,
         Self::MissingDiagram,
@@ -65,6 +68,9 @@ impl Code {
         Self::FileName,
         Self::LongLabel,
         Self::EdgeIntoActor,
+        Self::AnchorSyntax,
+        Self::AnchorUnknownStep,
+        Self::AnchorNoMatch,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -92,6 +98,9 @@ impl Code {
             Self::FileName => "file-name",
             Self::LongLabel => "long-label",
             Self::EdgeIntoActor => "edge-into-actor",
+            Self::AnchorSyntax => "anchor-syntax",
+            Self::AnchorUnknownStep => "anchor-unknown-step",
+            Self::AnchorNoMatch => "anchor-no-match",
         }
     }
 
@@ -105,7 +114,10 @@ impl Code {
             | Self::EmptyDiagram
             | Self::UnclosedFence
             | Self::DuplicateName
-            | Self::Unreadable => Severity::Error,
+            | Self::Unreadable
+            | Self::AnchorSyntax
+            | Self::AnchorUnknownStep
+            | Self::AnchorNoMatch => Severity::Error,
             Self::ExtraDiagram
             | Self::DuplicateTitle
             | Self::EmptyCatalog
@@ -161,10 +173,14 @@ const LABEL_EXCERPT_CHARS: usize = 20;
 
 /// Returns problems sorted by line and code within the file.
 pub fn check_flow(file: &str, text: &str) -> Vec<Problem> {
-    check_file(file, text).1
+    check_file(file, text, &mut |_| true).1
 }
 
-fn check_file(file: &str, text: &str) -> (Option<String>, Vec<Problem>) {
+fn check_file(
+    file: &str,
+    text: &str,
+    has_match: &mut dyn FnMut(&str) -> bool,
+) -> (Option<String>, Vec<Problem>) {
     let mut problems = Vec::new();
     let stem = Path::new(file)
         .file_stem()
@@ -179,30 +195,41 @@ fn check_file(file: &str, text: &str) -> (Option<String>, Vec<Problem>) {
         ));
     }
     let title = if flows::is_mmd(file) {
-        check_mmd_flow(file, text, &mut problems);
+        check_mmd_flow(file, text, &mut problems, has_match);
         None
     } else {
-        check_markdown_flow(file, text, &mut problems)
+        check_markdown_flow(file, text, &mut problems, has_match)
     };
     sort_problems(&mut problems);
     (title, problems)
 }
 
-fn check_mmd_flow(file: &str, text: &str, problems: &mut Vec<Problem>) {
+fn check_mmd_flow(
+    file: &str,
+    text: &str,
+    problems: &mut Vec<Problem>,
+    has_match: &mut dyn FnMut(&str) -> bool,
+) {
     problems.push(problem(
         file,
         None,
         Code::MmdFlow,
         "use a .md file with a title and description",
     ));
-    check_diagram(file, &crate::skill::normalise(text), 0, problems);
+    check_diagram(file, &crate::skill::normalise(text), 0, problems, has_match);
 }
 
-fn check_markdown_flow(file: &str, text: &str, problems: &mut Vec<Problem>) -> Option<String> {
+fn check_markdown_flow(
+    file: &str,
+    text: &str,
+    problems: &mut Vec<Problem>,
+    has_match: &mut dyn FnMut(&str) -> bool,
+) -> Option<String> {
     let outline = markdown::outline(text);
     problems.extend(check_title_and_description(file, &outline));
     check_unclosed_fences(file, &outline, problems);
-    check_diagrams(file, &outline, problems);
+    check_misplaced_anchors(file, text, &outline, problems);
+    check_diagrams(file, &outline, problems, has_match);
     outline.title.map(|(_, title)| title)
 }
 
@@ -241,13 +268,18 @@ fn check_unclosed_fences(file: &str, outline: &markdown::Outline, problems: &mut
     }
 }
 
-fn check_diagrams(file: &str, outline: &markdown::Outline, problems: &mut Vec<Problem>) {
+fn check_diagrams(
+    file: &str,
+    outline: &markdown::Outline,
+    problems: &mut Vec<Problem>,
+    has_match: &mut dyn FnMut(&str) -> bool,
+) {
     let mut diagrams = outline
         .blocks
         .iter()
         .filter(|block| markdown::is_mermaid(&block.info));
     if let Some(first) = diagrams.next() {
-        check_diagram(file, &first.source, first.line, problems);
+        check_diagram(file, &first.source, first.line, problems, has_match);
         for extra in diagrams {
             problems.push(problem(
                 file,
@@ -263,6 +295,67 @@ fn check_diagrams(file: &str, outline: &markdown::Outline, problems: &mut Vec<Pr
             Code::MissingDiagram,
             "no mermaid flowchart block",
         ));
+    }
+}
+
+fn check_misplaced_anchors(
+    file: &str,
+    text: &str,
+    outline: &markdown::Outline,
+    problems: &mut Vec<Problem>,
+) {
+    let first = outline
+        .blocks
+        .iter()
+        .find(|block| markdown::is_mermaid(&block.info));
+    for (index, line) in crate::skill::normalise(text).lines().enumerate() {
+        let line_number = index + 1;
+        let inside_first = first.is_some_and(|block| {
+            line_number > block.line && line_number <= block.line + block.source.lines().count()
+        });
+        if !inside_first && anchors::code_tokens(line).is_some() {
+            problems.push(problem(
+                file,
+                Some(line_number),
+                Code::AnchorSyntax,
+                "anchors belong in the flow's first mermaid block",
+            ));
+        }
+    }
+}
+
+fn check_anchor_paths(
+    file: &str,
+    anchors: &[anchors::Anchor],
+    has_match: &mut dyn FnMut(&str) -> bool,
+    problems: &mut Vec<Problem>,
+) {
+    for anchor in anchors {
+        for pattern in &anchor.patterns {
+            if !has_match(pattern) {
+                problems.push(problem(file, Some(anchor.line), Code::AnchorNoMatch, format!("\"{pattern}\" matches no file in the repository; the code moved or the anchor is wrong")));
+            }
+        }
+    }
+}
+
+fn check_anchor_steps(
+    file: &str,
+    anchors: &[anchors::Anchor],
+    diagram: &Diagram,
+    problems: &mut Vec<Problem>,
+) {
+    for anchor in anchors {
+        if let anchors::Target::Step(id) = &anchor.target
+            && !diagram.nodes.iter().any(|node| node.id == *id)
+        {
+            problems.push(problem(
+                file,
+                Some(anchor.line),
+                Code::AnchorUnknownStep,
+                format!("@code points at step \"{id}\", which this flowchart does not have"),
+            ));
+        }
     }
 }
 
@@ -302,7 +395,23 @@ fn is_styling(line: &str) -> bool {
     )
 }
 
-fn check_diagram(file: &str, source: &str, offset: usize, problems: &mut Vec<Problem>) {
+fn check_diagram(
+    file: &str,
+    source: &str,
+    offset: usize,
+    problems: &mut Vec<Problem>,
+    has_match: &mut dyn FnMut(&str) -> bool,
+) {
+    let (anchors, errors) = anchors::parse_anchors(source, offset);
+    for error in errors {
+        problems.push(problem(
+            file,
+            Some(error.line),
+            Code::AnchorSyntax,
+            error.message,
+        ));
+    }
+    check_anchor_paths(file, &anchors, has_match, problems);
     let fence_line = offset.max(1);
     for (index, line) in source.lines().enumerate() {
         if line.trim_start().starts_with("%%") {
@@ -331,6 +440,7 @@ fn check_diagram(file: &str, source: &str, offset: usize, problems: &mut Vec<Pro
     }
     match flows::parse_diagram(source, offset) {
         Ok(diagram) => {
+            check_anchor_steps(file, &anchors, &diagram, problems);
             if diagram.nodes.is_empty() {
                 problems.push(problem(
                     file,
@@ -397,6 +507,15 @@ fn node_file_line(source: &str, offset: usize, id: &str) -> usize {
     node_line(source, id).map_or(offset.max(1), |line| offset + line)
 }
 
+fn label_excerpt(label: &str) -> String {
+    let mut characters = label.chars();
+    let mut excerpt: String = characters.by_ref().take(LABEL_EXCERPT_CHARS).collect();
+    if characters.next().is_some() {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
 fn check_nodes(
     file: &str,
     source: &str,
@@ -420,11 +539,7 @@ fn check_nodes(
             .any(|label| label.width() > MAX_LABEL_WIDTH)
         {
             let label = node.label.join(" ");
-            let mut characters = label.chars();
-            let mut excerpt: String = characters.by_ref().take(LABEL_EXCERPT_CHARS).collect();
-            if characters.next().is_some() {
-                excerpt.push('…');
-            }
+            let excerpt = label_excerpt(&label);
             problems.push(problem(file, Some(line), Code::LongLabel,
                 format!("step \"{}\" (\"{excerpt}\") is wider than {MAX_LABEL_WIDTH} columns; shorten it so the flow fits a side pane", node.id)));
         }
@@ -483,6 +598,14 @@ fn check_step_count(file: &str, line: usize, diagram: &Diagram, problems: &mut V
 }
 
 pub fn check_catalog(dir: &Path) -> Result<Report, CatalogError> {
+    check_catalog_with(dir, &mut |_| true)
+}
+
+/// `has_match` is called once per valid anchor pattern; false reports anchor-no-match.
+pub fn check_catalog_with(
+    dir: &Path,
+    has_match: &mut dyn FnMut(&str) -> bool,
+) -> Result<Report, CatalogError> {
     let mut report = Report {
         flows: 0,
         problems: Vec::new(),
@@ -494,7 +617,7 @@ pub fn check_catalog(dir: &Path) -> Result<Report, CatalogError> {
             Entry::Flow { name, text } => {
                 report.flows += 1;
                 check_duplicate_name(&name, &mut names, &mut report.problems);
-                let (title, problems) = check_file(&name, &text);
+                let (title, problems) = check_file(&name, &text, has_match);
                 if let Some(title) = title {
                     record_title(&name, &title, &mut titles, &mut report.problems);
                 }
@@ -631,7 +754,10 @@ mod tests {
             | Code::EmptyDiagram
             | Code::UnclosedFence
             | Code::DuplicateName
-            | Code::Unreadable => Severity::Error,
+            | Code::Unreadable
+            | Code::AnchorSyntax
+            | Code::AnchorUnknownStep
+            | Code::AnchorNoMatch => Severity::Error,
             Code::ExtraDiagram
             | Code::DuplicateTitle
             | Code::EmptyCatalog
@@ -838,7 +964,38 @@ mod tests {
                 &VALID.replace("```\n", "done --> actor\n```\n"),
                 &[Code::EdgeIntoActor],
             ),
+            single_flow_case(
+                Code::AnchorSyntax,
+                "checkout.md",
+                Some(11),
+                &VALID.replace("```\n", "%% @code pay\n```\n"),
+                &[Code::AnchorSyntax],
+            ),
+            single_flow_case(
+                Code::AnchorUnknownStep,
+                "checkout.md",
+                Some(11),
+                &VALID.replace("```\n", "%% @code missing src/pay.rs\n```\n"),
+                &[Code::AnchorUnknownStep],
+            ),
+            anchor_no_match_case(),
         ]
+    }
+
+    fn anchor_no_match_case() -> Case {
+        let directory = assert_fs::TempDir::new().unwrap();
+        let text = VALID.replace("```\n", "%% @code pay src/gone.rs src/pay.rs\n```\n");
+        std::fs::write(directory.path().join("checkout.md"), text).unwrap();
+        Case {
+            code: Code::AnchorNoMatch,
+            severity: Severity::Error,
+            file: "checkout.md",
+            line: Some(11),
+            problems: check_catalog_with(directory.path(), &mut |pattern| pattern != "src/gone.rs")
+                .unwrap()
+                .problems,
+            expected_codes: Some(&[Code::AnchorNoMatch]),
+        }
     }
 
     fn position(code: Code) -> usize {
@@ -866,6 +1023,9 @@ mod tests {
             Code::FileName => 20,
             Code::LongLabel => 21,
             Code::EdgeIntoActor => 22,
+            Code::AnchorSyntax => 23,
+            Code::AnchorUnknownStep => 24,
+            Code::AnchorNoMatch => 25,
         }
     }
 
@@ -1213,5 +1373,84 @@ mod tests {
         assert_eq!(node_line(source, "pay.later"), Some(3));
         assert_eq!(node_line(source, "pay-now"), Some(4));
         assert_eq!(node_line(source, "missing"), None);
+    }
+    #[test]
+    fn node_lines_ignore_ids_inside_labels() {
+        assert_eq!(node_line("a[open the pay page]\npay --> b", "pay"), Some(2));
+        for label in ["[pay]", "(pay)", "{pay}", "\"pay\"", "|pay|"] {
+            assert_eq!(node_line(&format!("a{label}\npay --> b"), "pay"), Some(2));
+        }
+    }
+
+    #[test]
+    fn check_flow_reports_anchor_problems_without_the_filesystem() {
+        let text = VALID.replace("```\n", "%% @code missing src/pay.rs\n%% @code pay\n```\n");
+        let problems = check_flow("checkout.md", &text);
+        assert_eq!(
+            problems
+                .iter()
+                .map(|problem| problem.code.as_str())
+                .collect::<Vec<_>>(),
+            ["anchor-unknown-step", "anchor-syntax"]
+        );
+        assert_eq!(problems[0].line, Some(11));
+        assert_eq!(problems[1].line, Some(12));
+    }
+
+    #[test]
+    fn anchor_syntax_is_reported_outside_the_first_mermaid_block() {
+        let text = format!(
+            "%% @code pay src/pay.rs\n{VALID}%%@code pay src/pay.rs\n```mermaid\nflowchart TD\n%% @code pay src/pay.rs\n```\n```text\n%% @code pay src/pay.rs\n```\n"
+        );
+        let problems = check_flow("checkout.md", &text);
+        let syntax: Vec<_> = problems
+            .iter()
+            .filter(|problem| problem.code.as_str() == "anchor-syntax")
+            .collect();
+        assert_eq!(
+            syntax
+                .iter()
+                .map(|problem| problem.line)
+                .collect::<Vec<_>>(),
+            [Some(1), Some(13), Some(16), Some(19)]
+        );
+        assert!(
+            syntax.iter().all(
+                |problem| problem.message == "anchors belong in the flow's first mermaid block"
+            )
+        );
+    }
+
+    #[test]
+    fn anchors_are_checked_even_when_the_diagram_does_not_parse() {
+        for header in ["flowchart TD\na -->", "sequenceDiagram"] {
+            let text = format!(
+                "# Broken\nDescription.\n```mermaid\n{header}\n%% @code missing src/pay.rs\n%% @code pay\n```\n"
+            );
+            let problems = check_flow("broken.md", &text);
+            assert!(
+                problems
+                    .iter()
+                    .any(|problem| problem.code.as_str() == "anchor-syntax")
+            );
+            assert!(
+                !problems
+                    .iter()
+                    .any(|problem| problem.code.as_str() == "anchor-unknown-step")
+            );
+        }
+    }
+
+    #[test]
+    fn label_excerpt_limits_characters_without_splitting_unicode() {
+        assert_eq!(label_excerpt("Short"), "Short");
+        assert_eq!(
+            label_excerpt(&"界".repeat(LABEL_EXCERPT_CHARS)),
+            "界".repeat(LABEL_EXCERPT_CHARS)
+        );
+        assert_eq!(
+            label_excerpt(&"界".repeat(LABEL_EXCERPT_CHARS + 1)),
+            format!("{}…", "界".repeat(LABEL_EXCERPT_CHARS))
+        );
     }
 }
