@@ -21,6 +21,7 @@ One actor, one goal, an outcome the actor can see, done in one sitting.
 - A pair of opposite actions (follow and unfollow, favourite and unfavourite) is one flow with a labelled choice.
 - A read-only lookup that only leads into another flow belongs to that flow. Give it its own file only when looking something up is the goal ("Browse articles").
 - For an API without a UI, the actor is the API client ("Client registers an account"), and steps describe the response in plain words: a 422 becomes "Show that the email is already taken", a 401 becomes "Reject the request as not signed in".
+- For a CLI, group flags by the goal they serve, not one flow per flag. Flags that only change how the output looks belong in the flow they modify, or in one "Customise …" flow. The actor is the person running it (`([User runs hexyl FILE])`), and a run ends at its output or its error message; there is no retry loop.
 - A CLI or library usually has 3 to 10 flows; a web app 8 to 25. More than 30 means you are splitting per endpoint or screen.
 
 Flows are user-level journeys, not architecture diagrams. No services, databases, queues, functions, files, endpoints or status codes as steps, and do not copy architecture diagrams into the catalog. Labels use the user's words: the text on the screen, the CLI output, the email they receive.
@@ -49,8 +50,8 @@ flowchart TD
 - The `#` title names the use case; the next line is one sentence: who does what, and the outcome.
 - Exactly one mermaid flowchart per file, and it is the first code block. Start it with `flowchart TD`.
 - Shapes: the actor or trigger as a stadium `([...])`, steps as rectangles `[...]`, decisions as diamonds `{...}` with every exit labelled (`-->|yes|`).
-- 4 to 15 steps. Split a bigger flow into separate use cases; the larger part keeps the file.
-- Keep every label within 40 characters so the flow fits a side pane.
+- 3 to 15 steps. Never pad a flow to reach the minimum: merge a tiny flow into the one it belongs to, or keep it short. Split a bigger flow into separate use cases; the larger part keeps the file.
+- Keep every label within 40 columns (wide characters count double) so the flow fits a side pane.
 - Never draw an edge back into the actor. End a failure branch at the step the user sees, or loop back to the step where they retry, as `error --> pay` does in the example.
 - Show a sign-in requirement as one decision, and only where a signed-out user can reach it. Do not draw middleware, validation layers or retries as steps.
 - Node ids are short, lowercase and stable (`pay`, `confirm`). strata compares flows by id, so rename a step by changing its label, never its id.
@@ -85,6 +86,7 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
    - CLI commands and subcommands
    - UI routes, pages and screens
    - background jobs, schedulers, queue and event consumers, webhooks
+   When it is safe, run the program on a small sample and copy its real output text into your labels.
 3. Group them into use cases. Several entry points often serve one use case, and one entry point can appear in several.
 4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
 5. Run `strata check --strict` and fix every problem it reports.

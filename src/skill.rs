@@ -47,14 +47,14 @@ mod tests {
     #[test]
     fn skill_quotes_the_step_limits() {
         assert!(body(DEFAULT_CATALOG).contains(&format!(
-            "{} to {}",
+            "{} to {} steps",
             crate::check::MIN_STEPS,
             crate::check::MAX_STEPS
         )));
-        assert!(body(DEFAULT_CATALOG).contains(&format!(
-            "within {} characters",
-            crate::check::MAX_LABEL_WIDTH
-        )));
+        assert!(
+            body(DEFAULT_CATALOG)
+                .contains(&format!("within {} columns", crate::check::MAX_LABEL_WIDTH))
+        );
     }
 
     fn front_matter_fields() -> std::collections::BTreeMap<&'static str, &'static str> {

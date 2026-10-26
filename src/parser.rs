@@ -78,7 +78,7 @@ fn parse_header(stmt: &str) -> Option<Direction> {
 }
 
 /// Splits a line on `;` outside quotes, brackets and `|label|` pipes.
-fn split_statements(line: &str) -> Vec<String> {
+pub(crate) fn split_statements(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut depth = 0i32;
@@ -100,6 +100,20 @@ fn split_statements(line: &str) -> Vec<String> {
     }
     out.push(cur);
     out
+}
+
+pub(crate) fn statement_mentions_id(statement: &str, id: &str) -> bool {
+    let mut cursor = Cursor::new(statement);
+    while cursor.peek().is_some() {
+        let token = cursor.take_id();
+        if token == id {
+            return true;
+        }
+        if token.is_empty() {
+            cursor.pos += 1;
+        }
+    }
+    false
 }
 
 #[derive(Default)]

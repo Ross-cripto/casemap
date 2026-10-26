@@ -154,9 +154,10 @@ impl Report {
     }
 }
 
-pub const MIN_STEPS: usize = 4;
+pub const MIN_STEPS: usize = 3;
 pub const MAX_STEPS: usize = 15;
 pub const MAX_LABEL_WIDTH: usize = 40;
+const LABEL_EXCERPT_CHARS: usize = 20;
 
 /// Returns problems sorted by line and code within the file.
 pub fn check_flow(file: &str, text: &str) -> Vec<Problem> {
@@ -283,6 +284,7 @@ fn is_kebab_case(name: &str) -> bool {
     })
 }
 
+/// A following `-`, `=` or `&` makes the keyword a linked node id rather than a styling statement.
 fn is_styling(line: &str) -> bool {
     let trimmed = line.trim_start().to_ascii_lowercase();
     if line.contains(":::") {
@@ -303,13 +305,18 @@ fn is_styling(line: &str) -> bool {
 fn check_diagram(file: &str, source: &str, offset: usize, problems: &mut Vec<Problem>) {
     let fence_line = offset.max(1);
     for (index, line) in source.lines().enumerate() {
-        if is_styling(line) {
-            problems.push(problem(
-                file,
-                Some(offset + index + 1),
-                Code::Styling,
-                "styling is ignored by strata; remove it",
-            ));
+        if line.trim_start().starts_with("%%") {
+            continue;
+        }
+        for statement in parser::split_statements(line) {
+            if is_styling(&statement) {
+                problems.push(problem(
+                    file,
+                    Some(offset + index + 1),
+                    Code::Styling,
+                    "styling is ignored by strata; remove it",
+                ));
+            }
         }
     }
     let first = parser::first_statement(source);
@@ -332,7 +339,10 @@ fn check_diagram(file: &str, source: &str, offset: usize, problems: &mut Vec<Pro
                     "the flowchart has no steps",
                 ));
             }
-            check_shapes(file, fence_line, &diagram, problems);
+            check_actor(file, fence_line, &diagram, problems);
+            check_nodes(file, source, offset, &diagram, problems);
+            check_edges_into_actor(file, source, offset, &diagram, problems);
+            check_step_count(file, fence_line, &diagram, problems);
         }
         Err(error) => problems.push(problem(
             file,
@@ -354,7 +364,7 @@ fn has_unlabelled_exit(diagram: &Diagram, node_index: usize) -> bool {
     })
 }
 
-fn check_shapes(file: &str, line: usize, diagram: &Diagram, problems: &mut Vec<Problem>) {
+fn check_actor(file: &str, line: usize, diagram: &Diagram, problems: &mut Vec<Problem>) {
     if !diagram
         .nodes
         .iter()
@@ -367,7 +377,35 @@ fn check_shapes(file: &str, line: usize, diagram: &Diagram, problems: &mut Vec<P
             "start the flow from the actor as a stadium ([...])",
         ));
     }
+}
+
+fn node_line(block_source: &str, id: &str) -> Option<usize> {
+    for (index, line) in block_source.lines().enumerate() {
+        if line.trim_start().starts_with("%%") {
+            continue;
+        }
+        for statement in parser::split_statements(line) {
+            if parser::statement_mentions_id(&statement, id) {
+                return Some(index + 1);
+            }
+        }
+    }
+    None
+}
+
+fn node_file_line(source: &str, offset: usize, id: &str) -> usize {
+    node_line(source, id).map_or(offset.max(1), |line| offset + line)
+}
+
+fn check_nodes(
+    file: &str,
+    source: &str,
+    offset: usize,
+    diagram: &Diagram,
+    problems: &mut Vec<Problem>,
+) {
     for (index, node) in diagram.nodes.iter().enumerate() {
+        let line = node_file_line(source, offset, &node.id);
         if node.shape == Shape::Diamond && has_unlabelled_exit(diagram, index) {
             problems.push(problem(
                 file,
@@ -381,8 +419,14 @@ fn check_shapes(file: &str, line: usize, diagram: &Diagram, problems: &mut Vec<P
             .iter()
             .any(|label| label.width() > MAX_LABEL_WIDTH)
         {
+            let label = node.label.join(" ");
+            let mut characters = label.chars();
+            let mut excerpt: String = characters.by_ref().take(LABEL_EXCERPT_CHARS).collect();
+            if characters.next().is_some() {
+                excerpt.push('…');
+            }
             problems.push(problem(file, Some(line), Code::LongLabel,
-                format!("step \"{}\" is wider than {MAX_LABEL_WIDTH} columns; shorten it so the flow fits a side pane", node.id)));
+                format!("step \"{}\" (\"{excerpt}\") is wider than {MAX_LABEL_WIDTH} columns; shorten it so the flow fits a side pane", node.id)));
         }
         if node.label.as_slice() == [node.id.as_str()] {
             problems.push(problem(
@@ -393,13 +437,34 @@ fn check_shapes(file: &str, line: usize, diagram: &Diagram, problems: &mut Vec<P
             ));
         }
     }
+}
+
+fn check_edges_into_actor(
+    file: &str,
+    source: &str,
+    offset: usize,
+    diagram: &Diagram,
+    problems: &mut Vec<Problem>,
+) {
     for edge in &diagram.edges {
         let target = &diagram.nodes[edge.to];
+        let origin = &diagram.nodes[edge.from];
+        let mut actors = Vec::new();
         if target.shape == Shape::Stadium {
+            actors.push(target);
+        }
+        if edge.arrow_from && origin.shape == Shape::Stadium {
+            actors.push(origin);
+        }
+        for actor in actors {
+            let line = node_file_line(source, offset, &actor.id);
             problems.push(problem(file, Some(line), Code::EdgeIntoActor,
-                format!("edge into the actor \"{}\"; end the branch or loop back to the step the user retries", target.id)));
+                format!("edge into the actor \"{}\"; end the branch or loop back to the step the user retries", actor.id)));
         }
     }
+}
+
+fn check_step_count(file: &str, line: usize, diagram: &Diagram, problems: &mut Vec<Problem>) {
     if diagram.nodes.len() > MAX_STEPS {
         problems.push(problem(
             file,
@@ -717,14 +782,14 @@ mod tests {
             single_flow_case(
                 Code::UnlabelledBranch,
                 "checkout.md",
-                Some(5),
+                Some(8),
                 &VALID.replace("-->|yes|", "-->"),
                 &[Code::UnlabelledBranch],
             ),
             single_flow_case(
                 Code::UnlabelledStep,
                 "checkout.md",
-                Some(5),
+                Some(9),
                 &VALID.replace("done[Done]", "done"),
                 &[Code::UnlabelledStep],
             ),
@@ -759,7 +824,7 @@ mod tests {
             single_flow_case(
                 Code::LongLabel,
                 "checkout.md",
-                Some(5),
+                Some(7),
                 &VALID.replace(
                     "pay[Pay]",
                     &format!("pay[{}]", "x".repeat(MAX_LABEL_WIDTH + 1)),
@@ -769,7 +834,7 @@ mod tests {
             single_flow_case(
                 Code::EdgeIntoActor,
                 "checkout.md",
-                Some(5),
+                Some(7),
                 &VALID.replace("```\n", "done --> actor\n```\n"),
                 &[Code::EdgeIntoActor],
             ),
@@ -1073,5 +1138,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn node_warnings_point_at_the_node_line() {
+        let text = "# Nodes\nDescription.\n```mermaid\nflowchart TD\n%% pay --> actor; pay\npayment[Payment]\nactor([Customer]) --> payment; pay\npay --> choice{Choose?}\nchoice --> payment\npayment --> actor\n```\n";
+        let warnings: Vec<_> = check_flow("nodes.md", text)
+            .into_iter()
+            .filter(|problem| {
+                matches!(
+                    problem.code,
+                    Code::UnlabelledStep | Code::UnlabelledBranch | Code::EdgeIntoActor
+                )
+            })
+            .map(|problem| (problem.code, problem.line))
+            .collect();
+        assert_eq!(
+            warnings,
+            vec![
+                (Code::UnlabelledStep, Some(7)),
+                (Code::EdgeIntoActor, Some(7)),
+                (Code::UnlabelledBranch, Some(8))
+            ]
+        );
+        let text = VALID.replace("pay[Pay]", &format!("pay[{}]", "界".repeat(21)));
+        let warning = check_flow("checkout.md", &text)
+            .into_iter()
+            .find(|problem| problem.code == Code::LongLabel)
+            .unwrap();
+        assert_eq!(warning.line, Some(7));
+        assert_eq!(
+            warning.message,
+            format!(
+                "step \"pay\" (\"{}…\") is wider than 40 columns; shorten it so the flow fits a side pane",
+                "界".repeat(20)
+            )
+        );
+    }
+
+    #[test]
+    fn edge_into_actor_catches_bidirectional_links() {
+        for link in ["actor <--> pay", "pay <--> actor"] {
+            let text = VALID.replace("```\n", &format!("{link}\n```\n"));
+            let warnings: Vec<_> = check_flow("checkout.md", &text)
+                .into_iter()
+                .filter(|problem| problem.code == Code::EdgeIntoActor)
+                .collect();
+            assert_eq!(warnings.len(), 1, "{link}");
+            assert_eq!(warnings[0].line, Some(7));
+        }
+    }
+
+    #[test]
+    fn styling_ignores_comments_and_finds_inline_statements() {
+        let text = VALID.replace("```\n", "%% comment ::: ignored; style pay fill:red\npay --> done; style pay fill:red; class pay highlighted\n```\n");
+        let lines: Vec<_> = check_flow("checkout.md", &text)
+            .into_iter()
+            .filter(|problem| problem.code == Code::Styling)
+            .map(|problem| problem.line)
+            .collect();
+        assert_eq!(lines, vec![Some(12), Some(12)]);
+    }
+
+    #[test]
+    fn three_steps_need_no_padding() {
+        assert!(check_flow("steps.md", &flowchart_with_steps(3)).is_empty());
+    }
+
+    #[test]
+    fn node_lines_match_complete_parser_ids() {
+        let source = "flowchart TD\npayment[Payment]; pre-pay[Before payment]\npay.later[Later]\npay-->pay-now[Pay now]\n";
+        assert_eq!(node_line(source, "pay"), Some(4));
+        assert_eq!(node_line(source, "pre-pay"), Some(2));
+        assert_eq!(node_line(source, "pay.later"), Some(3));
+        assert_eq!(node_line(source, "pay-now"), Some(4));
+        assert_eq!(node_line(source, "missing"), None);
     }
 }
