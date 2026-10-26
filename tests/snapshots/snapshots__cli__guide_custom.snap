@@ -9,7 +9,7 @@ $ strata guide --flows flows --no-color
 
 This repository keeps a catalog of its use cases in `flows/`: one Markdown file per thing a user, operator or scheduled job can do, with its steps as a Mermaid flowchart. You write and maintain these files. strata checks them, renders them in the terminal and shows what each change did to them.
 
-If `strata --version` fails, stop and tell the user to install it (`cargo install --git https://github.com/Ross-cripto/strata`) instead of writing unchecked files. Run strata from the repository root and pass `--flows flows` to every command.
+If `strata --version` fails, stop and tell the user to install it (`brew install Ross-cripto/tap/strata`, or `cargo install --git https://github.com/Ross-cripto/strata`) instead of writing unchecked files. Run strata from the repository root and pass `--flows flows` to every command.
 
 ## What a use case is
 
