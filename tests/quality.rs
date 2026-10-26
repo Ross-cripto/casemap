@@ -161,7 +161,13 @@ fn diagrams() -> Vec<(String, Diagram)> {
     paths
         .into_iter()
         .map(|path| {
-            let name = path.strip_prefix(root).unwrap().display().to_string();
+            // Snapshot rows and budgets use '/' so Windows reports the same paths.
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .display()
+                .to_string()
+                .replace('\\', "/");
             let source = fs::read_to_string(&path).expect("read diagram");
             let parsed = if path.extension().is_some_and(|value| value == "md") {
                 let flow = flows::parse_flow(&name, &source);
