@@ -1,0 +1,24 @@
+---
+source: src/browse/ui.rs
+expression: rendered
+---
+"┌ Flows ───────────────────────────────────────────────────┐"
+"│✗ Bad flow                                                │"
+"│✗ Broken flow                                             │"
+"│~ Checkout                                                │"
+"│· Login                                                   │"
+"│! Pay for an order                                        │"
+"│+ Refund                                                  │"
+"│· Wide flow                                               │"
+"│- Legacy export                                           │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"
+"↑↓ select · Tab focus · / search · d diffbase main (1234567)"

@@ -1520,3 +1520,65 @@ fn check_and_which_work_outside_a_repository() {
         );
     }
 }
+
+#[test]
+fn check_without_anchors_ignores_broken_git_config() {
+    let repo = TempRepo::new();
+    write_valid_flow(&repo, "checkout.md");
+    repo.git(&["init", "-q"]);
+    fs::write(repo.file(".git/config"), "[broken").unwrap();
+    assert!(repo.strata(&["check"]).status.success());
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn browse_requires_a_terminal() {
+    let repo = TempRepo::committed_before();
+    let output = repo.strata(&["browse"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("strata browse needs a terminal"));
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn browse_missing_catalog_fails_like_flows() {
+    let repo = TempRepo::new();
+    fs::remove_dir_all(repo.file(FLOWS_DIR)).unwrap();
+    let browse = repo.strata(&["browse"]);
+    let flows = repo.strata(&["flows"]);
+    assert_eq!(browse.status.code(), Some(1));
+    assert_eq!(browse.stderr, flows.stderr);
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn browse_invalid_base_fails_like_diff() {
+    let repo = TempRepo::committed_before();
+    let browse = repo.strata(&["browse", "--base", "missing-ref"]);
+    let diff = repo.strata(&["diff", "missing-ref"]);
+    assert_eq!(browse.status.code(), Some(1));
+    assert_eq!(browse.stderr, diff.stderr);
+}
+
+#[test]
+fn bare_strata_with_piped_stdin_still_renders() {
+    let repo = TempRepo::new();
+    strata_command(&repo)
+        .current_dir(repo.path())
+        .write_stdin("graph TD\na[First] --> b[Second]\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("First"));
+}
+
+#[cfg(not(feature = "tui"))]
+#[test]
+fn browse_without_tui_feature_errors() {
+    let repo = TempRepo::new();
+    let output = repo.strata(&["browse"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("strata was built without the tui feature")
+    );
+}

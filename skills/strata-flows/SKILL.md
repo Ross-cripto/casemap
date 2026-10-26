@@ -120,5 +120,6 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 | `strata check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
 | `strata diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
 | `strata which <file>` | Which flows and steps are anchored to a file |
+| `strata browse` | Explore the catalog interactively (for humans; agents use the other commands) |
 
 Add `--flows <dir>` when the catalog lives somewhere else.

@@ -1,6 +1,6 @@
 [package]
 name = "strata"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 description = "The living map of your app's use cases: check, render and diff Mermaid flows"
@@ -11,6 +11,7 @@ anyhow = { version = "1.0.104", optional = true }
 clap = { version = "4.6.7", features = ["derive"], optional = true }
 clap_complete = { version = "4.6.11", optional = true }
 notify = { version = "8.2.1", optional = true }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 serde_json = { version = "1.0.154", optional = true }
 thiserror = "2.0.21"
 unicode-width = "0.2"
@@ -26,8 +27,9 @@ predicates = "3.1.4"
 serde_json = "1.0.154"
 
 [features]
-default = ["cli"]
+default = ["cli", "tui"]
 cli = ["dep:clap", "dep:clap_complete", "dep:anyhow", "dep:notify", "dep:serde_json"]
+tui = ["cli", "dep:ratatui"]
 
 [[test]]
 name = "snapshots"

@@ -1,0 +1,24 @@
+---
+source: src/browse/ui.rs
+expression: rendered
+---
+"Pay for an order                                            "
+"tests/fixtures/flows/browse/pay-for-an-order.md             "
+"A customer pays for an order and receives a receipt.        "
+"┌ Diagram ─────────────────────────────────────────────────┐"
+"│    ╭───────────╮                                         │"
+"│    │ Customer  │                                         │"
+"│    ╰─────┬─────╯                                         │"
+"│          │                                               │"
+"│          ▼                                               │"
+"│┌───────────────────┐                                     │"
+"││ Pay for the order │                                     │"
+"│└─────────┬─────────┘                                     │"
+"│          │                                               │"
+"│          ▼                                               │"
+"│┌───────────────────┐                                     │"
+"││ Receive a receipt │                                     │"
+"│└───────────────────┘                                     │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"
+"↑↓ select · Tab focus · / search · d diffbase main (1234567)"

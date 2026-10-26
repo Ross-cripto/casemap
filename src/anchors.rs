@@ -42,6 +42,8 @@ pub(crate) fn code_tokens(line: &str) -> Option<std::str::SplitWhitespace<'_>> {
     Some(tokens)
 }
 
+const MISSING_TARGET_OR_PATH: &str = "@code needs a target and at least one path";
+
 /// Anchors in a mermaid block. `offset` is the block's fence line; source line i (0-based) is file line `offset + i + 1`.
 pub fn parse_anchors(block_source: &str, offset: usize) -> (Vec<Anchor>, Vec<AnchorError>) {
     let mut anchors = Vec::new();
@@ -53,20 +55,16 @@ pub fn parse_anchors(block_source: &str, offset: usize) -> (Vec<Anchor>, Vec<Anc
         let line = offset + index + 1;
         let target = tokens.next();
         let raw_patterns: Vec<_> = tokens.collect();
-        let Some(target) = target else {
-            errors.push(AnchorError {
-                line,
-                message: "@code needs a target and at least one path".into(),
-            });
-            continue;
+        let target = match (target, raw_patterns.is_empty()) {
+            (Some(target), false) => target,
+            _ => {
+                errors.push(AnchorError {
+                    line,
+                    message: MISSING_TARGET_OR_PATH.into(),
+                });
+                continue;
+            }
         };
-        if raw_patterns.is_empty() {
-            errors.push(AnchorError {
-                line,
-                message: "@code needs a target and at least one path".into(),
-            });
-            continue;
-        }
         let target = if target == "*" {
             Target::Flow
         } else {
@@ -134,7 +132,7 @@ fn invalid_segment(segment: &str) -> bool {
 /// A Windows drive such as `C:`; only meaningful as the first segment, since `docs/a:b.md` is a valid name.
 fn is_drive_prefix(segment: &str) -> bool {
     let bytes = segment.as_bytes();
-    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// True when `pattern` (already normalised) matches the root-relative `/` path.
@@ -237,6 +235,7 @@ pub fn walk_files(root: &Path) -> std::io::Result<Vec<String>> {
     Ok(files)
 }
 
+/// Unreadable directories are skipped, so their files cannot satisfy anchors.
 fn walk_directory(root: &Path, directory: &Path, files: &mut Vec<String>) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,

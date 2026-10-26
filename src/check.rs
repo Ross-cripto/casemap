@@ -562,13 +562,15 @@ fn check_nodes(
     }
 }
 
-fn ids_appear_in_order(tokens: &[&str], from: &str, to: &str) -> bool {
-    for (index, token) in tokens.iter().enumerate() {
-        if *token == from && tokens[index + 1..].contains(&to) {
-            return true;
-        }
-    }
-    false
+fn statement_has_edge(statement: &str, from: &str, to: &str, bidirectional: bool) -> bool {
+    let Ok(diagram) = parser::parse(&format!("flowchart TD\n{statement}")) else {
+        return false;
+    };
+    diagram.edges.iter().any(|edge| {
+        let origin = &diagram.nodes[edge.from].id;
+        let target = &diagram.nodes[edge.to].id;
+        (origin == from && target == to) || (bidirectional && origin == to && target == from)
+    })
 }
 
 fn edge_line(source: &str, from: &str, to: &str, bidirectional: bool) -> Option<usize> {
@@ -578,9 +580,21 @@ fn edge_line(source: &str, from: &str, to: &str, bidirectional: bool) -> Option<
         }
         for statement in parser::split_statements(line) {
             let tokens = parser::id_tokens_outside_labels(&statement);
-            if ids_appear_in_order(&tokens, from, to)
-                || (bidirectional && ids_appear_in_order(&tokens, to, from))
-            {
+            if matches!(
+                tokens.first(),
+                Some(
+                    &("class"
+                        | "classDef"
+                        | "style"
+                        | "linkStyle"
+                        | "click"
+                        | "subgraph"
+                        | "direction")
+                )
+            ) {
+                continue;
+            }
+            if statement_has_edge(&statement, from, to, bidirectional) {
                 return Some(index + 1);
             }
         }
@@ -1084,6 +1098,10 @@ mod tests {
     #[test]
     fn edge_into_actor_points_at_the_edge_line() {
         for (source, expected) in [
+            (
+                "flowchart TD\nactor([Customer])\npay[Pay]\nclass pay,actor hot\npay --> actor\n",
+                vec![Some(5)],
+            ),
             (
                 "flowchart TD\nactor([Customer]) --> pay[Pay]\nother[actor pay]\npay --> actor\n",
                 vec![Some(4)],
