@@ -2,5 +2,5 @@
 # cargo-dist creates the GitHub release with the binaries; release-plz only
 # publishes the crate and pushes the tag.
 git_release_enable = false
-# The release-plz workflow finds the release PR by this label to run CI on it.
+# Marks the release PR in the pull request list.
 pr_labels = ["release"]

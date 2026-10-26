@@ -18,7 +18,7 @@ cargo run -- examples/simple.mmd                # render once
 cargo run -- --watch examples/architecture.mmd  # redraw on every save
 ```
 
-Release: automatic. main only takes PRs with green CI; each merge updates the release-plz PR (version + CHANGELOG from conventional commits), and merging it publishes to crates.io, tags `vX.Y.Z` and dispatches cargo-dist (`release.yml`) for binaries, installers and the Homebrew formula. Commit messages must be conventional (`feat:`, `fix:`, `chore:` …). Run `dist generate` after editing `dist-workspace.toml`.
+Release: automatic. main only takes PRs with green CI; each merge updates the release-plz PR (version + CHANGELOG from conventional commits); its CI needs a maintainer's "Approve workflows to run" click, and merging it publishes to crates.io, tags `vX.Y.Z` and dispatches cargo-dist (`release.yml`) for binaries, installers and the Homebrew formula. Commit messages must be conventional (`feat:`, `fix:`, `chore:` …). Run `dist generate` after editing `dist-workspace.toml`.
 
 ## Code map
 

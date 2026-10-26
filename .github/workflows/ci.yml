@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # release-plz dispatches this on its release PR, whose own events start no workflows.
+  # Lets a maintainer run CI on any branch by hand.
   workflow_dispatch:
 
 jobs:
