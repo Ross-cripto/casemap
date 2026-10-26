@@ -10,6 +10,7 @@ The living map of an app's use cases: one Markdown file per use case in `docs/fl
 ```bash
 cargo build
 cargo test                                      # invariants over tests/fixtures in all four directions
+cargo test --test quality -- --nocapture   # diagram layout metrics over the real-app corpus
 cargo test --no-default-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo insta review
