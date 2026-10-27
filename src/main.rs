@@ -7,7 +7,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, bail};
-use casemap::flows::{Flow, FlowChange, Stale};
+use casemap::flows::{
+    Flow, FlowChange, Stale, has_known_anchors, render_proposal, render_proposal_markdown,
+};
 use clap::{CommandFactory, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
 use unicode_width::UnicodeWidthStr;
@@ -121,6 +123,13 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Preview a proposed version of a flow, read from stdin, against the current one (writes nothing).
+    Propose {
+        /// Flow name (the file name without .md); a new name proposes a new flow.
+        name: String,
+        #[arg(long, value_enum, default_value_t = DiffFormat::Text)]
+        format: DiffFormat,
+    },
     /// Which flows and steps are anchored to the given files (only anchored flows are known).
     Which {
         #[arg(required = true)]
@@ -210,6 +219,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     #[cfg(not(feature = "tui"))]
     let onboarding_opts = &opts;
     match cli.command {
+        Some(Commands::Propose { name, format }) => propose_flow(directory, &name, format, &opts),
         Some(Commands::Diff {
             rev,
             strict,
@@ -572,6 +582,91 @@ fn markdown_exit_code(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn proposal_name(raw: &str) -> anyhow::Result<&str> {
+    let name = raw.strip_suffix(".md").unwrap_or(raw);
+    if name.contains(['/', '\\']) {
+        bail!("flow names have no folders: {raw}");
+    }
+    if name.is_empty() {
+        bail!("give the flow a name");
+    }
+    Ok(name)
+}
+
+/// Refuses interactive input so a missing pipe cannot leave the command waiting.
+fn read_proposal(name: &str) -> anyhow::Result<String> {
+    if io::stdin().is_terminal() {
+        bail!("pipe the proposed flow on stdin, for example: casemap propose {name} < proposal.md");
+    }
+    let text = read_stdin()?;
+    if text.trim().is_empty() {
+        bail!("the proposal on stdin is empty");
+    }
+    Ok(text)
+}
+
+/// Missing diagrams have check errors but no diagram comparison to render.
+fn compare_proposal(current: Option<&Flow>, proposed: &Flow) -> anyhow::Result<Option<FlowChange>> {
+    if proposed.source.is_none() {
+        return Ok(None);
+    }
+    let old = current.map(std::slice::from_ref).unwrap_or_default();
+    casemap::flows::compare(old, std::slice::from_ref(proposed))
+        .into_iter()
+        .next()
+        .context("comparing the proposal")
+        .map(Some)
+}
+
+/// Parse failures must fail even when the check report has no errors.
+fn proposal_exit_code(report: &check::Report, change: Option<&FlowChange>) -> ExitCode {
+    if report.errors() > 0 || matches!(change, Some(FlowChange::Broken { .. })) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn propose_flow(
+    dir: &Path,
+    raw_name: &str,
+    format: DiffFormat,
+    opts: &Options,
+) -> anyhow::Result<ExitCode> {
+    let name = proposal_name(raw_name)?;
+    let text = read_proposal(name)?;
+    let catalog = load_catalog(dir)?;
+    let current = catalog.iter().find(|flow| flow.name == name);
+    let path = current
+        .map(|flow| flow.path.clone())
+        .unwrap_or_else(|| format!("{name}.md"));
+    let proposed = casemap::flows::parse_flow(&path, &text);
+    let report = check::Report {
+        flows: 1,
+        problems: check::check_flow(&path, &text),
+    };
+    let change = compare_proposal(current, &proposed)?;
+    let in_use = has_known_anchors(std::slice::from_ref(&proposed))
+        || catalog
+            .iter()
+            .filter(|flow| flow.path != path)
+            .any(|flow| has_known_anchors(std::slice::from_ref(flow)));
+    let change = change.as_ref();
+    let catalog_location = catalog_path(dir);
+    let section = match format {
+        DiffFormat::Text => render_proposal(change, in_use, opts),
+        DiffFormat::Markdown => {
+            render_proposal_markdown(change, &report, in_use, &catalog_location, name)
+        }
+    };
+    print!("{section}");
+    if matches!(format, DiffFormat::Text) {
+        write_check_problems(&mut io::stdout().lock(), dir, &report, opts.color)?;
+        println!("proposal: {}", problem_counts(&report));
+    }
+    Ok(proposal_exit_code(&report, change))
 }
 
 fn show_flows(
@@ -1136,7 +1231,7 @@ fn problem_json(dir: &Path, problem: &check::Problem) -> serde_json::Value {
     })
 }
 
-fn check_summary(report: &check::Report) -> String {
+fn problem_counts(report: &check::Report) -> String {
     let mut counts = Vec::new();
     for (count, noun) in [(report.errors(), "error"), (report.warnings(), "warning")] {
         if count > 0 {
@@ -1144,12 +1239,15 @@ fn check_summary(report: &check::Report) -> String {
             counts.push(format!("{count} {noun}{suffix}"));
         }
     }
-    let result = if counts.is_empty() {
+    if counts.is_empty() {
         "ok".to_string()
     } else {
         counts.join(", ")
-    };
-    format!("checked {} flows: {result}", report.flows)
+    }
+}
+
+fn check_summary(report: &check::Report) -> String {
+    format!("checked {} flows: {}", report.flows, problem_counts(report))
 }
 
 fn check_report(dir: &Path) -> anyhow::Result<check::Report> {
@@ -1192,6 +1290,17 @@ fn write_check_text(
     report: &check::Report,
     color: bool,
 ) -> io::Result<()> {
+    write_check_problems(output, dir, report, color)?;
+    writeln!(output, "{}", check_summary(report))?;
+    Ok(())
+}
+
+fn write_check_problems(
+    output: &mut dyn Write,
+    dir: &Path,
+    report: &check::Report,
+    color: bool,
+) -> io::Result<()> {
     for problem in &report.problems {
         writeln!(
             output,
@@ -1203,7 +1312,6 @@ fn write_check_text(
             )
         )?;
     }
-    writeln!(output, "{}", check_summary(report))?;
     Ok(())
 }
 
@@ -1796,6 +1904,50 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proposal_name_accepts_stems_and_rejects_folders() {
+        assert_eq!(proposal_name("pay.md").unwrap(), "pay");
+        assert_eq!(proposal_name("pay").unwrap(), "pay");
+        for (name, expected) in [
+            ("a/b", "flow names have no folders: a/b"),
+            ("a\\b", "flow names have no folders: a\\b"),
+            (".md", "give the flow a name"),
+            ("", "give the flow a name"),
+        ] {
+            assert_eq!(
+                proposal_name(name).unwrap_err().to_string(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn problem_counts_reports_errors_and_warnings() {
+        let mut report = check::Report {
+            flows: 1,
+            problems: Vec::new(),
+        };
+        assert_eq!(problem_counts(&report), "ok");
+        for code in [
+            check::Code::MissingDiagram,
+            check::Code::NoActor,
+            check::Code::TooFewSteps,
+        ] {
+            report.problems.push(check::Problem {
+                file: None,
+                line: None,
+                code,
+                message: String::new(),
+            });
+        }
+        assert_eq!(problem_counts(&report), "1 error, 2 warnings");
+        assert_eq!(
+            check_summary(&report),
+            "checked 1 flows: 1 error, 2 warnings"
+        );
+    }
 
     #[test]
     fn yaml_string_cases() {

@@ -14,6 +14,7 @@ const WIDTH_AND_CROSSING_BUDGETS: &[(&str, usize, usize)] = &[
     ("docs/flows/keep-the-map-true.md", 68, 0),
     ("docs/flows/map-a-new-repository.md", 93, 0),
     ("docs/flows/measure-coverage.md", 99, 0),
+    ("docs/flows/plan-a-change.md", 76, 0),
     ("docs/flows/render-a-diagram.md", 66, 0),
     ("docs/flows/review-a-pull-request.md", 107, 0),
     ("docs/flows/review-flow-changes.md", 70, 0),
@@ -587,11 +588,11 @@ fn assert_labels_next_to_source(diagram: &Diagram) -> usize {
 #[test]
 fn corpus_stays_within_quality_budgets() {
     const MAXIMUM_CROSSINGS: usize = 4;
-    const MAXIMUM_WIDTH: usize = 3180;
+    const MAXIMUM_WIDTH: usize = 3256;
     const MAXIMUM_DIAGRAM_WIDTH: usize = 140;
     const MAXIMUM_TERMINAL_BOOKMARK_WIDTH: usize = 120;
     const MAXIMUM_BENDS: usize = 704;
-    const MAXIMUM_EXTRA_LAYERS: usize = 457;
+    const MAXIMUM_EXTRA_LAYERS: usize = 470;
     const MAXIMUM_WIDTH_PERCENT: usize = 115;
 
     let mut total = Metrics::default();

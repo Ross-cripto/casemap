@@ -268,7 +268,7 @@ pub fn all_added(diagram: &Diagram) -> DiagramDiff {
     diff(&empty_like(diagram), diagram)
 }
 
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     let mut quoted = String::from("\"");
     for character in text.chars() {
         match character {

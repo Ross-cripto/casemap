@@ -212,6 +212,30 @@ Pass several paths for separate result blocks, or `--format json` for JSON v1:
 {"version":1,"paths":[{"path":"src/pay.rs","flows":[{"name":"pay","path":"docs/flows/pay.md","title":"Pay for an order","steps":["pay"],"whole_flow":false}]}]}
 ```
 
+## Plan a change first
+
+Have the agent write the proposed flow, then preview it against the current one with `casemap propose <name>`: it reads stdin and writes nothing, so a heredoc works in Claude Code or Codex plan mode. Put the preview in the plan or spec (Spec Kit's spec or Kiro's requirements); after approval, write the flow first, then the code.
+
+The flow stays in the catalog after the change, so it can guide later work instead of disappearing with a per-change spec.
+
+```text
+Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link
+  + step fraud "Fraud check"
+  ~ step confirm "Order confirmed" -> "Order confirmed and emailed"
+  - step address "Enter address"
+  + link cart -> pay
+  + link pay -> fraud "yes"
+  + link fraud -> confirm
+  ~ link pay -> error "no" -> "declined"
+  - link cart -> address
+  - link address -> pay
+  - link pay -> confirm "yes"
+
+proposal: ok
+```
+
+The drawing is omitted above. In catalogs that use anchors, `diff` and the PR comment list added steps without an anchor as "no @code anchor yet".
+
 ## Coverage
 
 `casemap coverage` shows which code files have at least one known `@code` anchor,
@@ -445,6 +469,7 @@ repos:
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
 | `casemap check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
 | `casemap diff [REF] [--strict] [--format text\|markdown]` | Compare with the merge base of REF and HEAD; `--format markdown` writes the PR comment and also fails on check errors (unlike text mode); `--strict` also exits 1 for possibly stale flows |
+| `casemap propose NAME [--format text\|markdown]` | Preview a proposed version of a flow, read from stdin, against the current one; writes nothing; exits 1 when the proposal has check errors |
 | `casemap coverage [REF] [--include P] [--exclude P] [--strict] [--format text\|json]` | Code no flow covers, by directory or changed since REF; `--strict` fails only in branch mode |
 | `casemap which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
 | `casemap guide` | Print the agent skill body |

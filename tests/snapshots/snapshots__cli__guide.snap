@@ -62,7 +62,7 @@ flowchart TD
 - Node ids must not be Mermaid keywords (`click`, `end`, `style`, `class`, `default`…); `casemap check` reports them.
 - No subgraphs, styling (`classDef`, `style`, `linkStyle`, `:::`), `click` or mermaid config blocks.
 - Include the main path, the decisions, and the failures the user actually sees. Not every exception or retry.
-- Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question.
+- Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question. The one exception is a proposal while you plan a change (see "Plan a change"); once implemented, it follows this rule too.
 
 Anchor steps to the code that implements them, with `%% @code <step> <path>` lines at the end of the block (the paths above are placeholders: use the real paths you read). `%% @code * <path>` anchors the whole flow. Paths are relative to the repository root; a folder means everything inside it, `*` matches within a folder and `**` across folders, and every other character (brackets included) is literal. Anchor the steps a future change is most likely to touch, not every step. Mermaid and GitHub ignore these lines. For framework routes with brackets, write the path as it is: `%% @code page app/product/[handle]/page.tsx`.
 
@@ -100,6 +100,28 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 6. Run `casemap check --strict` and fix every problem it reports.
 7. Finish with the list from `casemap flows`, the summary line of `casemap coverage`, the candidates you did not write, and the open questions.
 
+## Plan a change (flow first)
+
+When you plan a change instead of making it right away (plan mode, a spec workflow such as Spec Kit or Kiro, or the user asks for a plan), design the affected flows first and get them approved before you write code.
+
+1. Find the flows the change touches with `casemap which <file>` and `casemap flows`.
+2. Write the proposed version of each affected flow, or of a new one: the whole file, as it should read once the change is done. Only here may steps describe behaviour the code does not have yet.
+3. Preview each proposal against the current flow. `casemap propose <name>` reads it on stdin and writes nothing, so it works in plan mode:
+
+   ````sh
+   casemap propose check-out-a-cart <<'EOF'
+   (the whole proposed file: title, sentence and flowchart)
+   EOF
+   ````
+
+   It prints the changed steps and links, draws the flow with them marked, and lists `casemap check` problems for the proposal. Fix every error before you show it. Add `--format markdown` when the plan will be read on GitHub.
+4. Put each preview in the plan under the flow's title. For a flow to delete, say so in one line.
+5. Once the plan is approved, write the approved flows first, then the code.
+6. Anchor every added step (not the actor) to the code that implements it with `%% @code`, or say in your final message why a step has none. `casemap diff` lists added steps without an anchor as "no @code anchor yet".
+7. If the code had to differ from the approved flow, update the flow to match the code and say what changed and why.
+
+Then finish as in "Keep it true".
+
 ## Keep it true (every task that changes behaviour)
 
 1. Before editing code, run `casemap which <file>` for the files you will touch (it only knows anchored flows) and `casemap flows` for an overview; note the flows the task touches.
@@ -126,6 +148,7 @@ Commit new or changed flows with the code. `casemap diff` and the hook compare a
 | `casemap flows <name>` | Render one flow in the terminal |
 | `casemap check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
 | `casemap diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
+| `casemap propose <name>` | Preview a proposed version of a flow, read from stdin, against the current one (writes nothing) |
 | `casemap which <file>` | Which flows and steps are anchored to a file |
 | `casemap coverage [REF]` | Code no flow covers: the whole repository, or the files changed since REF |
 | `casemap browse` | Explore the catalog interactively (for humans; agents use the other commands) |

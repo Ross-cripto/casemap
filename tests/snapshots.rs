@@ -655,3 +655,26 @@ fn diff_markdown_uncovered() {
         repo_transcript(&repo, &["diff", "main", "--format", "markdown"])
     );
 }
+
+fn proposal_transcript(args: &[&str]) -> String {
+    let repo = TempRepo::committed_before();
+    let proposal = fs::read_to_string("tests/fixtures/flows/after/checkout.md").unwrap();
+    let run: CliRun = repo.casemap_stdin(args, &proposal).into();
+    redact_shas(&repo, transcript(&args.join(" "), &run))
+}
+
+#[test]
+fn cli_propose_text() {
+    insta::assert_snapshot!(
+        "cli__propose_text",
+        proposal_transcript(&["propose", "checkout", "--no-color"])
+    );
+}
+
+#[test]
+fn cli_propose_markdown() {
+    insta::assert_snapshot!(
+        "cli__propose_markdown",
+        proposal_transcript(&["propose", "checkout", "--no-color", "--format", "markdown"])
+    );
+}
