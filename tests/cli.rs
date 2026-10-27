@@ -11,6 +11,16 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+const OUTPUT_FORMATS: [&str; 2] = ["text", "markdown"];
+const MAIL_STEP: &str = "done --> mail[Email the receipt]\n";
+const TEXT_MAIL_MARKER: &str = "  no @code anchor yet: mail \"Email the receipt\"\n";
+const MARKDOWN_MAIL_MARKER: &str = "No `@code` anchor yet: `mail` Email the receipt\n";
+const RECEIPT_FLOW: &str = "# Receive a receipt\n\nA customer gets a receipt.\n\n```mermaid\nflowchart TD\nactor([Customer]) --> mail[Email the receipt]\nmail --> done[Show result]\n```\n";
+const NO_DIAGRAM_PAY: &str = "# Pay\n\nNo diagram.\n";
+const BROKEN_DIAGRAM_PAY: &str =
+    "# Pay\n\nA customer pays.\n\n```mermaid\nflowchart TD\na -->\n```\n";
+const NO_ACTOR_PAY: &str = "# Pay\n\nA customer pays.\n\n```mermaid\nflowchart TD\npay[Pay]\n```\n";
+
 fn casemap_command(repo: &TempRepo) -> Command {
     Command::from_std(common::casemap_command(&repo.config_path()))
 }
@@ -2528,4 +2538,232 @@ fn flows_list_by_title_but_json_keeps_file_order() {
             "z-first"
         ]
     );
+}
+
+fn propose_in(repo: &TempRepo, name: &str, format: &str, input: &str) -> Output {
+    repo.casemap_stdin(&["propose", name, "--format", format, "--no-color"], input)
+}
+
+fn diff_pay_with(addition: &str) -> (String, String) {
+    let repo = common::anchored_catalog();
+    fs::write(
+        repo.flow_path("pay.md"),
+        common::append_step(common::ANCHORED_PAY, addition),
+    )
+    .unwrap();
+    (
+        stdout(&repo.casemap(&["diff", "--no-color"])),
+        stdout(&repo.casemap(&["diff", "--format", "markdown"])),
+    )
+}
+
+#[test]
+fn propose_marks_unanchored_steps_like_diff() {
+    let repo = common::anchored_catalog();
+    let proposal = common::append_step(common::ANCHORED_PAY, MAIL_STEP);
+    let text = stdout(&propose_in(&repo, "pay", "text", &proposal));
+    assert!(text.contains(TEXT_MAIL_MARKER), "{text}");
+    let markdown = stdout(&propose_in(&repo, "pay", "markdown", &proposal));
+    assert!(markdown.contains(MARKDOWN_MAIL_MARKER), "{markdown}");
+    fs::write(repo.flow_path("pay.md"), proposal).unwrap();
+    assert!(
+        stdout(&repo.casemap(&["diff", "--no-color"]))
+            .contains(text.strip_suffix("proposal: ok\n").unwrap())
+    );
+}
+
+#[test]
+fn propose_first_anchor_turns_the_marker_on() {
+    let repo = TempRepo::committed_before();
+    let login = fs::read_to_string("tests/fixtures/flows/before/login.md").unwrap();
+    let proposal = common::append_step(
+        &login,
+        "%% @code form src/future.rs\nhome --> mail[Email the receipt]\n",
+    );
+    let text = stdout(&propose_in(&repo, "login", "text", &proposal));
+    assert!(text.contains(TEXT_MAIL_MARKER), "{text}");
+}
+
+#[test]
+fn propose_matches_diff_of_the_written_file() {
+    let repo = TempRepo::committed_before();
+    let proposal = fs::read_to_string("tests/fixtures/flows/after/checkout.md").unwrap();
+    let before = repo.git_stdout(&["status", "--porcelain"]);
+    let output = stdout(&repo.casemap_stdin(&["propose", "checkout", "--no-color"], &proposal));
+    assert_eq!(repo.git_stdout(&["status", "--porcelain"]), before);
+    let section = output.strip_suffix("proposal: ok\n").unwrap();
+    assert!(!section.is_empty());
+    assert!(section.starts_with("Checkout (checkout.md)"));
+    repo.add_fixture("after", "checkout.md");
+    assert!(stdout(&repo.casemap(&["diff", "--no-color"])).contains(section));
+}
+
+#[test]
+fn propose_new_flow_is_all_added() {
+    let repo = TempRepo::committed_before();
+    let proposal = fs::read_to_string("tests/fixtures/flows/after/refund.md").unwrap();
+    let output = stdout(&repo.casemap_stdin(&["propose", "refund", "--no-color"], &proposal));
+    assert!(output.starts_with("Refund (refund.md)  new flow: +4 steps, +3 links\n"));
+    assert!(output.ends_with("proposal: ok\n"));
+    assert!(!repo.flow_path("refund.md").exists());
+}
+
+#[test]
+fn propose_reports_check_errors_and_fails() {
+    let repo = common::anchored_catalog();
+    let proposal = common::append_step(common::ANCHORED_PAY, "%% @code ghost src/pay.rs\n");
+    for format in OUTPUT_FORMATS {
+        let output = propose_in(&repo, "pay", format, &proposal);
+        assert_eq!(output.status.code(), Some(1));
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("[anchor-unknown-step]"), "{text}");
+        if format == "markdown" {
+            let check = text.split("\n#### Check\n").nth(1).unwrap();
+            assert!(check.contains("[anchor-unknown-step]"), "{check}");
+        } else {
+            assert!(text.contains("docs/flows/pay.md:10: error:"), "{text}");
+            assert!(text.ends_with("proposal: 1 error\n"), "{text}");
+        }
+    }
+}
+
+#[test]
+fn propose_without_a_diagram_fails() {
+    let repo = common::anchored_catalog();
+    for format in OUTPUT_FORMATS {
+        let output = propose_in(&repo, "pay", format, NO_DIAGRAM_PAY);
+        assert_eq!(output.status.code(), Some(1));
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("missing-diagram"), "{text}");
+        assert!(!text.contains("no changes"), "{text}");
+    }
+}
+
+#[test]
+fn propose_rejects_folder_names_and_empty_input() {
+    let repo = TempRepo::committed_before();
+    for (name, input, expected) in [
+        (
+            "sub/pay",
+            common::ANCHORED_PAY,
+            "flow names have no folders: sub/pay",
+        ),
+        ("pay", "  \n", "the proposal on stdin is empty"),
+    ] {
+        let output = repo.casemap_stdin(&["propose", name], input);
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("casemap: {expected}\n")
+        );
+    }
+}
+
+#[test]
+fn propose_unchanged_says_so() {
+    let repo = common::anchored_catalog();
+    let output =
+        stdout(&repo.casemap_stdin(&["propose", "pay", "--no-color"], common::ANCHORED_PAY));
+    assert_eq!(
+        output,
+        "Pay for an order (pay.md)  no changes\n\nproposal: ok\n"
+    );
+    let markdown = stdout(&propose_in(&repo, "pay", "markdown", common::ANCHORED_PAY));
+    assert!(markdown.contains("\n#### Pay for an order · `docs/flows/pay.md` (no changes)\n"));
+}
+
+#[test]
+fn diff_marks_added_step_without_anchor() {
+    let (text, markdown) = diff_pay_with(MAIL_STEP);
+    assert!(text.contains(TEXT_MAIL_MARKER), "{text}");
+    assert!(markdown.contains(MARKDOWN_MAIL_MARKER), "{markdown}");
+}
+
+#[test]
+fn diff_skips_step_with_its_own_anchor() {
+    let (text, markdown) = diff_pay_with(&format!("{MAIL_STEP}%% @code mail src/pay.rs\n"));
+    assert!(text.contains("Pay for an order (pay.md)  modified:"));
+    assert!(markdown.contains("Pay for an order"));
+    assert!(!text.contains("anchor yet"));
+    assert!(!markdown.contains("anchor yet"));
+}
+
+#[test]
+fn diff_skips_flow_with_whole_flow_anchor() {
+    let (text, markdown) = diff_pay_with(&format!("{MAIL_STEP}%% @code * src/pay.rs\n"));
+    assert!(text.contains("Pay for an order (pay.md)  modified:"));
+    assert!(markdown.contains("Pay for an order"));
+    assert!(!text.contains("anchor yet"));
+    assert!(!markdown.contains("anchor yet"));
+}
+
+#[test]
+fn diff_skips_start_nodes() {
+    let (text, markdown) = diff_pay_with(&format!("done --> bye([Customer leaves])\n{MAIL_STEP}"));
+    let text_marker = text
+        .split_inclusive('\n')
+        .find(|line| line.contains("anchor yet"))
+        .unwrap();
+    let markdown_marker = markdown
+        .split_inclusive('\n')
+        .find(|line| line.contains("anchor yet"))
+        .unwrap();
+    assert_eq!(text_marker, TEXT_MAIL_MARKER);
+    assert_eq!(markdown_marker, MARKDOWN_MAIL_MARKER);
+}
+
+#[test]
+fn diff_skips_catalogs_without_anchors() {
+    let repo = TempRepo::committed_before();
+    repo.add_fixture("after", "checkout.md");
+    let text = stdout(&repo.casemap(&["diff", "--no-color"]));
+    assert!(text.contains("Checkout (checkout.md)"));
+    assert!(!text.contains("anchor yet"));
+    let output = repo.casemap(&["diff", "--format", "markdown"]);
+    // The unchanged legacy-export.md fixture has no description, so markdown check reports missing-description.
+    assert_eq!(output.status.code(), Some(1));
+    let markdown = String::from_utf8(output.stdout).unwrap();
+    assert!(!markdown.contains("anchor yet"));
+}
+
+#[test]
+fn diff_marks_steps_of_new_flow() {
+    let repo = common::anchored_catalog();
+    fs::write(repo.flow_path("receipt.md"), RECEIPT_FLOW).unwrap();
+    let text = stdout(&repo.casemap(&["diff", "--no-color"]));
+    assert!(
+        text.contains(concat!(
+            "Receive a receipt (receipt.md)  new flow: +3 steps, +2 links\n",
+            "  no @code anchor yet: mail \"Email the receipt\", done \"Show result\"\n"
+        )),
+        "{text}"
+    );
+    let markdown = stdout(&repo.casemap(&["diff", "--format", "markdown"]));
+    assert!(
+        markdown.contains("No `@code` anchor yet: `mail` Email the receipt, `done` Show result\n"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn propose_works_without_git_and_warnings_do_not_fail() {
+    let repo = TempRepo::new();
+    for format in OUTPUT_FORMATS {
+        let output = stdout(&propose_in(&repo, "pay.md", format, NO_ACTOR_PAY));
+        assert!(output.contains("no-actor"), "{output}");
+        assert!(!output.contains("casemap:pr-comment"), "{output}");
+    }
+    assert!(!repo.flow_path("pay.md").exists());
+}
+
+#[test]
+fn propose_broken_diagram_fails_in_both_formats() {
+    let repo = common::anchored_catalog();
+    for format in OUTPUT_FORMATS {
+        let output = propose_in(&repo, "pay", format, BROKEN_DIAGRAM_PAY);
+        assert_eq!(output.status.code(), Some(1));
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("parse error"), "{text}");
+        assert!(text.contains("parse-error"), "{text}");
+    }
 }

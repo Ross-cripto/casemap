@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::anchors::{self, Target};
 use crate::diff::{self, DiagramDiff};
+use crate::model::Shape;
 use crate::render::bold_line;
 use crate::{Diagram, Options, ParseError, canvas, markdown, parser, paths};
 
@@ -296,6 +297,99 @@ pub fn has_known_anchors(flows: &[Flow]) -> bool {
     flows.iter().any(|flow| !known_anchors(flow).is_empty())
 }
 
+/// Keeps step identity and display text together for both marker formats.
+struct UnanchoredStep {
+    id: String,
+    label: String,
+}
+
+/// The actor or trigger: flows draw it as a stadium.
+fn is_start_node(difference: &DiagramDiff, id: &str) -> bool {
+    difference
+        .union
+        .nodes
+        .iter()
+        .any(|node| node.id == id && node.shape == Shape::Stadium)
+}
+
+/// The marker line for `flow`'s unanchored added steps, or None when every added step is anchored.
+fn unanchored_note(
+    flow: &Flow,
+    difference: &DiagramDiff,
+    prefix: &str,
+    item: impl Fn(&UnanchoredStep) -> String,
+) -> Option<String> {
+    let steps = unanchored_added_steps(flow, difference);
+    if steps.is_empty() {
+        return None;
+    }
+    let items = steps.iter().map(item).collect::<Vec<_>>().join(", ");
+    Some(format!("{prefix}{items}"))
+}
+
+fn unanchored_note_text(flow: &Flow, difference: &DiagramDiff) -> Option<String> {
+    unanchored_note(flow, difference, "no @code anchor yet: ", |step| {
+        format!("{} {}", step.id, diff::quote(&step.label))
+    })
+}
+
+fn unanchored_note_markdown(flow: &Flow, difference: &DiagramDiff) -> Option<String> {
+    unanchored_note(flow, difference, "No `@code` anchor yet: ", |step| {
+        format!("{} {}", inline_code(&step.id), markdown_text(&step.label))
+    })
+}
+
+const RESET_SGR: &str = "\x1b[0m";
+
+fn push_marked_line(
+    output: &mut String,
+    indent: &str,
+    mark: crate::Mark,
+    text: &str,
+    opts: &Options,
+) {
+    if let Some(sgr) = canvas::mark_sgr(mark).filter(|_| opts.color) {
+        output.push_str(&format!("{indent}{sgr}{text}{RESET_SGR}\n"));
+    } else {
+        output.push_str(&format!("{indent}{text}\n"));
+    }
+}
+
+/// Added steps, other than the actor or trigger, that no valid anchor of `flow` covers.
+fn unanchored_added_steps(flow: &Flow, difference: &DiagramDiff) -> Vec<UnanchoredStep> {
+    let anchors = known_anchors(flow);
+    if anchors.iter().any(|anchor| anchor.target == Target::Flow) {
+        return Vec::new();
+    }
+    let mut steps = Vec::new();
+    for change in &difference.changes {
+        let diff::Change::StepAdded { id, label } = change else {
+            continue;
+        };
+        let is_anchored = anchors
+            .iter()
+            .any(|anchor| matches!(&anchor.target, Target::Step(step) if step == id));
+        if !is_start_node(difference, id) && !is_anchored {
+            steps.push(UnanchoredStep {
+                id: id.clone(),
+                label: label.clone(),
+            });
+        }
+    }
+    steps
+}
+
+/// True when the catalog uses anchors at all.
+fn anchors_in_use(changes: &[FlowChange]) -> bool {
+    changes.iter().any(|change| match change {
+        FlowChange::Removed { .. } => false,
+        FlowChange::New { flow, .. }
+        | FlowChange::Modified { flow, .. }
+        | FlowChange::Unchanged { flow }
+        | FlowChange::Broken { flow, .. } => has_known_anchors(std::slice::from_ref(flow)),
+    })
+}
+
 fn flow_is_touched(changed: &HashSet<&str>, catalog_prefix: &str, flow: &Flow) -> bool {
     changed.contains(format!("{catalog_prefix}{}", flow.path).as_str())
 }
@@ -372,6 +466,7 @@ fn render_diff_section(
     flow: &Flow,
     difference: &DiagramDiff,
     kind: SectionKind,
+    marker: bool,
     opts: &Options,
 ) -> String {
     let (status, suffix) = match kind {
@@ -390,12 +485,11 @@ fn render_diff_section(
     );
     if matches!(kind, SectionKind::Modified) {
         for (mark, detail) in difference.details() {
-            if let Some(sgr) = canvas::mark_sgr(mark).filter(|_| opts.color) {
-                output.push_str(&format!("  {sgr}{detail}\x1b[0m\n"));
-            } else {
-                output.push_str(&format!("  {detail}\n"));
-            }
+            push_marked_line(&mut output, "  ", mark, &detail, opts);
         }
+    }
+    if marker && let Some(note) = unanchored_note_text(flow, difference) {
+        push_marked_line(&mut output, "  ", crate::Mark::Changed, &note, opts);
     }
     output.push('\n');
     output.push_str(&crate::render_diagram(&difference.union, opts));
@@ -420,10 +514,10 @@ fn title_block(text: &str, color: bool) -> String {
     bold_line(text, color) + "\n"
 }
 
-fn render_change(change: &FlowChange, opts: &Options) -> String {
+fn render_change(change: &FlowChange, marker: bool, opts: &Options) -> String {
     match change {
         FlowChange::Modified { flow, diff } => {
-            render_diff_section(flow, diff, SectionKind::Modified, opts)
+            render_diff_section(flow, diff, SectionKind::Modified, marker, opts)
         }
         FlowChange::New {
             flow,
@@ -435,6 +529,7 @@ fn render_change(change: &FlowChange, opts: &Options) -> String {
             SectionKind::New {
                 base_broken: *base_broken,
             },
+            marker,
             opts,
         ),
         FlowChange::Removed { flow } => title_block(
@@ -472,13 +567,27 @@ fn render_changes(changes: &[FlowChange], since: &str, base: &str, opts: &Option
     }
     let mut output = bold_line(&report_header(since, &short_sha, &counts), opts.color);
     output.push('\n');
+    let marker = anchors_in_use(changes);
     for change in changes {
-        output.push_str(&render_change(change, opts));
+        output.push_str(&render_change(change, marker, opts));
     }
     if !unchanged.is_empty() {
         output.push_str(&format!("unchanged: {}\n", unchanged.join(", ")));
     }
     output
+}
+
+pub fn render_proposal(change: Option<&FlowChange>, marker: bool, opts: &Options) -> String {
+    let Some(change) = change else {
+        return String::new();
+    };
+    if let FlowChange::Unchanged { flow } = change {
+        return title_block(
+            &format!("{} ({})  no changes", flow.title, flow.path),
+            opts.color,
+        );
+    }
+    render_change(change, marker, opts)
 }
 
 pub fn render_report(
@@ -498,11 +607,7 @@ pub fn render_report(
         stale.len()
     );
     output.push('\n');
-    if let Some(colour) = canvas::mark_sgr(crate::Mark::Changed).filter(|_| opts.color) {
-        output.push_str(&format!("{colour}{header}\x1b[0m\n"));
-    } else {
-        output.push_str(&format!("{header}\n"));
-    }
+    push_marked_line(&mut output, "", crate::Mark::Changed, &header, opts);
     for entry in stale {
         output.push_str(&format!("  {} ({})\n", entry.flow.title, entry.flow.path));
         for hit in &entry.hits {
@@ -529,8 +634,8 @@ const STALE_HEADING: &str = "\n#### ⚠️ Possibly stale\n\n";
 const UNCOVERED_HEADING: &str = "\n#### 🧭 Changed code no flow covers\n\n";
 const MERMAID_FENCE: &str = "```mermaid\n";
 
-fn local_diff_hint(since: &str) -> String {
-    inline_code(&format!("casemap diff {since}"))
+fn diff_command(since: &str) -> String {
+    format!("casemap diff {since}")
 }
 
 pub struct MarkdownInput<'a> {
@@ -580,13 +685,47 @@ pub fn render_markdown(input: &MarkdownInput<'_>) -> String {
         "{COMMENT_MARKER}\n### 🗺️ casemap · {changed} use case{suffix} changed · {} possibly stale · check {check}{coverage_summary}\nCompared with {comparison}.\n",
         stale.len()
     );
+    let marker = anchors_in_use(changes);
     for change in changes {
-        output.push_str(&markdown_change(change, catalog, since));
+        output.push_str(&markdown_change(
+            change,
+            catalog,
+            &diff_command(since),
+            marker,
+        ));
     }
     output.push_str(&markdown_stale(stale, catalog));
     output.push_str(&markdown_uncovered(uncovered));
     output.push_str(&markdown_check(report, catalog));
     cap_markdown(&mut output, since);
+    output
+}
+
+fn markdown_unchanged_section(flow: &Flow, catalog: &str) -> String {
+    format!(
+        "\n#### {} · {} (no changes)\n",
+        markdown_text(&flow.title),
+        flow_location(catalog, flow)
+    )
+}
+
+pub fn render_proposal_markdown(
+    change: Option<&FlowChange>,
+    report: &crate::check::Report,
+    marker: bool,
+    catalog: &str,
+    name: &str,
+) -> String {
+    let mut output = match change {
+        None => String::new(),
+        Some(FlowChange::Unchanged { flow }) => markdown_unchanged_section(flow, catalog),
+        Some(change) => {
+            markdown_change(change, catalog, &format!("casemap propose {name}"), marker)
+        }
+    };
+    if !report.problems.is_empty() {
+        output.push_str(&markdown_check(report, catalog));
+    }
     output
 }
 
@@ -641,7 +780,8 @@ fn markdown_diff(
     symbol: &str,
     suffix: &str,
     catalog: &str,
-    since: &str,
+    hint: &str,
+    marker: bool,
 ) -> String {
     let source = crate::mermaid::write(&diff::unmarked(&difference.union));
     let block = format!("{MERMAID_FENCE}{source}```");
@@ -650,16 +790,20 @@ fn markdown_diff(
     {
         format!(
             "_Diagram too large for GitHub; run {} locally._",
-            local_diff_hint(since)
+            inline_code(hint)
         )
     } else {
         block
     };
+    let mut summary = markdown_text(&difference.summary());
+    if marker && let Some(note) = unanchored_note_markdown(flow, difference) {
+        summary.push_str(&format!("\n\n{note}"));
+    }
     let mut output = format!(
         "\n#### {symbol} {} · {}{suffix}\n{}\n\n{diagram}\n\n<details><summary>Changes</summary>\n\n",
         markdown_text(&flow.title),
         flow_location(catalog, flow),
-        markdown_text(&difference.summary()),
+        summary,
     );
     for (_, detail) in difference.details() {
         output.push_str(&format!("- {}\n", markdown_text(&detail)));
@@ -668,11 +812,13 @@ fn markdown_diff(
     output
 }
 
-fn markdown_change(change: &FlowChange, catalog: &str, since: &str) -> String {
+fn markdown_change(change: &FlowChange, catalog: &str, hint: &str, marker: bool) -> String {
     match change {
-        FlowChange::Modified { flow, diff } => markdown_diff(flow, diff, "~", "", catalog, since),
+        FlowChange::Modified { flow, diff } => {
+            markdown_diff(flow, diff, "~", "", catalog, hint, marker)
+        }
         FlowChange::New { flow, diff, .. } => {
-            markdown_diff(flow, diff, "+", " (new)", catalog, since)
+            markdown_diff(flow, diff, "+", " (new)", catalog, hint, marker)
         }
         FlowChange::Removed { flow } => {
             if let Some(Ok(old)) = diagram(flow) {
@@ -683,7 +829,8 @@ fn markdown_change(change: &FlowChange, catalog: &str, since: &str) -> String {
                     "−",
                     " (removed)",
                     catalog,
-                    since,
+                    hint,
+                    marker,
                 )
             } else {
                 format!(
@@ -792,7 +939,7 @@ fn cap_markdown(output: &mut String, since: &str) {
         output,
         STALE_HEADING,
         "stale flows",
-        &local_diff_hint(since),
+        &inline_code(&diff_command(since)),
     );
     truncate_list(
         output,
@@ -821,7 +968,7 @@ fn omit_flow_sections(output: &mut String, since: &str) {
         end = start;
         let notice = format!(
             "\n_… and {omitted} more changed flows; run {} locally._\n",
-            local_diff_hint(since)
+            inline_code(&diff_command(since))
         );
         let dropped_everything = sections.peek().is_none();
         if length + notice.chars().count() <= COMMENT_LIMIT || dropped_everything {
@@ -834,7 +981,7 @@ fn omit_flow_sections(output: &mut String, since: &str) {
 fn omit_diagrams(output: &mut String, since: &str) {
     let replacement = format!(
         "\n_Diagram omitted to fit GitHub's comment limit; run {} locally._",
-        local_diff_hint(since)
+        inline_code(&diff_command(since))
     );
     let opening = format!("\n{MERMAID_FENCE}");
     while output.chars().count() > COMMENT_LIMIT {

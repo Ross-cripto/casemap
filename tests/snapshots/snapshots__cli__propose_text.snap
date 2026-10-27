@@ -1,0 +1,58 @@
+---
+source: tests/snapshots.rs
+expression: "proposal_transcript(&[\"propose\", \"checkout\", \"--no-color\"])"
+---
+$ casemap propose checkout --no-color
+[exit 0]
+--- stdout
+Checkout (checkout.md)  modified: +1 step, -1 step, ~1 step, +3 links, -3 links, ~1 link
+  + step fraud "Fraud check"
+  ~ step confirm "Order confirmed" -> "Order confirmed and emailed"
+  - step address "Enter address"
+  + link cart -> pay
+  + link pay -> fraud "yes"
+  + link fraud -> confirm
+  ~ link pay -> error "no" -> "declined"
+  - link cart -> address
+  - link address -> pay
+  - link pay -> confirm "yes"
+
+     ╭─────────────────────╮
+     │ Customer opens cart │
+     ╰────────┬─┬──────────╯
+    ╭─────────╯ │
+    │           │
+    +           -
+    │           │
+    │           ▼
+    │  ┌─────────────────┐
+    │  │ - Enter address │
+    │  └────────┬────────┘
+    ╰───────╮   │
+            │   │
+            │   -
+            │   │
+            ▼   ▼
+         ╱─────────────╲
+        <  Payment ok?  >
+         ╲────┬─┬─┬────╱
+   ╭──────────╯ │ ╰────────────────╮
+   │            │                  │
+ - yes        + yes           ~ declined
+╭──╯            │                  │
+│               ▼                  ▼
+│  ┌───────────────┐    ┌─────────────────────┐
+│  │ + Fraud check │    │ Show payment error  │
+│  └────────────┬──┘    └─────────────────────┘
+╰───────────╮   │
+            │   │
+            │   +
+            │   │
+            ▼   ▼
+┌───────────────────────────────┐
+│ ~ Order confirmed and emailed │
+└───────────────────────────────┘
+
+proposal: ok
+--- stderr
+[end]
