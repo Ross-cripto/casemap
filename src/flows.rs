@@ -1053,17 +1053,18 @@ pub fn compare_titles(left: &Flow, right: &Flow) -> std::cmp::Ordering {
 
 pub fn render_list(flows: &[Flow]) -> String {
     let width = flows.iter().map(|flow| flow.name.len()).max().unwrap_or(0);
-    let mut output = String::new();
-    for flow in flows {
-        output.push_str(&format!("{:<width$}  {}", flow.name, flow.title));
-        if let Some(description) = &flow.description {
-            output.push_str(&format!(" — {description}"));
-        }
-        if flow.source.is_none() {
-            output.push_str("  (no mermaid block)");
-        }
-        output.push('\n');
+    flows.iter().map(|flow| list_line(flow, width)).collect()
+}
+
+pub(crate) fn list_line(flow: &Flow, width: usize) -> String {
+    let mut output = format!("{:<width$}  {}", flow.name, flow.title);
+    if let Some(description) = &flow.description {
+        output.push_str(&format!(" — {description}"));
     }
+    if flow.source.is_none() {
+        output.push_str("  (no mermaid block)");
+    }
+    output.push('\n');
     output
 }
 

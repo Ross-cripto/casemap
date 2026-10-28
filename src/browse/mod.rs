@@ -16,7 +16,7 @@ use casemap::{Diagram, Options, anchors, check, diff, git};
 use ratatui::crossterm::event::{self, Event};
 
 use crate::{BaseChanges, DEFAULT_REF, Wake};
-use app::{Action, App, BaseInfo, DiagramView, Entry, Loaded, Marker};
+use app::{Action, App, BaseInfo, DiagramView, Entry, Loaded, Marker, Standing};
 use watch::{ReloadWatch, WakeMode};
 
 const KEY_POLL: Duration = Duration::from_millis(250);
@@ -258,6 +258,7 @@ struct BrowserBase {
 fn load(dir: &Path, base: &mut BrowserBase, opts: &Options) -> anyhow::Result<Loaded> {
     let current = crate::load_catalog(dir)?;
     let report = crate::check_report(dir)?;
+    let map = casemap::map::load_map(dir)?;
     let mut status = None;
     match crate::base_changes(dir, &base.reference, &current) {
         Ok(data) => base.data = Some(data),
@@ -276,6 +277,7 @@ fn load(dir: &Path, base: &mut BrowserBase, opts: &Options) -> anyhow::Result<Lo
         &base.reference,
         base.data.as_ref(),
         opts,
+        map,
     );
     loaded.status = status;
     Ok(loaded)
@@ -298,22 +300,40 @@ fn build_loaded(
     reference: &str,
     base: Option<&BaseChanges>,
     opts: &Options,
+    map: Option<casemap::map::Map>,
 ) -> Loaded {
-    current.sort_by(flows::compare_titles);
     let mut entries = Vec::new();
-    for flow in &current {
-        entries.push(build_entry(dir, flow, &report, base, opts));
+    if let Some(map) = &map {
+        let groups = casemap::map::group_flows(map, &current);
+        let placements = casemap::map::placements(&groups);
+        for group in &groups {
+            for flow in &group.flows {
+                let mut entry = build_entry(dir, flow, &report, base, opts);
+                if let Some(placement) = placements.get(&flow.path) {
+                    entry.standing = Standing::Mapped(placement.clone());
+                }
+                entries.push(entry);
+            }
+        }
+    } else {
+        current.sort_by(flows::compare_titles);
+        for flow in &current {
+            entries.push(build_entry(dir, flow, &report, base, opts));
+        }
     }
     if let Some(base) = base {
         for flow in &base.old {
             if !current.iter().any(|current| current.path == flow.path) {
-                entries.push(build_entry(dir, flow, &report, Some(base), opts));
+                let mut entry = build_entry(dir, flow, &report, Some(base), opts);
+                entry.standing = Standing::Removed;
+                entries.push(entry);
             }
         }
     }
     Loaded {
         catalog: crate::catalog_path(dir),
         flows: entries,
+        has_map: map.is_some(),
         base: base.map(|base| BaseInfo {
             reference: reference.into(),
             sha: base.base.clone(),
@@ -364,6 +384,7 @@ fn build_entry(
     let broken = matches!(flows::diagram(flow), Some(Err(_)));
     Entry {
         flow: flow.clone(),
+        standing: Standing::Unmapped,
         path: crate::catalog_file_path(dir, &flow.path),
         marker: Marker::choose(broken, check_errors, stale.is_some(), change_marker),
         normal,
@@ -480,6 +501,30 @@ fn render_difference(
 }
 
 #[cfg(test)]
+fn commerce_loaded(opts: &Options) -> Loaded {
+    let directory = assert_fs::TempDir::new().unwrap();
+    std::fs::write(
+        directory.path().join("README.md"),
+        include_str!("../../tests/fixtures/maps/commerce.md"),
+    )
+    .unwrap();
+    let map = casemap::map::load_map(directory.path()).unwrap();
+    let current = flows::load_dir(Path::new("tests/fixtures/corpus/commerce")).unwrap();
+    build_loaded(
+        Path::new("docs/flows"),
+        current,
+        check::Report {
+            flows: 9,
+            problems: vec![],
+        },
+        "HEAD",
+        None,
+        opts,
+        map,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -546,6 +591,7 @@ mod tests {
     fn loaded_with_flows(flows: Vec<Entry>) -> Loaded {
         Loaded {
             catalog: "docs/flows".into(),
+            has_map: false,
             flows,
             base: None,
             catalog_problems: 0,
@@ -847,6 +893,7 @@ mod tests {
             "main",
             None,
             &Options::default(),
+            None,
         );
         let broken = loaded
             .flows
@@ -922,6 +969,7 @@ mod tests {
             "HEAD",
             Some(&removed),
             &Options::default(),
+            None,
         );
         assert_eq!(loaded.flows[0].marker, Marker::Removed);
         assert_eq!(loaded.flows[0].difference.summary, "removed since base");

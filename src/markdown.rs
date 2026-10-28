@@ -129,13 +129,13 @@ pub(crate) fn is_mermaid(info: &str) -> bool {
         .is_some_and(|word| word.eq_ignore_ascii_case("mermaid"))
 }
 
-struct Fence<'a> {
+pub(crate) struct Fence<'a> {
     character: char,
     length: usize,
     info: &'a str,
 }
 
-fn fence(line: &str) -> Option<Fence<'_>> {
+pub(crate) fn fence(line: &str) -> Option<Fence<'_>> {
     let trimmed = line.trim_start_matches(' ');
     if line.len() - trimmed.len() > 3 {
         return None;
@@ -155,7 +155,7 @@ fn fence(line: &str) -> Option<Fence<'_>> {
     })
 }
 
-fn closes(open: &Fence<'_>, line: &str) -> bool {
+pub(crate) fn closes(open: &Fence<'_>, line: &str) -> bool {
     fence(line).is_some_and(|close| {
         close.character == open.character && close.length >= open.length && close.info.is_empty()
     })

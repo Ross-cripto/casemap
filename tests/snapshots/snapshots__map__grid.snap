@@ -1,0 +1,14 @@
+---
+source: tests/snapshots.rs
+expression: grid
+---
+ docs/flows · 9 use cases in 3 activities
+
+ ╭─ Find products ──────╮   ╭─ Choose and buy ─────╮   ╭─ Sync the store ─────╮
+ │ 4 use cases          │ ▶ │ 4 use cases          │ ▶ │ 1 use case           │
+ ╰──────────────────────╯   ╰──────────────────────╯   ╰──────────────────────╯
+ · Browse the storefront    · View a product and       · Refresh the catalogue
+ · Browse a collection        choose options             after a store edit
+ · Search for products      · Add an item to the cart
+ · Read a store page        · Manage the cart
+                            · Check out a cart

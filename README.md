@@ -147,6 +147,61 @@ flowchart TD
   because renaming a file reads as removing one flow and adding another.
 - Describe the current behaviour. Casemap computes changes from git.
 
+## The map
+
+The catalog's `README.md` groups use cases under the user's activities, in
+journey order. GitHub renders it when you open the catalog folder:
+
+```markdown
+# Shop use-case map
+
+What shoppers do, from finding a product to paying.
+
+## Find products
+
+A shopper looks for something to buy.
+
+- [Browse the storefront](browse-the-storefront.md)
+- [Search for products](search-for-products.md)
+
+## Choose and buy
+
+A shopper picks a product and pays.
+
+- [Check out a cart](check-out-a-cart.md)
+```
+
+Use `##` headings for activities and flow titles as link text. Each flow belongs
+to exactly one activity. `casemap check` reports unknown or duplicate links,
+missing flows and mismatched link titles. Ask your coding agent to write and
+maintain the map; an ordinary README without activity links stays an ordinary
+README.
+
+`casemap map --no-color` draws this commerce catalog at 80 columns:
+
+```text
+ docs/flows · 9 use cases in 3 activities
+
+ ╭─ Find products ──────╮   ╭─ Choose and buy ─────╮   ╭─ Sync the store ─────╮
+ │ 4 use cases          │ ▶ │ 4 use cases          │ ▶ │ 1 use case           │
+ ╰──────────────────────╯   ╰──────────────────────╯   ╰──────────────────────╯
+ · Browse the storefront    · View a product and       · Refresh the catalogue
+ · Browse a collection        choose options             after a store edit
+ · Search for products      · Add an item to the cart
+ · Read a store page        · Manage the cart
+                            · Check out a cart
+```
+
+When the grid does not fit, the map becomes an outline with each activity's
+sentence and its flows. `--layout grid` or `--layout outline` forces a layout.
+Width comes from a positive `COLUMNS`, otherwise the stdout terminal when
+available, otherwise 80. `--ascii` replaces the box-drawing symbols with ASCII.
+
+`casemap flows` and `casemap browse` use the same activity order, with flows not
+on the map last. Browse search keeps the headings of matching groups, and the
+diagram header shows the activity and the flow's position within it. Without a
+map, both commands keep their flat lists.
+
 ## Keep flows true: anchors
 
 Tie steps to the code that implements them with Mermaid comments inside the
@@ -466,6 +521,7 @@ repos:
 | `casemap hook stop` | Check uncommitted changes for agents; block once per new warning set |
 | `casemap browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
 | `casemap flows [NAME]` | List the catalog, or render one use case |
+| `casemap map [--layout grid\|outline]` | Draw the use-case map from the catalog's README.md; the grid when it fits the terminal (COLUMNS, else the terminal, else 80), else the outline |
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
 | `casemap check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
 | `casemap diff [REF] [--strict] [--format text\|markdown]` | Compare with the merge base of REF and HEAD; `--format markdown` writes the PR comment and also fails on check errors (unlike text mode); `--strict` also exits 1 for possibly stale flows |
@@ -496,6 +552,10 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `anchor-syntax` | error | An invalid anchor or an anchor outside the first Mermaid block |
 | `anchor-unknown-step` | error | An anchor targets a node id the flowchart does not have |
 | `anchor-no-match` | error | An anchor path matches no file in the repository |
+| `map-unknown-flow` | error | A map link targets a file that is not a flow in the catalog |
+| `map-duplicate-flow` | error | A flow appears more than once on the map |
+| `unmapped-flow` | warning | A flow is missing from the use-case map |
+| `map-title-mismatch` | warning | A map link's text differs from the flow's title |
 | `extra-diagram` | warning | Another Mermaid block follows the first |
 | `duplicate-title` | warning | An earlier file has the same title, ignoring case and surrounding whitespace |
 | `empty-catalog` | warning | No flow files |
@@ -521,13 +581,17 @@ Tools can read one-line JSON from `casemap check --format json`:
 `path` and `line` are `null` when absent. A missing catalog exits 1, reports the
 error on stderr, and leaves stdout empty, including in JSON mode.
 
-`casemap flows` and the browser list sort by case-insensitive title, with file
-name as the tie-break. `casemap flows --format json` keeps file-name order for
-tools and returns catalog metadata:
+`casemap flows` and the browser list group by activity when a map exists.
+Without a map, they sort by case-insensitive title, with file name as the
+tie-break. `casemap flows --format json` keeps file-name order for tools and
+returns catalog metadata:
 
 ```json
 {"version":1,"flows":[{"name":"checkout","path":"docs/flows/checkout.md","title":"Checkout","description":"A customer pays for the cart.","has_diagram":true}]}
 ```
+
+When a map exists, each JSON flow also has an `activity` key: its activity name,
+or `null` for a flow not on the map. Without a map, the key is absent.
 
 Global flags can appear before or after a subcommand:
 

@@ -140,7 +140,11 @@ const WIDTH_AND_CROSSING_BUDGETS: &[(&str, usize, usize)] = &[
 fn collect_files(directory: &Path, extension: &str, paths: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).expect("read diagram directory") {
         let path = entry.expect("read diagram entry").path();
-        if path.extension().is_some_and(|value| value == extension) {
+        let is_flow = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(casemap::flows::is_flow_file_name);
+        if is_flow && path.extension().is_some_and(|value| value == extension) {
             paths.push(path);
         }
     }

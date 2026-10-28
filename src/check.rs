@@ -4,7 +4,7 @@ use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::flows::{CatalogError, Entry};
-use crate::{Diagram, anchors, flows, markdown, model::Shape, parser};
+use crate::{Diagram, anchors, flows, map, markdown, model::Shape, parser};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -42,11 +42,15 @@ pub enum Code {
     AnchorNoMatch,
     ReservedId,
     SingleExitDecision,
+    MapUnknownFlow,
+    MapDuplicateFlow,
+    UnmappedFlow,
+    MapTitleMismatch,
 }
 
 impl Code {
     /// Must list every variant exactly once; the exhaustive test mapping enforces this.
-    pub const ALL: [Code; 28] = [
+    pub const ALL: [Code; 32] = [
         Self::MissingTitle,
         Self::MissingDescription,
         Self::MissingDiagram,
@@ -75,6 +79,10 @@ impl Code {
         Self::AnchorNoMatch,
         Self::ReservedId,
         Self::SingleExitDecision,
+        Self::MapUnknownFlow,
+        Self::MapDuplicateFlow,
+        Self::UnmappedFlow,
+        Self::MapTitleMismatch,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -107,6 +115,10 @@ impl Code {
             Self::AnchorNoMatch => "anchor-no-match",
             Self::ReservedId => "reserved-id",
             Self::SingleExitDecision => "single-exit-decision",
+            Self::MapUnknownFlow => "map-unknown-flow",
+            Self::MapDuplicateFlow => "map-duplicate-flow",
+            Self::UnmappedFlow => "unmapped-flow",
+            Self::MapTitleMismatch => "map-title-mismatch",
         }
     }
 
@@ -124,7 +136,9 @@ impl Code {
             | Self::AnchorSyntax
             | Self::AnchorUnknownStep
             | Self::AnchorNoMatch
-            | Self::ReservedId => Severity::Error,
+            | Self::ReservedId
+            | Self::MapUnknownFlow
+            | Self::MapDuplicateFlow => Severity::Error,
             Self::ExtraDiagram
             | Self::DuplicateTitle
             | Self::EmptyCatalog
@@ -139,7 +153,9 @@ impl Code {
             | Self::FileName
             | Self::LongLabel
             | Self::EdgeIntoActor
-            | Self::SingleExitDecision => Severity::Warning,
+            | Self::SingleExitDecision
+            | Self::UnmappedFlow
+            | Self::MapTitleMismatch => Severity::Warning,
         }
     }
 }
@@ -701,6 +717,7 @@ pub fn check_catalog_with(
     };
     let mut names = BTreeMap::new();
     let mut titles = BTreeMap::new();
+    let mut readable = Vec::new();
     for entry in flows::read_catalog(dir)? {
         match entry {
             Entry::Flow { name, text } => {
@@ -711,6 +728,7 @@ pub fn check_catalog_with(
                     record_title(&name, &title, &mut titles, &mut report.problems);
                 }
                 report.problems.extend(problems);
+                readable.push((name, text));
             }
             Entry::Unreadable { name, error } => {
                 report.flows += 1;
@@ -730,6 +748,13 @@ pub fn check_catalog_with(
             )),
         }
     }
+    if let Some(map) = map::load_map(dir)? {
+        let parsed: Vec<_> = readable
+            .iter()
+            .map(|(name, text)| flows::parse_flow(name, text))
+            .collect();
+        check_map(&map, &parsed, &mut report.problems);
+    }
     if report.flows == 0 {
         report.problems.push(Problem {
             file: None,
@@ -740,6 +765,70 @@ pub fn check_catalog_with(
     }
     sort_problems(&mut report.problems);
     Ok(report)
+}
+
+fn check_map(map: &map::Map, flows: &[flows::Flow], problems: &mut Vec<Problem>) {
+    check_map_entries(map, flows, problems);
+    check_unmapped(map, flows, problems);
+}
+
+fn check_map_entries(map: &map::Map, flows: &[flows::Flow], problems: &mut Vec<Problem>) {
+    let entry_problem = |code, entry: &map::MapEntry, message: String| {
+        problem(&map.file, Some(entry.line), code, message)
+    };
+    let mut first_activities = BTreeMap::new();
+    for activity in &map.activities {
+        for entry in &activity.entries {
+            let Some(flow) = map::find_flow(flows, &entry.target) else {
+                problems.push(entry_problem(
+                    Code::MapUnknownFlow,
+                    entry,
+                    format!(
+                        "links to {}, which is not a flow in this catalog",
+                        entry.target
+                    ),
+                ));
+                continue;
+            };
+            if let Some(first) = first_activities.get(&entry.target) {
+                problems.push(entry_problem(
+                    Code::MapDuplicateFlow,
+                    entry,
+                    format!("{} is already listed under \"{first}\"", entry.target),
+                ));
+            } else {
+                first_activities.insert(&entry.target, &activity.name);
+            }
+            if entry.text.trim() != flow.title.trim() {
+                problems.push(entry_problem(
+                    Code::MapTitleMismatch,
+                    entry,
+                    format!(
+                        "link text \"{}\" differs from the flow title \"{}\"",
+                        entry.text, flow.title
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn check_unmapped(map: &map::Map, flows: &[flows::Flow], problems: &mut Vec<Problem>) {
+    for group in map::group_flows(map, flows) {
+        if group.activity.is_none() {
+            for flow in group.flows {
+                problems.push(problem(
+                    &flow.path,
+                    None,
+                    Code::UnmappedFlow,
+                    format!(
+                        "not on the use-case map; add it under an activity in {}",
+                        map.file
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn record_title(
@@ -847,7 +936,9 @@ mod tests {
             | Code::AnchorSyntax
             | Code::AnchorUnknownStep
             | Code::AnchorNoMatch
-            | Code::ReservedId => Severity::Error,
+            | Code::ReservedId
+            | Code::MapUnknownFlow
+            | Code::MapDuplicateFlow => Severity::Error,
             Code::ExtraDiagram
             | Code::DuplicateTitle
             | Code::EmptyCatalog
@@ -862,7 +953,9 @@ mod tests {
             | Code::FileName
             | Code::LongLabel
             | Code::EdgeIntoActor
-            | Code::SingleExitDecision => Severity::Warning,
+            | Code::SingleExitDecision
+            | Code::UnmappedFlow
+            | Code::MapTitleMismatch => Severity::Warning,
         }
     }
 
@@ -1084,7 +1177,65 @@ mod tests {
                 &[Code::AnchorUnknownStep],
             ),
             anchor_no_match_case(),
+            map_case(
+                Code::MapUnknownFlow,
+                "README.md",
+                Some(3),
+                "## Buy\n- [Checkout](checkout.md)\n- [Missing](missing.md)\n",
+            ),
+            map_case(
+                Code::MapDuplicateFlow,
+                "README.md",
+                Some(4),
+                "## Buy\n- [Checkout](checkout.md)\n## Again\n- [Checkout](checkout.md)\n",
+            ),
+            map_case(
+                Code::UnmappedFlow,
+                "checkout.md",
+                None,
+                "## Buy\n- [Missing](missing.md)\n",
+            ),
+            map_case(
+                Code::MapTitleMismatch,
+                "README.md",
+                Some(2),
+                "## Buy\n- [Wrong](checkout.md)\n",
+            ),
         ]
+    }
+
+    fn map_case(code: Code, file: &'static str, line: Option<usize>, readme: &str) -> Case {
+        Case {
+            code,
+            severity: expected_severity(code),
+            file,
+            line,
+            problems: catalog_problems(
+                &[
+                    ("checkout.md", VALID.as_bytes()),
+                    ("README.md", readme.as_bytes()),
+                ],
+                &[],
+            ),
+            expected_codes: None,
+        }
+    }
+
+    #[test]
+    fn map_codes_need_a_map() {
+        let report = check_catalog(Path::new("tests/fixtures/corpus/commerce")).unwrap();
+        let map_codes = [
+            Code::MapUnknownFlow,
+            Code::MapDuplicateFlow,
+            Code::UnmappedFlow,
+            Code::MapTitleMismatch,
+        ];
+        assert!(
+            !report
+                .problems
+                .iter()
+                .any(|problem| map_codes.contains(&problem.code))
+        );
     }
 
     fn anchor_no_match_case() -> Case {
@@ -1133,6 +1284,10 @@ mod tests {
             Code::AnchorNoMatch => 25,
             Code::ReservedId => 26,
             Code::SingleExitDecision => 27,
+            Code::MapUnknownFlow => 28,
+            Code::MapDuplicateFlow => 29,
+            Code::UnmappedFlow => 30,
+            Code::MapTitleMismatch => 31,
         }
     }
 
