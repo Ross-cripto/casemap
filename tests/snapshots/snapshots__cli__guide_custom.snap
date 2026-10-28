@@ -97,8 +97,29 @@ The fix describes what the customer experiences ("Enter payment details", "Payme
 3. Group them into use cases. Several entry points often serve one use case, and one entry point can appear in several.
 4. Write up to 10 of the most important flows first, the ones a new teammate needs. List any others as candidates in your report instead of writing them all at once.
 5. Add anchors to each flow you wrote.
-6. Run `casemap check --strict` and fix every problem it reports.
-7. Finish with the list from `casemap flows`, the summary line of `casemap coverage`, the candidates you did not write, and the open questions.
+6. Group the flows into a use-case map in `flows/README.md`: 2 to 7 activities, the things your users are trying to get done, in the order they meet them. Each activity is a `##` heading with one sentence, then a list of links to its flows using each flow's title, as in `- [Check out a cart](check-out-a-cart.md)`. Every flow appears exactly once.
+7. Run `casemap check --strict` and fix every problem it reports.
+8. Finish with the output of `casemap map`, the summary line of `casemap coverage`, the candidates you did not write, and the open questions.
+
+A shop's `flows/README.md` could be:
+
+```markdown
+# Shop use-case map
+
+What a shopper does, from finding a product to paying.
+
+## Find products
+
+A shopper looks for something to buy.
+
+- [Browse the storefront](browse-the-storefront.md)
+
+## Choose and buy
+
+A shopper picks a product and pays.
+
+- [Check out a cart](check-out-a-cart.md)
+```
 
 ## Plan a change (flow first)
 
@@ -125,7 +146,7 @@ Then finish as in "Keep it true".
 ## Keep it true (every task that changes behaviour)
 
 1. Before editing code, run `casemap which <file>` for the files you will touch (it only knows anchored flows) and `casemap flows` for an overview; note the flows the task touches.
-2. After the change, update those files so they describe the behaviour as it is now. Add a file for a new use case. Delete the file of a removed one. Never rename or move a flow file: casemap matches flows by path, so a rename reads as one flow removed and another added.
+2. After the change, update those files so they describe the behaviour as it is now. Add a file for a new use case. Delete the file of a removed one. Never rename or move a flow file: casemap matches flows by path, so a rename reads as one flow removed and another added. Add a new flow to the map under its activity and remove a deleted one; `casemap check` reports flows missing from the map.
 
    When you move or rename anchored code, update its `@code` paths; `casemap check` fails otherwise.
 
@@ -145,6 +166,7 @@ Commit new or changed flows with the code. `casemap diff` and the hook compare a
 |---|---|
 | `casemap init` | Create `flows/` and install this skill for Claude Code, Codex and other agents |
 | `casemap flows` | List the catalog (`--format json` for tools) |
+| `casemap map` | Draw the use-case map: activities in journey order, with their flows |
 | `casemap flows <name>` | Render one flow in the terminal |
 | `casemap check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
 | `casemap diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |

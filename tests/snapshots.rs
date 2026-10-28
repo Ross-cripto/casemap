@@ -678,3 +678,44 @@ fn cli_propose_markdown() {
         proposal_transcript(&["propose", "checkout", "--no-color", "--format", "markdown"])
     );
 }
+
+#[test]
+fn map_layouts() {
+    let directory = common::map_catalog();
+    let catalog = directory.path().join("docs/flows");
+    let flows = flows::load_dir(&catalog).unwrap();
+    let map = casemap::map::load_map(&catalog).unwrap().unwrap();
+    let groups = casemap::map::group_flows(&map, &flows);
+    let grid = casemap::map::render_map(
+        &groups,
+        "docs/flows",
+        casemap::map::MapLayout::Grid,
+        80,
+        &Options::default(),
+    );
+    assert_eq!(
+        grid,
+        concat!(
+            " docs/flows · 9 use cases in 3 activities\n\n",
+            " ╭─ Find products ──────╮   ╭─ Choose and buy ─────╮   ╭─ Sync the store ─────╮\n",
+            " │ 4 use cases          │ ▶ │ 4 use cases          │ ▶ │ 1 use case           │\n",
+            " ╰──────────────────────╯   ╰──────────────────────╯   ╰──────────────────────╯\n",
+            " · Browse the storefront    · View a product and       · Refresh the catalogue\n",
+            " · Browse a collection        choose options             after a store edit\n",
+            " · Search for products      · Add an item to the cart\n",
+            " · Read a store page        · Manage the cart\n",
+            "                            · Check out a cart\n"
+        )
+    );
+    insta::assert_snapshot!("map__grid", grid);
+    insta::assert_snapshot!(
+        "map__outline",
+        casemap::map::render_map(
+            &groups,
+            "docs/flows",
+            casemap::map::MapLayout::Outline,
+            80,
+            &Options::default()
+        )
+    );
+}

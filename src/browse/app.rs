@@ -1,4 +1,5 @@
 use casemap::flows::Flow;
+use casemap::map::{Placement, UNMAPPED_HEADING};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::Text;
@@ -53,9 +54,18 @@ pub(super) struct DiagramView {
     pub details: Vec<String>,
 }
 
+/// Where an entry sits in the grouped list.
+#[derive(Clone, Debug)]
+pub(super) enum Standing {
+    Mapped(Placement),
+    Unmapped,
+    Removed,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Entry {
     pub flow: Flow,
+    pub standing: Standing,
     pub path: String,
     pub marker: Marker,
     pub normal: DiagramView,
@@ -72,7 +82,11 @@ pub(super) struct BaseInfo {
 }
 
 pub(super) struct Loaded {
+    pub has_map: bool,
     pub catalog: String,
+    /// Display order. With a map: mapped entries in activity order, then unmapped by title,
+    /// then removed. `rebuild_view` starts a heading whenever the group changes, so this
+    /// order is what keeps one heading per group.
     pub flows: Vec<Entry>,
     pub base: Option<BaseInfo>,
     pub catalog_problems: usize,
@@ -97,10 +111,38 @@ pub(super) enum Action {
     Reload,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ListRow {
+    Heading(String),
+    Flow(usize),
+}
+
+const REMOVED_HEADING: &str = "Removed";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GroupKey {
+    Activity(usize),
+    Unmapped,
+    Removed,
+}
+
+fn entry_group(entry: &Entry) -> (GroupKey, &str) {
+    match &entry.standing {
+        Standing::Mapped(placement) => (
+            GroupKey::Activity(placement.activity_index),
+            &placement.activity,
+        ),
+        Standing::Unmapped => (GroupKey::Unmapped, UNMAPPED_HEADING),
+        Standing::Removed => (GroupKey::Removed, REMOVED_HEADING),
+    }
+}
+
 pub(super) struct App {
     pub catalog: String,
     pub flows: Vec<Entry>,
     pub view: Vec<usize>,
+    pub rows: Vec<ListRow>,
+    has_map: bool,
     pub list_state: ListState,
     pub focus: Focus,
     pub pan: Offset,
@@ -125,6 +167,8 @@ impl App {
             catalog: String::new(),
             flows: Vec::new(),
             view: Vec::new(),
+            rows: Vec::new(),
+            has_map: false,
             list_state: ListState::default(),
             focus: Focus::List,
             pan: Offset::default(),
@@ -293,14 +337,35 @@ impl App {
 
     fn select(&mut self, position: usize) {
         let selection = (!self.view.is_empty()).then(|| position.min(self.view.len() - 1));
-        if selection != self.list_state.selected() {
+        if selection != self.selected_position() {
             self.pan = Offset::default();
         }
-        self.list_state.select(selection);
+        let row = selection.and_then(|position| self.row_of(position));
+        self.list_state.select(row);
+        if let Some(row) = row
+            && row > 0
+            && matches!(self.rows[row - 1], ListRow::Heading(_))
+            && self.list_state.offset() > row - 1
+        {
+            *self.list_state.offset_mut() = row - 1;
+        }
+    }
+
+    fn row_of(&self, view_position: usize) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|row| *row == ListRow::Flow(view_position))
+    }
+
+    fn selected_position(&self) -> Option<usize> {
+        match self.rows.get(self.list_state.selected()?)? {
+            ListRow::Flow(position) => Some(*position),
+            ListRow::Heading(_) => None,
+        }
     }
 
     fn move_selection(&mut self, distance: i32) {
-        let selected = self.list_state.selected().unwrap_or(0);
+        let selected = self.selected_position().unwrap_or(0);
         self.select(selected.saturating_add_signed(distance as isize));
     }
 
@@ -332,6 +397,7 @@ impl App {
 
     pub(super) fn apply(&mut self, loaded: Loaded) {
         let path = self.selected().map(|entry| entry.flow.path.clone());
+        self.has_map = loaded.has_map;
         self.catalog = loaded.catalog;
         self.flows = loaded.flows;
         self.base = loaded.base;
@@ -354,6 +420,7 @@ impl App {
     }
 
     fn rebuild_view(&mut self, selected_path: Option<String>) {
+        let previous_position = self.selected_position().unwrap_or(0);
         let query = self.query().to_lowercase();
         self.view = self
             .flows
@@ -367,7 +434,19 @@ impl App {
                 .iter()
                 .position(|index| self.flows[*index].flow.path == *path)
         });
-        let position = same_path.unwrap_or_else(|| self.list_state.selected().unwrap_or(0));
+        self.rows.clear();
+        let mut previous_group = None;
+        for (position, index) in self.view.iter().enumerate() {
+            if self.has_map {
+                let (key, heading) = entry_group(&self.flows[*index]);
+                if previous_group != Some(key) {
+                    self.rows.push(ListRow::Heading(heading.into()));
+                    previous_group = Some(key);
+                }
+            }
+            self.rows.push(ListRow::Flow(position));
+        }
+        let position = same_path.unwrap_or(previous_position);
         if same_path.is_none() {
             self.pan = Offset::default();
         }
@@ -379,8 +458,7 @@ impl App {
     }
 
     pub(super) fn selected(&self) -> Option<&Entry> {
-        self.list_state
-            .selected()
+        self.selected_position()
             .and_then(|selection| self.view.get(selection))
             .and_then(|index| self.flows.get(*index))
     }
@@ -466,6 +544,7 @@ mod state_tests {
                 &format!("{name}.md"),
                 &format!("# {name}\n\nDescription.\n\n```mermaid\ngraph TD\na --> b\n```"),
             ),
+            standing: Standing::Unmapped,
             path: format!("docs/flows/{name}.md"),
             marker: Marker::Same,
             normal: view.clone(),
@@ -478,6 +557,7 @@ mod state_tests {
     fn loaded_with_flows(names: &[&str]) -> Loaded {
         Loaded {
             catalog: "docs/flows".into(),
+            has_map: false,
             flows: names.iter().map(|name| entry(name)).collect(),
             base: Some(BaseInfo {
                 reference: "HEAD".into(),
@@ -491,6 +571,193 @@ mod state_tests {
         let mut app = App::new(loaded_with_flows(&["Alpha", "Beta", "Gamma"]), false, true);
         app.resize(120, 30);
         app
+    }
+
+    fn grouped_app() -> App {
+        let flows = vec![
+            entry("alpha").flow,
+            entry("beta").flow,
+            entry("gamma").flow,
+            entry("unmapped").flow,
+        ];
+        let directory = assert_fs::TempDir::new().unwrap();
+        std::fs::write(
+            directory.path().join("README.md"),
+            "## First\n- [Alpha](alpha.md)\n- [Beta](beta.md)\n## Second\n- [Gamma](gamma.md)\n",
+        )
+        .unwrap();
+        let map = casemap::map::load_map(directory.path()).unwrap();
+        let loaded = crate::browse::build_loaded(
+            directory.path(),
+            flows,
+            casemap::check::Report {
+                flows: 4,
+                problems: vec![],
+            },
+            "HEAD",
+            None,
+            &casemap::Options::default(),
+            map,
+        );
+        let mut app = App::new(loaded, false, false);
+        app.resize(120, 30);
+        app
+    }
+
+    #[test]
+    fn grouped_rows_follow_the_map() {
+        let app = grouped_app();
+        assert_eq!(
+            app.rows,
+            [
+                ListRow::Heading("First".into()),
+                ListRow::Flow(0),
+                ListRow::Flow(1),
+                ListRow::Heading("Second".into()),
+                ListRow::Flow(2),
+                ListRow::Heading(UNMAPPED_HEADING.into()),
+                ListRow::Flow(3)
+            ]
+        );
+    }
+
+    #[test]
+    fn down_and_up_cross_a_heading() {
+        let mut app = grouped_app();
+        app.select(1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected().unwrap().flow.name, "gamma");
+        assert_eq!(app.list_state.selected(), Some(4));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected().unwrap().flow.name, "beta");
+    }
+
+    #[test]
+    fn up_at_the_first_flow_stays() {
+        let mut app = grouped_app();
+        app.select(0);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected().unwrap().flow.name, "alpha");
+    }
+
+    #[test]
+    fn home_scrolls_the_first_heading_into_view() {
+        const OFFSET_PAST_FIRST_HEADING: usize = 4;
+        let mut app = grouped_app();
+        *app.list_state.offset_mut() = OFFSET_PAST_FIRST_HEADING;
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.selected().unwrap().flow.name, "alpha");
+        assert_eq!(app.list_state.offset(), 0);
+    }
+
+    fn assert_selection_is_a_flow(app: &App) {
+        assert!(matches!(
+            app.rows[app.list_state.selected().unwrap()],
+            ListRow::Flow(_)
+        ));
+    }
+
+    #[test]
+    fn paging_never_selects_a_heading() {
+        let mut app = grouped_app();
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.selected().unwrap().flow.name, "unmapped");
+        assert_selection_is_a_flow(&app);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.selected().unwrap().flow.name, "alpha");
+        app.resize(120, 6);
+        for key in [KeyCode::PageDown, KeyCode::PageUp] {
+            for _ in 0..8 {
+                press(&mut app, key);
+                assert_selection_is_a_flow(&app);
+            }
+        }
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.list_state.offset(), 0);
+    }
+
+    #[test]
+    fn same_name_activities_and_removed_flows_keep_their_headings() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        let current = vec![entry("alpha").flow, entry("beta").flow];
+        let old = vec![entry("removed").flow];
+        let base = crate::BaseChanges {
+            base: "1234567890".into(),
+            changes: casemap::flows::compare(&old, &current),
+            old,
+            changed: vec![],
+            stale: vec![],
+            root: directory.path().into(),
+            prefix: String::new(),
+        };
+        let map = casemap::map::parse_map(
+            "README.md",
+            concat!(
+                "## Pay\n",
+                "- [Alpha](alpha.md)\n",
+                "## Pay\n",
+                "- [Beta](beta.md)\n"
+            ),
+        );
+        let loaded = crate::browse::build_loaded(
+            directory.path(),
+            current,
+            casemap::check::Report {
+                flows: 2,
+                problems: vec![],
+            },
+            "HEAD",
+            Some(&base),
+            &casemap::Options::default(),
+            map,
+        );
+        let app = App::new(loaded, false, false);
+        let headings: Vec<_> = app
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ListRow::Heading(name) => Some(name.as_str()),
+                ListRow::Flow(_) => None,
+            })
+            .collect();
+        assert_eq!(headings, ["Pay", "Pay", "Removed"]);
+    }
+
+    #[test]
+    fn search_keeps_headings_of_matching_groups() {
+        let mut app = grouped_app();
+        press(&mut app, KeyCode::Char('/'));
+        for character in "gamma".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        assert_eq!(
+            app.rows,
+            [ListRow::Heading("Second".into()), ListRow::Flow(0)]
+        );
+        assert_eq!(app.selected().unwrap().flow.name, "gamma");
+        assert_eq!(app.list_state.selected(), Some(1));
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.rows.is_empty());
+        assert!(app.selected().is_none());
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.selected().unwrap().flow.name, "gamma");
+    }
+
+    #[test]
+    fn grouped_reload_preserves_selection_after_heading_changes() {
+        let mut app = grouped_app();
+        app.select(2);
+        let mut loaded = loaded_with_flows(&["gamma", "alpha"]);
+        loaded.has_map = true;
+        loaded.flows[0].standing = Standing::Mapped(Placement {
+            activity: "New group".into(),
+            activity_index: 0,
+            position: 1,
+            count: 1,
+        });
+        app.apply(loaded);
+        assert_eq!(app.selected().unwrap().flow.name, "gamma");
+        assert_eq!(app.list_state.selected(), Some(1));
     }
 
     #[test]

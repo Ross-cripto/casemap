@@ -19,7 +19,7 @@ mod browse;
 mod hook;
 mod onboard;
 use casemap::markdown::is_markdown_path;
-use casemap::{Direction, Options, ParseError, anchors, check, coverage, git, skill};
+use casemap::{Direction, Options, ParseError, anchors, check, coverage, git, map, skill};
 
 const DEFAULT_FLOWS_DIR: &str = skill::DEFAULT_CATALOG;
 const DEFAULT_REF: &str = "HEAD";
@@ -78,6 +78,22 @@ enum DiffFormat {
     Markdown,
 }
 
+// Mirrors the library enum to keep clap out of the library.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum MapLayoutArg {
+    Grid,
+    Outline,
+}
+
+impl From<MapLayoutArg> for map::MapLayout {
+    fn from(layout: MapLayoutArg) -> Self {
+        match layout {
+            MapLayoutArg::Grid => Self::Grid,
+            MapLayoutArg::Outline => Self::Outline,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Create the flow catalog and install the casemap agent skill.
@@ -101,6 +117,12 @@ enum Commands {
         name: Option<String>,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Draw the use-case map from the catalog's README.md: activities in journey order, with their flows.
+    Map {
+        /// grid or outline; by default the grid when it fits the terminal width.
+        #[arg(long, value_enum)]
+        layout: Option<MapLayoutArg>,
     },
     /// Explore the flow catalog interactively.
     Browse {
@@ -262,6 +284,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Some(Commands::Flows { name, format }) => {
             show_flows(directory, name.as_deref(), format, &opts)
         }
+        Some(Commands::Map { layout }) => show_map(directory, layout, &opts),
         Some(Commands::Check { strict, format }) => check_catalog(directory, strict, format, color),
         Some(Commands::Hook {
             event: HookEvent::Stop,
@@ -669,6 +692,51 @@ fn propose_flow(
     Ok(proposal_exit_code(&report, change))
 }
 
+fn terminal_width() -> usize {
+    if let Ok(columns) = std::env::var("COLUMNS")
+        && let Ok(width) = columns.parse::<usize>()
+        && width > 0
+    {
+        return width;
+    }
+    #[cfg(feature = "tui")]
+    if io::stdout().is_terminal()
+        && let Ok((columns, _)) = ratatui::crossterm::terminal::size()
+        && columns > 0
+    {
+        return usize::from(columns);
+    }
+    80
+}
+
+fn show_map(dir: &Path, layout: Option<MapLayoutArg>, opts: &Options) -> anyhow::Result<ExitCode> {
+    let mut flows = load_catalog(dir)?;
+    let map = map::load_map(dir)?;
+    if flows.is_empty() {
+        println!("no flows in {}", dir.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+    let Some(map) = map else {
+        println!(
+            "no use-case map yet: ask your agent to \"group the flows into a use-case map in {}/README.md\"\n",
+            catalog_path(dir)
+        );
+        flows.sort_by(casemap::flows::compare_titles);
+        print!("{}", casemap::flows::render_list(&flows));
+        return Ok(ExitCode::SUCCESS);
+    };
+    let groups = map::group_flows(&map, &flows);
+    let width = terminal_width();
+    let layout = layout
+        .map(Into::into)
+        .unwrap_or_else(|| map::MapLayout::fitting(map.activities.len(), width));
+    print!(
+        "{}",
+        map::render_map(&groups, &catalog_path(dir), layout, width, opts)
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 fn show_flows(
     dir: &Path,
     name: Option<&str>,
@@ -679,17 +747,31 @@ fn show_flows(
         bail!("--format json lists the catalog; drop the flow name");
     }
     let mut flows = load_catalog(dir)?;
+    let map = if name.is_none() {
+        map::load_map(dir)?
+    } else {
+        None
+    };
     if matches!(format, Format::Json) {
+        let groups = map.as_ref().map(|map| map::group_flows(map, &flows));
+        let placements = groups.as_ref().map(|groups| map::placements(groups));
         let entries: Vec<_> = flows
             .iter()
             .map(|flow| {
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "name": flow.name,
                     "path": catalog_file_path(dir, &flow.path),
                     "title": flow.title,
                     "description": flow.description,
                     "has_diagram": flow.source.is_some(),
-                })
+                });
+                if let Some(placements) = &placements {
+                    entry["activity"] = placements
+                        .get(&flow.path)
+                        .map(|placement| serde_json::json!(placement.activity))
+                        .unwrap_or(serde_json::Value::Null);
+                }
+                entry
             })
             .collect();
         println!("{}", serde_json::json!({"version": 1, "flows": entries}));
@@ -699,6 +781,11 @@ fn show_flows(
     let Some(name) = name else {
         if flows.is_empty() {
             println!("no flows in {}", dir.display());
+        } else if let Some(map) = &map {
+            print!(
+                "{}",
+                map::render_grouped_list(&map::group_flows(map, &flows), opts)
+            );
         } else {
             print!("{}", casemap::flows::render_list(&flows));
         }

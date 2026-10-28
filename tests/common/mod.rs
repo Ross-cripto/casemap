@@ -247,3 +247,19 @@ pub fn coverage_catalog() -> TempRepo {
     }
     repo
 }
+
+pub fn map_catalog() -> assert_fs::TempDir {
+    let directory = assert_fs::TempDir::new().unwrap();
+    let catalog = directory.path().join(FLOWS_DIR);
+    fs::create_dir_all(&catalog).unwrap();
+    for entry in fs::read_dir("tests/fixtures/corpus/commerce").unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), catalog.join(entry.file_name())).unwrap();
+    }
+    fs::write(
+        catalog.join("README.md"),
+        include_str!("../fixtures/maps/commerce.md"),
+    )
+    .unwrap();
+    directory
+}

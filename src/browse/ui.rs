@@ -4,10 +4,15 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph, Wrap};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Focus, Marker, Search};
+use casemap::map::truncate;
+
+use super::app::{App, Focus, Marker, Search, Standing};
 use super::layout::layout;
+
+/// Keep at least this many title columns before dropping the activity suffix.
+const MIN_HEADER_TITLE: usize = 8;
 
 const STATUS_KEYS: &str = "↑↓ select · Tab focus · / search · d diff · p panel · ? help · q quit";
 const ASCII_STATUS_KEYS: &str =
@@ -151,10 +156,23 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     } else if app.view.is_empty() {
         vec![ListItem::new("no matching flows")]
     } else {
-        app.view
+        app.rows
             .iter()
-            .map(|index| {
-                let entry = &app.flows[*index];
+            .map(|row| {
+                let position = match row {
+                    super::app::ListRow::Heading(name) => {
+                        let mut style = Style::default().add_modifier(Modifier::BOLD);
+                        if app.color {
+                            style = style.fg(Color::Cyan);
+                        }
+                        return ListItem::new(Line::styled(
+                            truncate(name, usize::from(area.width.saturating_sub(2)), app.ascii),
+                            style,
+                        ));
+                    }
+                    super::app::ListRow::Flow(position) => *position,
+                };
+                let entry = &app.flows[app.view[position]];
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         entry.marker.symbol(app.ascii),
@@ -177,36 +195,36 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn truncate(title: &str, width: usize, ascii: bool) -> String {
-    if title.width() <= width {
-        return title.to_owned();
-    }
-    let suffix = if ascii { "..." } else { "…" };
-    if width < suffix.width() {
-        return suffix.chars().take(width).collect();
-    }
-    let limit = width - suffix.width();
-    let mut text = String::new();
-    let mut used = 0;
-    for character in title.chars() {
-        let columns = character.width().unwrap_or(0);
-        if used + columns > limit {
-            break;
-        }
-        used += columns;
-        text.push(character);
-    }
-    text.push_str(suffix);
-    text
-}
-
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let Some(entry) = app.selected() else { return };
+    let mut title_text = entry.flow.title.clone();
+    let mut suffix = None;
+    if let Standing::Mapped(placement) = &entry.standing {
+        let separator = casemap::map::bullet(app.ascii);
+        let text = format!(
+            "  {} {separator} {} of {}",
+            placement.activity, placement.position, placement.count
+        );
+        let width = usize::from(area.width);
+        if width >= text.width() + MIN_HEADER_TITLE {
+            title_text = truncate(&title_text, width - text.width(), app.ascii);
+            suffix = Some(text);
+        }
+    }
+    let mut title = Line::from(Span::styled(
+        title_text,
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    if let Some(suffix) = suffix {
+        let style = if app.color {
+            Style::default().add_modifier(Modifier::DIM)
+        } else {
+            Style::default()
+        };
+        title.spans.push(Span::styled(suffix, style));
+    }
     let mut lines = vec![
-        Line::styled(
-            entry.flow.title.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        title,
         Line::raw(entry.path.clone()),
         Line::raw(entry.flow.description.clone().unwrap_or_default()),
     ];
@@ -325,7 +343,7 @@ mod tests {
         let report = check::check_catalog_with(dir, &mut |_| true).unwrap();
         let base = catalog_with_base(fixtures, &current);
         let loaded =
-            crate::browse::build_loaded(dir, current, report, "main", Some(&base), options);
+            crate::browse::build_loaded(dir, current, report, "main", Some(&base), options, None);
         let mut app = App::new(loaded, options.ascii, options.color);
         select_flow(&mut app, "pay-for-an-order");
         app.resize(120, 30);
@@ -361,7 +379,11 @@ mod tests {
             .iter()
             .position(|index| app.flows[*index].flow.name == name)
             .unwrap();
-        app.list_state.select(Some(selected));
+        app.focus = Focus::List;
+        press(app, KeyCode::Home);
+        for _ in 0..selected {
+            press(app, KeyCode::Down);
+        }
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -386,6 +408,87 @@ mod tests {
             insta::assert_snapshot!(name, rendered);
         });
     }
+    #[test]
+    fn header_shows_activity_place() {
+        let options = Options::default();
+        let mut app = App::new(crate::browse::commerce_loaded(&options), false, false);
+        select_flow(&mut app, "check-out-a-cart");
+        let rendered = render(&mut app, 120, 30);
+        assert!(
+            rendered.contains("Check out a cart  Choose and buy · 4 of 4"),
+            "{rendered}"
+        );
+        assert_browse_snapshot("browse__map", rendered);
+    }
+
+    #[test]
+    fn narrow_header_drops_the_suffix() {
+        let mut app = App::new(
+            crate::browse::commerce_loaded(&Options::default()),
+            false,
+            false,
+        );
+        select_flow(&mut app, "check-out-a-cart");
+        let mut terminal = Terminal::new(TestBackend::new(15, 3)).unwrap();
+        terminal
+            .draw(|frame| draw_header(frame, &app, Rect::new(0, 0, 15, 3)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..15).map(|column| buffer[(column, 0)].symbol()).collect();
+        assert!(!header.contains("of 4"), "{header}");
+        assert!(header.starts_with("Check out a car"), "{header}");
+    }
+
+    #[test]
+    fn header_keeps_activity_suffix_visible() {
+        let mut app = App::new(
+            crate::browse::commerce_loaded(&Options::default()),
+            false,
+            false,
+        );
+        select_flow(&mut app, "check-out-a-cart");
+        let selected = app
+            .view
+            .iter()
+            .copied()
+            .find(|index| app.flows[*index].flow.name == "check-out-a-cart")
+            .unwrap();
+        app.flows[selected].flow.title = "T".repeat(70);
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        terminal
+            .draw(|frame| draw_header(frame, &app, Rect::new(0, 0, 60, 3)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..60).map(|column| buffer[(column, 0)].symbol()).collect();
+        assert!(header.ends_with("· 4 of 4"), "{header}");
+    }
+
+    #[test]
+    fn map_headings_use_color_only_when_enabled() {
+        for color in [false, true] {
+            let options = Options {
+                ascii: true,
+                color,
+                ..Options::default()
+            };
+            let mut app = App::new(crate::browse::commerce_loaded(&options), true, color);
+            let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let heading = &buffer[(1, 1)];
+            assert!(heading.modifier.contains(Modifier::BOLD));
+            assert!(!heading.modifier.contains(Modifier::REVERSED));
+            assert_eq!(heading.fg, if color { Color::Cyan } else { Color::Reset });
+            if !color {
+                for cell in &buffer.content {
+                    assert_eq!(cell.fg, Color::Reset);
+                    assert_eq!(cell.bg, Color::Reset);
+                    assert!((cell.modifier - (Modifier::BOLD | Modifier::REVERSED)).is_empty());
+                }
+            }
+        }
+    }
+
     #[test]
     fn unanchored_panel_and_overflow_are_visible() {
         for ascii in [false, true] {
@@ -430,6 +533,7 @@ mod tests {
             "HEAD",
             None,
             &Options::default(),
+            None,
         );
         loaded.catalog = "docs/flows".into();
         let mut app = App::new(loaded, false, false);

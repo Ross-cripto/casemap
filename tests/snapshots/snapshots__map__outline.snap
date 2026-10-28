@@ -1,0 +1,23 @@
+---
+source: tests/snapshots.rs
+expression: "casemap::map::render_map(&groups, \"docs/flows\",\ncasemap::map::MapLayout::Outline, 80, &Options::default())"
+---
+ docs/flows · 9 use cases in 3 activities
+
+ 1 Find products
+   A shopper looks for something to buy.
+   ├─ Browse the storefront
+   ├─ Browse a collection
+   ├─ Search for products
+   └─ Read a store page
+
+ 2 Choose and buy
+   A shopper picks a product and pays.
+   ├─ View a product and choose options
+   ├─ Add an item to the cart
+   ├─ Manage the cart
+   └─ Check out a cart
+
+ 3 Sync the store
+   Shopify keeps the catalogue fresh.
+   └─ Refresh the catalogue after a store edit

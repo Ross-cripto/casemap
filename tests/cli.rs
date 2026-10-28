@@ -2767,3 +2767,432 @@ fn propose_broken_diagram_fails_in_both_formats() {
         assert!(text.contains("parse-error"), "{text}");
     }
 }
+
+#[test]
+fn map_grid_fits_or_falls_back() {
+    use unicode_width::UnicodeWidthStr;
+    let directory = common::map_catalog();
+    for (columns, extra, grid) in [
+        ("80", None, true),
+        ("40", None, false),
+        ("40", Some("grid"), true),
+        ("80", Some("outline"), false),
+    ] {
+        let mut arguments = vec!["map", "--no-color"];
+        if let Some(layout) = extra {
+            arguments.extend(["--layout", layout]);
+        }
+        let run = common::run_casemap(&arguments, directory.path(), &[("COLUMNS", columns)], None);
+        assert_eq!(run.status, 0, "{}", run.stderr);
+        assert_eq!(run.stdout.contains('╭'), grid, "{}", run.stdout);
+        if columns == "80" && grid {
+            assert!(run.stdout.lines().all(|line| line.width() <= 80));
+        }
+    }
+    let run = common::run_casemap(
+        &["map", "--ascii", "--no-color"],
+        directory.path(),
+        &[],
+        None,
+    );
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    assert!(run.stdout.is_ascii());
+}
+
+#[test]
+fn map_without_a_map_explains_and_lists() {
+    let directory = common::map_catalog();
+    fs::remove_file(directory.path().join("docs/flows/README.md")).unwrap();
+    let flat = common::run_casemap(&["flows", "--no-color"], directory.path(), &[], None);
+    let map = common::run_casemap(&["map", "--no-color"], directory.path(), &[], None);
+    assert_eq!(map.status, 0, "{}", map.stderr);
+    assert_eq!(
+        map.stdout,
+        format!(
+            "no use-case map yet: ask your agent to \"group the flows into a use-case map in docs/flows/README.md\"\n\n{}",
+            flat.stdout
+        )
+    );
+}
+
+fn activity_headings(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with(' '))
+        .collect()
+}
+
+fn flow_titles_from_list(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .map(|line| {
+            line.trim_start()
+                .split_once("  ")
+                .unwrap()
+                .1
+                .trim_start()
+                .split(" — ")
+                .next()
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn flows_groups_by_activity() {
+    let directory = common::map_catalog();
+    let run = common::run_casemap(&["flows", "--no-color"], directory.path(), &[], None);
+    assert_eq!(run.status, 0);
+    let headings = activity_headings(&run.stdout);
+    assert_eq!(
+        headings,
+        ["Find products", "Choose and buy", "Sync the store"]
+    );
+}
+
+#[test]
+fn flows_json_has_mapped_activities() {
+    let directory = common::map_catalog();
+    let run = common::run_casemap(&["flows", "--format", "json"], directory.path(), &[], None);
+    let json: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    let entries = json["flows"].as_array().unwrap();
+    assert!(
+        entries
+            .windows(2)
+            .all(|pair| pair[0]["name"].as_str() < pair[1]["name"].as_str())
+    );
+    for entry in entries {
+        let expected = match entry["name"].as_str().unwrap() {
+            "browse-the-storefront"
+            | "browse-a-collection"
+            | "search-for-products"
+            | "read-a-store-page" => "Find products",
+            "refresh-the-catalogue-after-a-store-edit" => "Sync the store",
+            _ => "Choose and buy",
+        };
+        assert_eq!(entry["activity"], expected);
+    }
+}
+
+#[test]
+fn flows_json_has_null_activity_for_unmapped_flows() {
+    let directory = common::map_catalog();
+    fs::write(
+        directory.path().join("docs/flows/unmapped.md"),
+        "# Unmapped\n",
+    )
+    .unwrap();
+    let run = common::run_casemap(&["flows", "--format", "json"], directory.path(), &[], None);
+    let json: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert!(
+        json["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "unmapped")
+            .unwrap()["activity"]
+            .is_null()
+    );
+}
+
+#[test]
+fn flows_json_omits_activity_without_a_map() {
+    let directory = common::map_catalog();
+    fs::remove_file(directory.path().join("docs/flows/README.md")).unwrap();
+    let run = common::run_casemap(&["flows", "--format", "json"], directory.path(), &[], None);
+    let json: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert!(
+        json["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.get("activity").is_none())
+    );
+}
+
+#[test]
+fn map_grouping_is_shared() {
+    let directory = common::map_catalog();
+    let flows = common::run_casemap(&["flows", "--no-color"], directory.path(), &[], None);
+    let map = common::run_casemap(
+        &["map", "--layout", "outline", "--no-color"],
+        directory.path(),
+        &[],
+        None,
+    );
+    assert_eq!(flows.status, 0);
+    assert_eq!(map.status, 0, "{}", map.stderr);
+    let listed = flow_titles_from_list(&flows.stdout);
+    let outlined: Vec<_> = map
+        .stdout
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("   ├─ ")
+                .or_else(|| line.strip_prefix("   └─ "))
+        })
+        .collect();
+    assert_eq!(listed, outlined);
+    let listed_activities = activity_headings(&flows.stdout);
+    let outlined_activities: Vec<_> = map
+        .stdout
+        .lines()
+        .filter(|line| {
+            line.starts_with(" 1 ") || line.starts_with(" 2 ") || line.starts_with(" 3 ")
+        })
+        .map(|line| line[3..].split("  ").next().unwrap())
+        .collect();
+    assert_eq!(listed_activities, outlined_activities);
+}
+
+#[test]
+fn map_check_reports_locations_messages_and_severities() {
+    let directory = common::map_catalog();
+    fs::write(directory.path().join("docs/flows/README.md"), "# Map\n## First\n- [Wrong](browse-the-storefront.md)\n- [Missing](missing.md)\n## Second\n- [Browse the storefront](browse-the-storefront.md)\n").unwrap();
+    let run = common::run_casemap(&["check", "--format", "json"], directory.path(), &[], None);
+    assert_eq!(run.status, 1);
+    let json: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    let problems = json["problems"].as_array().unwrap();
+    for (code, line, severity, message) in [
+        (
+            "map-unknown-flow",
+            4,
+            "error",
+            "links to missing.md, which is not a flow in this catalog",
+        ),
+        (
+            "map-duplicate-flow",
+            6,
+            "error",
+            "browse-the-storefront.md is already listed under \"First\"",
+        ),
+        (
+            "map-title-mismatch",
+            3,
+            "warning",
+            "link text \"Wrong\" differs from the flow title \"Browse the storefront\"",
+        ),
+    ] {
+        let problem = problems
+            .iter()
+            .find(|problem| problem["code"] == code)
+            .unwrap();
+        assert_eq!(problem["path"], "docs/flows/README.md");
+        assert_eq!(problem["line"], line);
+        assert_eq!(problem["severity"], severity);
+        assert_eq!(problem["message"], message);
+    }
+    let unmapped: Vec<_> = problems
+        .iter()
+        .filter(|problem| problem["code"] == "unmapped-flow")
+        .collect();
+    assert_eq!(unmapped.len(), 8);
+    assert!(unmapped.iter().all(|problem| problem["line"].is_null()
+        && problem["severity"] == "warning"
+        && problem["message"] == "not on the use-case map; add it under an activity in README.md"));
+}
+
+const README_VARIANTS: [(&str, &[u8]); 4] = [
+    ("no links", b"# Readme\n\n## Setup\nrun it\n"),
+    ("external links", b"## Docs\n- [Site](https://x.io)\n"),
+    ("parent-directory link", b"## Docs\n- [Other](../x.md)\n"),
+    ("not utf-8", &[0xff, 0xfe]),
+];
+
+fn assert_outputs_match_baseline(
+    commands: &[Vec<&str>],
+    actual: &[Output],
+    baseline: &[Output],
+    label: &str,
+) {
+    for ((args, actual), expected) in commands.iter().zip(actual).zip(baseline) {
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{args:?} {label}"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{args:?} {label}");
+    }
+}
+
+fn assert_matches_baseline(
+    repo: &TempRepo,
+    commands: &[Vec<&str>],
+    baseline: &[Output],
+    label: &str,
+) {
+    let actual: Vec<_> = commands.iter().map(|args| repo.casemap(args)).collect();
+    assert_outputs_match_baseline(commands, &actual, baseline, label);
+}
+
+#[test]
+fn ordinary_readmes_change_nothing() {
+    let repo = TempRepo::new();
+    repo.copy_catalog("after");
+    let commands = [
+        vec!["check"],
+        vec!["flows"],
+        vec!["flows", "--format", "json"],
+    ];
+    let baseline: Vec<_> = commands.iter().map(|args| repo.casemap(args)).collect();
+    for (label, bytes) in README_VARIANTS {
+        fs::write(repo.flow_path("README.md"), bytes).unwrap();
+        assert_matches_baseline(&repo, &commands, &baseline, label);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_readme_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = TempRepo::new();
+    repo.copy_catalog("after");
+    let commands = [
+        vec!["check"],
+        vec!["flows"],
+        vec!["flows", "--format", "json"],
+    ];
+    let baseline: Vec<_> = commands.iter().map(|args| repo.casemap(args)).collect();
+    let path = repo.flow_path("README.md");
+    fs::write(&path, "## Map\n- [Unknown](missing.md)\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&path).is_ok() {
+        // Root can read mode-000 files, so this environment cannot exercise the read failure.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        return;
+    }
+    let actual: Vec<_> = commands.iter().map(|args| repo.casemap(args)).collect();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_outputs_match_baseline(&commands, &actual, &baseline, "unreadable README");
+}
+
+#[test]
+fn narrow_header_keeps_the_counts() {
+    use unicode_width::UnicodeWidthStr;
+    let directory = common::map_catalog();
+    let run = common::run_casemap(
+        &["map", "--no-color"],
+        directory.path(),
+        &[("COLUMNS", "40")],
+        None,
+    );
+    assert_eq!(run.status, 0, "{}", run.stderr);
+    let header = run.stdout.lines().next().unwrap();
+    assert!(
+        header.ends_with("· 9 use cases in 3 activities"),
+        "{header}"
+    );
+    assert!(header.width() <= 40, "{header}");
+}
+
+#[test]
+fn map_lines_fit_the_width() {
+    use unicode_width::UnicodeWidthStr;
+    let directory = common::map_catalog();
+    let catalog_name = "c".repeat(70);
+    let catalog = directory.path().join(&catalog_name);
+    fs::rename(directory.path().join("docs/flows"), &catalog).unwrap();
+    for name in ["unmapped-one", "unmapped-two"] {
+        fs::write(
+            catalog.join(format!("{name}.md")),
+            format!("# {}\n", "T".repeat(60)),
+        )
+        .unwrap();
+    }
+    let readme = catalog.join("README.md");
+    let text = fs::read_to_string(&readme)
+        .unwrap()
+        .replace("Find products", "Café ❤️ 支払い の流れ");
+    let activities = text.lines().filter(|line| line.starts_with("## ")).count();
+    fs::write(readme, text).unwrap();
+    for width in [40, 80, 120] {
+        for forced_grid in [false, true] {
+            let mut args = vec!["map", "--flows", &catalog_name, "--no-color"];
+            if forced_grid {
+                args.extend(["--layout", "grid"]);
+            }
+            let run = common::run_casemap(
+                &args,
+                directory.path(),
+                &[("COLUMNS", &width.to_string())],
+                None,
+            );
+            assert_eq!(run.status, 0, "{}", run.stderr);
+            let limit = if forced_grid {
+                width.max(casemap::map::grid_width(activities))
+            } else {
+                width
+            };
+            for line in run.stdout.lines() {
+                assert!(
+                    line.width() <= limit,
+                    "width {width}, limit {limit}: {line}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn map_on_an_empty_catalog() {
+    let repo = TempRepo::new();
+    let run = repo.casemap(&["map", "--no-color"]);
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "no flows in docs/flows\n"
+    );
+}
+
+#[test]
+fn map_ignores_bad_columns() {
+    let directory = common::map_catalog();
+    let baseline = common::run_casemap(
+        &["map", "--no-color"],
+        directory.path(),
+        &[("COLUMNS", "80")],
+        None,
+    );
+    for columns in ["abc", "0"] {
+        let run = common::run_casemap(
+            &["map", "--no-color"],
+            directory.path(),
+            &[("COLUMNS", columns)],
+            None,
+        );
+        assert_eq!(run.status, baseline.status);
+        assert_eq!(run.stdout, baseline.stdout);
+    }
+}
+
+#[test]
+fn flows_name_ignores_the_map() {
+    let directory = common::map_catalog();
+    let args = ["flows", "check-out-a-cart", "--no-color"];
+    let mapped = common::run_casemap(&args, directory.path(), &[], None);
+    fs::remove_file(directory.path().join("docs/flows/README.md")).unwrap();
+    let flat = common::run_casemap(&args, directory.path(), &[], None);
+    assert_eq!(mapped.status, flat.status);
+    assert_eq!(mapped.stdout, flat.stdout);
+}
+
+#[test]
+fn flows_lists_unmapped_last() {
+    let directory = common::map_catalog();
+    fs::write(
+        directory.path().join("docs/flows/unmapped.md"),
+        "# Unmapped\n",
+    )
+    .unwrap();
+    let run = common::run_casemap(&["flows", "--no-color"], directory.path(), &[], None);
+    assert_eq!(run.status, 0);
+    assert_eq!(
+        activity_headings(&run.stdout).last(),
+        Some(&"Not on the map")
+    );
+    assert_eq!(
+        flow_titles_from_list(&run.stdout).last(),
+        Some(&"Unmapped  (no mermaid block)")
+    );
+}

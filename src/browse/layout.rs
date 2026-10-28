@@ -57,6 +57,7 @@ mod tests {
         let mut app = App::new(
             Loaded {
                 catalog: "docs/flows".into(),
+                has_map: false,
                 flows: vec![],
                 base: None,
                 catalog_problems: 0,
