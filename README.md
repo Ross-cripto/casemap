@@ -10,7 +10,7 @@ code changes, and drawn on every pull request.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <!-- GitHub plays the video and drops the GIF; crates.io drops the video tag and keeps the GIF. -->
-<video src="https://github.com/user-attachments/assets/048348a7-0a74-4345-bdc4-63f0f8bdeb9d" controls muted>
+<video src="https://github.com/user-attachments/assets/048348a7-0a74-4345-bdc4-63f0f8bdeb9d" controls>
   <img src="docs/media/casemap-demo.gif" alt="casemap draws a flow step by step, shows the map of use cases, then a pull request adds a step in green">
 </video>
 
