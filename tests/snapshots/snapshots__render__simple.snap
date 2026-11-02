@@ -1,6 +1,6 @@
 ---
 source: tests/snapshots.rs
-expression: "render_fixture(\"examples/simple.mmd\")"
+expression: "render_fixture(\"tests/fixtures/simple.mmd\")"
 ---
 == None unicode
      ┌─────────┐

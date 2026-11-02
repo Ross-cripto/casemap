@@ -1,0 +1,10 @@
+---
+source: tests/snapshots.rs
+expression: "cli(&[\"check\", \"--strict\", \"--flows\", \"examples/commerce/docs/flows\",\n\"--no-color\"], &[], None)"
+---
+$ casemap check --strict --flows examples/commerce/docs/flows --no-color
+[exit 0]
+--- stdout
+checked 9 flows: ok
+--- stderr
+[end]

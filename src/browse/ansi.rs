@@ -161,12 +161,10 @@ mod tests {
     #[test]
     fn converter_matches_plain_render() {
         let mut paths = Vec::new();
-        for directory in ["examples", "tests/fixtures"] {
-            for entry in std::fs::read_dir(directory).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().is_some_and(|extension| extension == "mmd") {
-                    paths.push(path);
-                }
+        for entry in std::fs::read_dir("tests/fixtures").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "mmd") {
+                paths.push(path);
             }
         }
         paths.sort();

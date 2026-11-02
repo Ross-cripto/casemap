@@ -92,16 +92,13 @@ fn assert_round_trip(diagram: &Diagram) {
 
 fn fixture_diagrams() -> Vec<Diagram> {
     let mut diagrams = Vec::new();
-    for directory in ["examples", "tests/fixtures"] {
-        let initial_count = diagrams.len();
-        for entry in fs::read_dir(directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|extension| extension == "mmd") {
-                diagrams.push(parser::parse(&fs::read_to_string(path).unwrap()).unwrap());
-            }
+    for entry in fs::read_dir("tests/fixtures").unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "mmd") {
+            diagrams.push(parser::parse(&fs::read_to_string(path).unwrap()).unwrap());
         }
-        assert!(diagrams.len() > initial_count, "no diagrams in {directory}");
     }
+    assert!(!diagrams.is_empty(), "no diagrams in tests/fixtures");
     diagrams
 }
 

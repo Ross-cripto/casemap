@@ -94,13 +94,16 @@ fn repo_transcript(repo: &TempRepo, args: &[&str]) -> String {
 fn render_architecture() {
     insta::assert_snapshot!(
         "render__architecture",
-        render_fixture("examples/architecture.mmd")
+        render_fixture("tests/fixtures/architecture.mmd")
     );
 }
 
 #[test]
 fn render_simple() {
-    insta::assert_snapshot!("render__simple", render_fixture("examples/simple.mmd"));
+    insta::assert_snapshot!(
+        "render__simple",
+        render_fixture("tests/fixtures/simple.mmd")
+    );
 }
 
 #[test]
@@ -180,7 +183,7 @@ fn markdown_blocks() {
 fn cli_render() {
     insta::assert_snapshot!(
         "cli__render",
-        cli(&["examples/simple.mmd", "--no-color"], &[], None)
+        cli(&["tests/fixtures/simple.mmd", "--no-color"], &[], None)
     );
 }
 
@@ -194,7 +197,7 @@ fn cli_lowercase_dir() {
                 "lr",
                 "--ascii",
                 "--no-color",
-                "examples/simple.mmd"
+                "tests/fixtures/simple.mmd"
             ],
             &[],
             None
@@ -207,7 +210,7 @@ fn cli_tb() {
     insta::assert_snapshot!(
         "cli__tb",
         cli(
-            &["--dir", "TB", "--no-color", "examples/simple.mmd"],
+            &["--dir", "TB", "--no-color", "tests/fixtures/simple.mmd"],
             &[],
             None
         )
@@ -225,7 +228,7 @@ fn cli_repeated_dir() {
                 "--dir",
                 "TD",
                 "--no-color",
-                "examples/simple.mmd"
+                "tests/fixtures/simple.mmd"
             ],
             &[],
             None
@@ -237,7 +240,7 @@ fn cli_repeated_dir() {
 fn cli_color() {
     insta::assert_snapshot!(
         "cli__color",
-        cli(&["--color", "examples/simple.mmd"], &[], None)
+        cli(&["--color", "tests/fixtures/simple.mmd"], &[], None)
     );
 }
 
@@ -245,7 +248,11 @@ fn cli_color() {
 fn cli_color_then_no_color() {
     insta::assert_snapshot!(
         "cli__color_then_no_color",
-        cli(&["--color", "--no-color", "examples/simple.mmd"], &[], None)
+        cli(
+            &["--color", "--no-color", "tests/fixtures/simple.mmd"],
+            &[],
+            None
+        )
     );
 }
 
@@ -253,7 +260,11 @@ fn cli_color_then_no_color() {
 fn cli_no_color_then_color() {
     insta::assert_snapshot!(
         "cli__no_color_then_color",
-        cli(&["--no-color", "--color", "examples/simple.mmd"], &[], None)
+        cli(
+            &["--no-color", "--color", "tests/fixtures/simple.mmd"],
+            &[],
+            None
+        )
     );
 }
 
@@ -263,7 +274,7 @@ fn cli_no_color_env() {
     insta::assert_snapshot!(
         "cli__no_color_env",
         cli(
-            &["--color", "examples/simple.mmd"],
+            &["--color", "tests/fixtures/simple.mmd"],
             &[("NO_COLOR", "1")],
             None
         )
@@ -277,7 +288,7 @@ fn cli_stdin() {
         cli(
             &["--no-color"],
             &[],
-            Some(include_str!("../examples/simple.mmd"))
+            Some(include_str!("fixtures/simple.mmd"))
         )
     );
 }
@@ -289,7 +300,7 @@ fn cli_stdin_dash() {
         cli(
             &["-", "--no-color"],
             &[],
-            Some(include_str!("../examples/simple.mmd"))
+            Some(include_str!("fixtures/simple.mmd"))
         )
     );
 }
@@ -311,6 +322,24 @@ fn cli_list() {
                 "flows",
                 "--flows",
                 "tests/fixtures/flows/after",
+                "--no-color"
+            ],
+            &[],
+            None
+        )
+    );
+}
+
+#[test]
+fn example_catalog_check() {
+    insta::assert_snapshot!(
+        "cli__example_check",
+        cli(
+            &[
+                "check",
+                "--strict",
+                "--flows",
+                "examples/commerce/docs/flows",
                 "--no-color"
             ],
             &[],
@@ -466,7 +495,7 @@ fn cli_empty_catalog() {
 fn cli_no_color_env_no_flag() {
     insta::assert_snapshot!(
         "cli__no_color_env_no_flag",
-        cli(&["examples/simple.mmd"], &[("NO_COLOR", "1")], None)
+        cli(&["tests/fixtures/simple.mmd"], &[("NO_COLOR", "1")], None)
     );
 }
 
@@ -474,7 +503,7 @@ fn cli_no_color_env_no_flag() {
 fn cli_no_flags_piped() {
     insta::assert_snapshot!(
         "cli__no_flags_piped",
-        cli(&["examples/simple.mmd"], &[], None)
+        cli(&["tests/fixtures/simple.mmd"], &[], None)
     );
 }
 

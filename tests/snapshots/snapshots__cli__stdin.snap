@@ -1,6 +1,6 @@
 ---
 source: tests/snapshots.rs
-expression: "cli(&[\"--no-color\"], &[], Some(include_str!(\"../examples/simple.mmd\")))"
+expression: "cli(&[\"--no-color\"], &[], Some(include_str!(\"fixtures/simple.mmd\")))"
 ---
 $ casemap --no-color
 [exit 0]

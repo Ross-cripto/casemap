@@ -1,8 +1,8 @@
 ---
 source: tests/snapshots.rs
-expression: "cli(&[\"examples/simple.mmd\"], &[], None)"
+expression: "cli(&[\"tests/fixtures/simple.mmd\"], &[], None)"
 ---
-$ casemap examples/simple.mmd
+$ casemap tests/fixtures/simple.mmd
 [exit 0]
 --- stdout
      ┌─────────┐

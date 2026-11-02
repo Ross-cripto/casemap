@@ -1,8 +1,8 @@
 ---
 source: tests/snapshots.rs
-expression: "cli(&[\"--dir\", \"TB\", \"--no-color\", \"examples/simple.mmd\"], &[], None)"
+expression: "cli(&[\"--dir\", \"TB\", \"--no-color\", \"tests/fixtures/simple.mmd\"], &[], None)"
 ---
-$ casemap --dir TB --no-color examples/simple.mmd
+$ casemap --dir TB --no-color tests/fixtures/simple.mmd
 [exit 0]
 --- stdout
      ┌─────────┐
