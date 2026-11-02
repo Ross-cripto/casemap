@@ -9,9 +9,10 @@ code changes, and drawn on every pull request.
 [![CI](https://github.com/Ross-cripto/casemap/actions/workflows/ci.yml/badge.svg)](https://github.com/Ross-cripto/casemap/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<!-- Demo video: drag the MP4 into GitHub's editor for this file and keep the
-github.com/user-attachments/assets/... URL it inserts on its own line here.
-Add a GIF of the same demo under it for crates.io, which does not play video. -->
+<!-- GitHub plays the video and drops the GIF; crates.io drops the video tag and keeps the GIF. -->
+<video src="https://github.com/user-attachments/assets/048348a7-0a74-4345-bdc4-63f0f8bdeb9d" controls muted>
+  <img src="docs/media/casemap-demo.gif" alt="casemap draws a flow step by step, shows the map of use cases, then a pull request adds a step in green">
+</video>
 
 ## Why
 
