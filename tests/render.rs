@@ -6,13 +6,11 @@ use casemap::{Direction, Options, parser};
 
 fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for dir in ["examples", "tests/fixtures"] {
-        for entry in fs::read_dir(dir).expect("fixture dir") {
-            let path = entry.expect("entry").path();
-            if path.extension().is_some_and(|e| e == "mmd") {
-                let src = fs::read_to_string(&path).expect("read fixture");
-                out.push((path.display().to_string(), src));
-            }
+    for entry in fs::read_dir("tests/fixtures").expect("fixture dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|extension| extension == "mmd") {
+            let source = fs::read_to_string(&path).expect("read fixture");
+            out.push((path.display().to_string(), source));
         }
     }
     assert!(!out.is_empty());
@@ -122,7 +120,7 @@ fn rendering_is_deterministic() {
 
 #[test]
 fn ascii_mode_is_pure_ascii() {
-    let src = fs::read_to_string("examples/architecture.mmd").unwrap();
+    let src = fs::read_to_string("tests/fixtures/architecture.mmd").unwrap();
     let out = casemap::render_str(
         &src,
         &Options {

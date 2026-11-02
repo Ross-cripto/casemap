@@ -208,7 +208,6 @@ fn insert_anchor_in_every_block(source: &str) -> String {
 fn anchors_do_not_change_rendering() {
     let mut sources = Vec::new();
     for directory in [
-        "examples",
         "tests/fixtures",
         "tests/fixtures/flows/before",
         "tests/fixtures/flows/after",

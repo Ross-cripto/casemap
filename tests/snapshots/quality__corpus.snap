@@ -14,8 +14,7 @@ docs/flows/review-a-pull-request.md                                            6
 docs/flows/review-flow-changes.md                                              70     36         0     4         0             0            2          0               0
 docs/flows/set-up-a-catalog.md                                                 77     42         0    16         0             0           12          0               0
 docs/flows/watch-a-diagram.md                                                  64     38         0    14         0             0           23          3               0
-examples/architecture.mmd                                                      62     80         1    48         0             0           25          1               0
-examples/simple.mmd                                                            44     22         0     4         0             0            2          0               0
+tests/fixtures/architecture.mmd                                                62     80         1    48         0             0           25          1               0
 tests/fixtures/corpus/commerce/add-an-item-to-the-cart.md                      69     42         0     8         0             0            6          0               0
 tests/fixtures/corpus/commerce/browse-a-collection.md                          70     34         0     8         0             0            8          1               0
 tests/fixtures/corpus/commerce/browse-the-storefront.md                        48     31         0     2         0             0            2          0               0
@@ -45,4 +44,5 @@ tests/fixtures/corpus/shiori/manage-user-accounts.md                           7
 tests/fixtures/corpus/shiori/read-a-saved-page.md                              64     40         0     8         0             0            8          0               0
 tests/fixtures/corpus/shiori/sign-in-to-the-web-ui.md                          56     34         0    10         0             0           12          1               0
 tests/fixtures/corpus/shiori/update-or-delete-bookmarks-in-the-terminal.md    117     42         0    12         0             0           10          0               0
+tests/fixtures/simple.mmd                                                      44     22         0     4         0             0            2          0               0
 TOTAL                                                                        3209   1731         1   504         0             0          470         28               0

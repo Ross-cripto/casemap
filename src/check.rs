@@ -1573,8 +1573,8 @@ mod tests {
     #[test]
     fn check_never_errors_on_renderable_flowcharts() {
         let fixtures = [
-            include_str!("../examples/simple.mmd"),
-            include_str!("../examples/architecture.mmd"),
+            include_str!("../tests/fixtures/simple.mmd"),
+            include_str!("../tests/fixtures/architecture.mmd"),
             include_str!("../tests/fixtures/fanout.mmd"),
             include_str!("../tests/fixtures/nested.mmd"),
             include_str!("../tests/fixtures/edgecases.mmd"),

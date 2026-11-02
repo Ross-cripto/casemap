@@ -294,7 +294,7 @@ fn usage_errors_exit_with_one() {
         .code(1)
         .stderr(predicate::str::contains("expects one of TD, BT, LR, RL"));
     casemap_command(&repo)
-        .args(["--dir=lr", "examples/simple.mmd", "--no-color"])
+        .args(["--dir=lr", "tests/fixtures/simple.mmd", "--no-color"])
         .assert()
         .success();
     for flag in ["--help", "--version", "-h", "-V"] {

@@ -20,8 +20,8 @@ const WIDTH_AND_CROSSING_BUDGETS: &[(&str, usize, usize)] = &[
     ("docs/flows/review-flow-changes.md", 70, 0),
     ("docs/flows/set-up-a-catalog.md", 76, 1),
     ("docs/flows/watch-a-diagram.md", 64, 0),
-    ("examples/architecture.mmd", 132, 1),
-    ("examples/simple.mmd", 44, 0),
+    ("tests/fixtures/architecture.mmd", 132, 1),
+    ("tests/fixtures/simple.mmd", 44, 0),
     (
         "tests/fixtures/corpus/commerce/add-an-item-to-the-cart.md",
         107,
@@ -160,7 +160,13 @@ fn diagrams() -> Vec<(String, Diagram)> {
         }
     }
     collect_files(&root.join("docs/flows"), "md", &mut paths);
-    collect_files(&root.join("examples"), "mmd", &mut paths);
+    paths.extend(
+        [
+            "tests/fixtures/architecture.mmd",
+            "tests/fixtures/simple.mmd",
+        ]
+        .map(|path| root.join(path)),
+    );
     paths.sort();
     assert!(paths.len() >= MINIMUM_DIAGRAMS);
     paths
@@ -380,7 +386,6 @@ fn equal_continuations_use_node_index_before_edge_order() {
 #[test]
 fn clusters_keep_members_inside_straight_borders() {
     let mut paths = Vec::new();
-    collect_files(Path::new("examples"), "mmd", &mut paths);
     collect_files(Path::new("tests/fixtures"), "mmd", &mut paths);
     paths.sort();
     for path in paths {

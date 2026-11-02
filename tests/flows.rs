@@ -123,26 +123,24 @@ fn colour_follows_marks() {
             "missing {ink}{text}\n{output}"
         );
     }
-    for dir in ["examples", "tests/fixtures"] {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|extension| extension == "mmd") {
-                let source = fs::read_to_string(&path).unwrap();
-                let output = casemap::render_str(
-                    &source,
-                    &Options {
-                        color: true,
-                        ..Options::default()
-                    },
-                )
-                .unwrap();
-                for ink in ["32m", "31m", "33m"] {
-                    assert!(
-                        !output.contains(ink),
-                        "{}: unexpected {ink}\n{output}",
-                        path.display()
-                    );
-                }
+    for entry in fs::read_dir("tests/fixtures").unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "mmd") {
+            let source = fs::read_to_string(&path).unwrap();
+            let output = casemap::render_str(
+                &source,
+                &Options {
+                    color: true,
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            for ink in ["32m", "31m", "33m"] {
+                assert!(
+                    !output.contains(ink),
+                    "{}: unexpected {ink}\n{output}",
+                    path.display()
+                );
             }
         }
     }

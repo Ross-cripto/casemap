@@ -1,8 +1,8 @@
 ---
 source: tests/snapshots.rs
-expression: "cli(&[\"--color\", \"--no-color\", \"examples/simple.mmd\"], &[], None)"
+expression: "cli(&[\"--color\", \"--no-color\", \"tests/fixtures/simple.mmd\"], &[], None)"
 ---
-$ casemap --color --no-color examples/simple.mmd
+$ casemap --color --no-color tests/fixtures/simple.mmd
 [exit 0]
 --- stdout
      ┌─────────┐
