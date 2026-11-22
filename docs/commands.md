@@ -9,15 +9,16 @@
 | `casemap hook stop` | Check uncommitted changes for agents; block once per new warning set |
 | `casemap browse [--base REF]` | Explore the catalog interactively (for humans; agents use the other commands) |
 | `casemap flows [NAME]` | List the catalog, or render one use case |
-| `casemap map [--layout grid\|outline]` | Draw the use-case map from the catalog's README.md; the grid when it fits the terminal (COLUMNS, else the terminal, else 80), else the outline |
+| `casemap map [--layout grid\|outline]` | Open the activity map in the terminal browser. Redirected output and `--layout` use the text map. |
 | `casemap flows --format json` | List catalog metadata as JSON v1; cannot be combined with NAME |
 | `casemap check [--strict] [--format text\|json]` | Validate the catalog; `--strict` also fails on warnings |
-| `casemap diff [REF] [--strict] [--format text\|markdown]` | Compare with the merge base of REF and HEAD; `--format markdown` writes the PR comment and also fails on check errors (unlike text mode); `--strict` also exits 1 for possibly stale flows |
-| `casemap propose NAME [--format text\|markdown]` | Preview a proposed version of a flow, read from stdin, against the current one; writes nothing; exits 1 when the proposal has check errors |
+| `casemap diff [REF] [--strict] [--side-by-side] [--format text\|markdown]` | Compare with the merge base of REF and HEAD. `--format markdown` writes the PR comment and checks for errors. `--strict` also exits 1 for possibly stale flows. |
+| `casemap propose NAME [--side-by-side] [--format text\|markdown]` | Preview a proposed version of a flow, read from stdin, against the current one. Exits 1 when the proposal has check errors. |
 | `casemap coverage [REF] [--include P] [--exclude P] [--strict] [--format text\|json]` | Code no flow covers, by directory or changed since REF; `--strict` fails only in branch mode |
 | `casemap which <file>... [--format text\|json]` | Show flows and steps anchored to files or directories |
 | `casemap guide` | Print the agent skill body |
-| `casemap FILE` | Render a Mermaid file, or every Mermaid block of a Markdown file |
+| `casemap FILE` | Draw one Markdown use-case flow as an image |
+| `casemap export FLOW.md [--png\|--svg] [-o FILE]` | Write an image file. By default, writes `<flow>.png` in the current directory. |
 | `casemap completions SHELL` | Generate completions for bash, zsh, fish, powershell or elvish |
 
 ## Check
@@ -33,6 +34,9 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `missing-description` | error | No prose description after the title |
 | `missing-diagram` | error | No Mermaid block |
 | `not-a-flowchart` | error | The first Mermaid block does not start with a flowchart/graph header |
+| `not-top-down` | warning | casemap draws flows top-down; start the block with `flowchart TD` |
+| `unsupported-shape` | error | Use rectangle steps, stadium actors or diamond decisions |
+| `unsupported-link` | error | Links must be solid arrows (`-->`) |
 | `parse-error` | error | The first diagram cannot be parsed |
 | `reserved-id` | error | A node id is a Mermaid keyword; rename it |
 | `empty-diagram` | error | The flowchart has no steps |
@@ -44,13 +48,19 @@ missing catalog. Warnings alone exit 0; an empty catalog produces one warning.
 | `anchor-no-match` | error | An anchor path matches no file in the repository |
 | `map-unknown-flow` | error | A map link targets a file that is not a flow in the catalog |
 | `map-duplicate-flow` | error | A flow appears more than once on the map |
+| `empty-section` | warning | A named section contains no steps |
+| `nested-section` | warning | A section is declared inside another section |
+| `step-outside-section` | warning | A step belongs to no section in a flow with named sections |
+| `icon-syntax` | warning | An icon directive must name a step and an icon |
+| `icon-unknown-name` | warning | The icon is outside the fixed vocabulary |
+| `icon-unknown-step` | warning | The icon directive names a step absent from the diagram |
 | `unmapped-flow` | warning | A flow is missing from the use-case map |
 | `map-title-mismatch` | warning | A map link's text differs from the flow's title |
-| `extra-diagram` | warning | Another Mermaid block follows the first |
+| `extra-diagram` | error | casemap draws one Mermaid block per flow; move extra blocks to their own files |
 | `duplicate-title` | warning | An earlier file has the same title, ignoring case and surrounding whitespace |
 | `empty-catalog` | warning | No flow files |
 | `ignored-entry` | warning | A subdirectory or non-flow file is ignored |
-| `mmd-flow` | warning | A `.mmd` file lacks the Markdown title and description format |
+| `mmd-flow` | error | casemap draws flows from Markdown files; move the flow into a `.md` file with a title and description |
 | `no-actor` | warning | No stadium-shaped actor or trigger |
 | `unlabelled-branch` | warning | A decision has an exit without a label |
 | `single-exit-decision` | warning | A decision has fewer than two exits; label both outcomes or make it a step |
@@ -92,16 +102,15 @@ Global flags can appear before or after a subcommand:
 | Flag | Effect |
 |---|---|
 | `--flows DIR` | Catalog directory, default `docs/flows`, relative to the current directory |
-| `--dir TD\|BT\|LR\|RL` | Override flowchart direction; `--dir=LR` also works |
-| `--ascii` | Use plain ASCII instead of box-drawing characters |
+| `--theme dark\|light` | Select the image theme for this invocation |
+| `--bg COLOR` | Override the image background with a hex color |
 | `--color` | Force ANSI colour, including when NO_COLOR is set |
 | `--no-color` | Disable ANSI colour; otherwise colour is automatic on a TTY and respects NO_COLOR |
 | `-w`, `--watch` | Re-render on every file change; applies only to rendering a file |
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
 
-The command words `init`, `hook`, `flows`, `map`, `browse`, `check`, `diff`, `propose`, `which`, `coverage`, `guide` and `completions` are reserved. To render a file with one of those names, use `./diff` or
-`casemap -- diff`. `help` remains a file name; use `--help` or `-h` to print help.
+The command words `init`, `hook`, `flows`, `export`, `map`, `browse`, `check`, `diff`, `propose`, `which`, `coverage`, `guide` and `completions` are reserved. Keep the `.md` suffix when passing a flow file. Use `--help` or `-h` to print help.
 `init` requires a relative catalog path because the installed skill is committed.
 
 ## Known limits
@@ -112,10 +121,7 @@ The command words `init`, `hook`, `flows`, `map`, `browse`, `check`, `diff`, `pr
 - Anchor paths cannot contain spaces; symbol anchors and line ranges are not supported.
 - Front matter needs a `key:` line immediately after the opening `---`; otherwise it is a thematic break.
 - Flowcharts only, no sequence/class/ER diagrams yet.
-- Self-loops are shown as a `↻` marker on the node; self-loop changes appear only in the diff summary and details.
 - Node ids are the identity; changing an id reads as a removal plus an addition.
-- Only the first mermaid block of a catalog flow file is compared. Prose, titles, direction and cluster membership are not diffed.
+- Comparisons use the Mermaid diagram and ignore changes to the Markdown title and description.
 - Edges to a subgraph id (`a --> mySubgraph`) treat the id as a node.
-- LR diagrams with many layers get wide; TD is the better default for big systems.
-- Edges entering a cluster cross its border wherever they arrive rather than at a dedicated gate.
 - README.md in a catalog is ignored, ignoring case. Hidden files are also skipped. `check` reports dangling flow symlinks as unreadable; `flows` and `diff` skip them.

@@ -4,7 +4,8 @@ mod common;
 use casemap::anchors::{
     self, Anchor, Target, flow_anchors, normalise_pattern, parse_anchors, pattern_matches,
 };
-use casemap::{Direction, Options, flows, git};
+use casemap::flow_image::{ImageOptions, Theme, svg};
+use casemap::{Options, flows, git};
 use std::fs;
 
 #[test]
@@ -188,120 +189,24 @@ fn repo_files_lists_tracked_and_untracked_but_not_ignored() {
     assert_eq!(files, sorted);
 }
 
-const WHOLE_FLOW_ANCHOR: &str = "%% @code * src/**\n";
-
-fn insert_anchor_in_every_block(source: &str) -> String {
-    let mut updated = source.to_owned();
-    let blocks = casemap::markdown::mermaid_blocks(source);
-    for block in blocks.into_iter().rev() {
-        let content_start: usize = source
-            .split_inclusive('\n')
-            .take(block.line)
-            .map(str::len)
-            .sum();
-        updated.insert_str(content_start + block.source.len(), WHOLE_FLOW_ANCHOR);
-    }
-    updated
-}
-
 #[test]
-fn anchors_do_not_change_rendering() {
-    let mut sources = Vec::new();
-    for directory in [
-        "tests/fixtures",
-        "tests/fixtures/flows/before",
-        "tests/fixtures/flows/after",
-    ] {
-        for entry in fs::read_dir(directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "mmd" || extension == "md")
-            {
-                sources.push(path);
-            }
-        }
-    }
-    for path in sources {
+fn anchors_do_not_change_flow_images() {
+    let theme = Theme::default();
+    for name in ["checkout", "login", "refund"] {
+        let path = format!("tests/fixtures/flows/after/{name}.md");
         let source = fs::read_to_string(&path).unwrap();
-        let is_markdown = path.extension().unwrap() == "md";
-        let anchored = if is_markdown {
-            insert_anchor_in_every_block(&source)
-        } else {
-            format!("{source}\n{WHOLE_FLOW_ANCHOR}")
-        };
-        assert_ne!(anchored, source);
-        if is_markdown {
-            assert!(
-                anchored.contains(&format!("{WHOLE_FLOW_ANCHOR}```")),
-                "{}",
-                path.display()
-            );
-        }
-        for direction in [
-            Direction::TopDown,
-            Direction::BottomUp,
-            Direction::LeftRight,
-            Direction::RightLeft,
-        ] {
-            for (ascii, color) in [(false, false), (true, false), (false, true)] {
-                let options = Options {
-                    direction: Some(direction),
-                    ascii,
-                    color,
-                };
-                if is_markdown {
-                    assert_eq!(
-                        casemap::render_markdown(&source, &options).unwrap(),
-                        casemap::render_markdown(&anchored, &options).unwrap(),
-                        "{}",
-                        path.display()
-                    );
-                } else {
-                    assert_eq!(
-                        casemap::render_str(&source, &options).unwrap(),
-                        casemap::render_str(&anchored, &options).unwrap(),
-                        "{}",
-                        path.display()
-                    );
-                }
-            }
-        }
-    }
-    for (name, previous_side, current_side) in [
-        ("checkout.md", "before", "after"),
-        ("login.md", "before", "after"),
-    ] {
-        let previous =
-            fs::read_to_string(format!("tests/fixtures/flows/{previous_side}/{name}")).unwrap();
-        let current =
-            fs::read_to_string(format!("tests/fixtures/flows/{current_side}/{name}")).unwrap();
-        let union = |before: &str, after: &str| {
-            let before = flows::diagram(&flows::parse_flow(name, before))
-                .unwrap()
-                .unwrap();
-            let after = flows::diagram(&flows::parse_flow(name, after))
-                .unwrap()
-                .unwrap();
-            casemap::diff::diff(&before, &after).union
-        };
-        let anchored_previous = common::append_step(&previous, "%% @code * src/**\n");
-        let anchored_current = common::append_step(&current, "%% @code * src/**\n");
-        for direction in [
-            Direction::TopDown,
-            Direction::BottomUp,
-            Direction::LeftRight,
-            Direction::RightLeft,
-        ] {
-            let options = Options {
-                direction: Some(direction),
-                ..Options::default()
-            };
-            assert_eq!(
-                casemap::render_diagram(&union(&previous, &current), &options),
-                casemap::render_diagram(&union(&anchored_previous, &anchored_current), &options)
-            );
-        }
+        let anchored_source = source.replace("flowchart TD\n", "flowchart TD\n%% @code * src/**\n");
+        assert_ne!(source, anchored_source, "{name}");
+        let flow = flows::parse_flow(&path, &source);
+        let anchored = flows::parse_flow(&path, &anchored_source);
+        let diagram = flows::diagram(&flow).unwrap().unwrap();
+        let anchored_diagram = flows::diagram(&anchored).unwrap().unwrap();
+        let options = ImageOptions::default();
+        assert_eq!(
+            svg(&flow, &diagram, &theme, options),
+            svg(&anchored, &anchored_diagram, &theme, options),
+            "{name}"
+        );
     }
 }
 

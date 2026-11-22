@@ -1,11 +1,16 @@
+use casemap::flow_image::StepPosition;
 use casemap::flows::Flow;
 use casemap::map::{Placement, UNMAPPED_HEADING};
+use casemap::{Diagram, diff::Change};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::ListState;
 
 pub(super) const FAST_PAN: u16 = 10;
+pub(super) const FIT_ZOOM: u16 = 100;
+const MAX_ZOOM: u16 = 300;
+const ZOOM_STEP: u16 = 25;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Offset {
@@ -50,8 +55,16 @@ impl Marker {
 #[derive(Clone, Debug)]
 pub(super) struct DiagramView {
     pub text: Text<'static>,
+    pub graphic: Option<Graphic>,
     pub summary: String,
     pub details: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Graphic {
+    pub diagram: Diagram,
+    pub changes: Option<Vec<Change>>,
+    pub steps: Vec<StepPosition>,
 }
 
 /// Where an entry sits in the grouped list.
@@ -70,6 +83,7 @@ pub(super) struct Entry {
     pub marker: Marker,
     pub normal: DiagramView,
     pub difference: DiagramView,
+    pub previous: Option<(Flow, Diagram)>,
     pub problems: Vec<String>,
     pub footer: Vec<String>,
     pub stale: Vec<String>,
@@ -79,6 +93,12 @@ pub(super) struct Entry {
 pub(super) struct BaseInfo {
     pub reference: String,
     pub sha: String,
+}
+
+impl BaseInfo {
+    pub(super) fn label(&self) -> String {
+        crate::base_label(&self.reference, &self.sha)
+    }
 }
 
 pub(super) struct Loaded {
@@ -98,6 +118,14 @@ pub(super) enum Focus {
     List,
     Diagram,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ViewMode {
+    Normal,
+    Diff,
+    SideBySide,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Search {
     Off,
@@ -109,6 +137,7 @@ pub(super) enum Action {
     None,
     Quit,
     Reload,
+    OpenCode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,7 +177,14 @@ pub(super) struct App {
     pub pan: Offset,
     pub viewport: Offset,
     pub search: Search,
-    pub diff_mode: bool,
+    pub view_mode: ViewMode,
+    selected_node: Option<usize>,
+    zoom: u16,
+    pub reveal_step: bool,
+    pub image_notice: Option<String>,
+    pub source_preview: Vec<String>,
+    pub image_extent: Option<Offset>,
+    pub revision: u64,
     pub panel: bool,
     pub help: bool,
     pub status: Option<String>,
@@ -174,7 +210,14 @@ impl App {
             pan: Offset::default(),
             viewport: Offset::default(),
             search: Search::Off,
-            diff_mode: false,
+            view_mode: ViewMode::Normal,
+            selected_node: None,
+            zoom: FIT_ZOOM,
+            reveal_step: false,
+            image_notice: None,
+            source_preview: Vec::new(),
+            image_extent: None,
+            revision: 0,
             panel: false,
             help: false,
             status: None,
@@ -207,6 +250,8 @@ impl App {
         }
         let action = if let Some(action) = self.global_key(key) {
             action
+        } else if self.focus == Focus::Diagram && key.code == KeyCode::Enter {
+            Action::OpenCode
         } else {
             self.navigate(key.code);
             Action::None
@@ -228,16 +273,37 @@ impl App {
             KeyCode::Char('?') => self.help = !self.help,
             KeyCode::Char('p') => self.panel = !self.panel,
             KeyCode::Char('d') => {
-                if self.base.is_some() {
-                    self.diff_mode = !self.diff_mode;
-                } else {
-                    self.status = Some("diff mode needs git".into());
-                }
+                let mode = match self.view_mode {
+                    ViewMode::Normal => ViewMode::Diff,
+                    ViewMode::Diff | ViewMode::SideBySide => ViewMode::Normal,
+                };
+                self.set_view_mode(mode);
+            }
+            KeyCode::Char('v') => {
+                let mode = match self.view_mode {
+                    ViewMode::Normal | ViewMode::Diff => ViewMode::SideBySide,
+                    ViewMode::SideBySide => ViewMode::Diff,
+                };
+                self.set_view_mode(mode);
             }
             KeyCode::Char('/') => self.search = Search::Typing(self.query().to_owned()),
             _ => return None,
         }
         Some(Action::None)
+    }
+
+    fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.base.is_none() {
+            self.status = Some("diff mode needs git".into());
+            return;
+        }
+        let node_id = self.selected_node_id().map(str::to_owned);
+        self.view_mode = mode;
+        self.select_node_by_id(node_id.as_deref());
+        if self.selected_node.is_none() {
+            self.selected_node = self.steps().first().map(|step| step.node_index);
+        }
+        self.reveal_step = true;
     }
 
     fn escape(&mut self) -> Action {
@@ -257,7 +323,7 @@ impl App {
             }
             Search::Off => {}
         }
-        if self.area.width < super::layout::WIDE_WIDTH && self.focus == Focus::Diagram {
+        if self.focus == Focus::Diagram {
             self.toggle_focus();
             self.resize(self.area.width, self.area.height);
             return Action::None;
@@ -289,20 +355,19 @@ impl App {
 
     fn toggle_focus(&mut self) {
         self.focus = match self.focus {
-            Focus::List => Focus::Diagram,
+            Focus::List if self.selected().is_some() => {
+                self.panel = true;
+                self.reveal_step = true;
+                Focus::Diagram
+            }
+            Focus::List => Focus::List,
             Focus::Diagram => Focus::List,
         };
     }
 
-    fn opens_narrow_diagram(&self, code: KeyCode) -> bool {
-        code == KeyCode::Enter
-            && self.area.width < super::layout::WIDE_WIDTH
-            && self.focus == Focus::List
-    }
-
     fn navigate(&mut self, code: KeyCode) {
         use KeyCode::*;
-        if code == Tab || self.opens_narrow_diagram(code) {
+        if code == Tab || (code == Enter && self.focus == Focus::List) {
             self.toggle_focus();
             return;
         }
@@ -320,10 +385,12 @@ impl App {
             return;
         }
         match code {
-            Up | Char('k') => self.pan.rows = self.pan.rows.saturating_sub(1),
-            Down | Char('j') => self.pan.rows = self.pan.rows.saturating_add(1),
-            Left | Char('h') => self.pan.columns = self.pan.columns.saturating_sub(1),
-            Right | Char('l') => self.pan.columns = self.pan.columns.saturating_add(1),
+            Up | Left => self.move_step(-1),
+            Down | Right => self.move_step(1),
+            Char('k') => self.pan.rows = self.pan.rows.saturating_sub(1),
+            Char('j') => self.pan.rows = self.pan.rows.saturating_add(1),
+            Char('h') => self.pan.columns = self.pan.columns.saturating_sub(1),
+            Char('l') => self.pan.columns = self.pan.columns.saturating_add(1),
             Char('K') => self.pan.rows = self.pan.rows.saturating_sub(FAST_PAN),
             Char('J') => self.pan.rows = self.pan.rows.saturating_add(FAST_PAN),
             Char('H') => self.pan.columns = self.pan.columns.saturating_sub(FAST_PAN),
@@ -331,15 +398,48 @@ impl App {
             PageUp => self.pan.rows = self.pan.rows.saturating_sub(self.viewport.rows),
             PageDown => self.pan.rows = self.pan.rows.saturating_add(self.viewport.rows),
             Home => self.pan = Offset::default(),
+            Char('+' | '=') => self.zoom_in(),
+            Char('-') => self.zoom_out(),
             _ => {}
         }
     }
 
+    pub(super) fn zoom(&self) -> u16 {
+        self.zoom
+    }
+
+    fn zoom_in(&mut self) {
+        self.zoom = self.zoom.saturating_add(ZOOM_STEP).min(MAX_ZOOM);
+        self.reveal_step = true;
+    }
+
+    fn zoom_out(&mut self) {
+        self.zoom = self.zoom.saturating_sub(ZOOM_STEP).max(FIT_ZOOM);
+        self.reveal_step = true;
+    }
+
+    fn reset_zoom(&mut self) {
+        self.zoom = FIT_ZOOM;
+        self.pan = Offset::default();
+    }
+
     fn select(&mut self, position: usize) {
-        let selection = (!self.view.is_empty()).then(|| position.min(self.view.len() - 1));
-        if selection != self.selected_position() {
-            self.pan = Offset::default();
+        let previous_position = self.selected_position();
+        self.select_row(position);
+        if self.selected_position() != previous_position {
+            self.reset_flow_view();
         }
+    }
+
+    fn reset_flow_view(&mut self) {
+        self.selected_node = self.steps().first().map(|step| step.node_index);
+        self.reset_zoom();
+        self.image_extent = None;
+        self.reveal_step = true;
+    }
+
+    fn select_row(&mut self, position: usize) {
+        let selection = (!self.view.is_empty()).then(|| position.min(self.view.len() - 1));
         let row = selection.and_then(|position| self.row_of(position));
         self.list_state.select(row);
         if let Some(row) = row
@@ -382,28 +482,87 @@ impl App {
     }
 
     fn clamp_pan(&mut self) {
-        let (height, width) = self.diagram().map_or((0, 0), |diagram| {
-            (
-                dimension(diagram.text.height()),
-                dimension(diagram.text.width()),
-            )
+        let extent = self.image_extent.unwrap_or_else(|| {
+            self.diagram().map_or(Offset::default(), |diagram| Offset {
+                rows: dimension(diagram.text.height()),
+                columns: dimension(diagram.text.width()),
+            })
         });
-        self.pan.rows = self.pan.rows.min(height.saturating_sub(self.viewport.rows));
+        self.pan.rows = self
+            .pan
+            .rows
+            .min(extent.rows.saturating_sub(self.viewport.rows));
         self.pan.columns = self
             .pan
             .columns
-            .min(width.saturating_sub(self.viewport.columns));
+            .min(extent.columns.saturating_sub(self.viewport.columns));
+    }
+
+    pub(super) fn set_image_extent(&mut self, extent: Offset) {
+        self.image_extent = Some(extent);
+        self.clamp_pan();
+    }
+
+    fn move_step(&mut self, distance: isize) {
+        let steps = self.steps();
+        let position = self.selected_step_position().map_or(0, |position| {
+            position
+                .saturating_add_signed(distance)
+                .min(steps.len().saturating_sub(1))
+        });
+        self.selected_node = steps.get(position).map(|step| step.node_index);
+        self.reveal_step = true;
+    }
+
+    pub(super) fn selected_step(&self) -> Option<&StepPosition> {
+        self.steps().get(self.selected_step_position()?)
+    }
+
+    fn steps(&self) -> &[StepPosition] {
+        self.diagram()
+            .and_then(|view| view.graphic.as_ref())
+            .map_or(&[], |graphic| &graphic.steps)
+    }
+
+    fn selected_step_position(&self) -> Option<usize> {
+        let selected_node = self.selected_node?;
+        self.steps()
+            .iter()
+            .position(|step| step.node_index == selected_node)
+    }
+
+    fn selected_node_id(&self) -> Option<&str> {
+        let graphic = self.diagram()?.graphic.as_ref()?;
+        let node_index = self.selected_step()?.node_index;
+        Some(&graphic.diagram.nodes.get(node_index)?.id)
+    }
+
+    fn select_node_by_id(&mut self, node_id: Option<&str>) {
+        self.selected_node = node_id.and_then(|node_id| {
+            let graphic = self.diagram()?.graphic.as_ref()?;
+            graphic.steps.iter().find_map(|step| {
+                let node = graphic.diagram.nodes.get(step.node_index)?;
+                (node.id == node_id).then_some(step.node_index)
+            })
+        });
     }
 
     pub(super) fn apply(&mut self, loaded: Loaded) {
+        self.revision = self.revision.wrapping_add(1);
         let path = self.selected().map(|entry| entry.flow.path.clone());
+        let node_id = self.selected_node_id().map(str::to_owned);
         self.has_map = loaded.has_map;
         self.catalog = loaded.catalog;
         self.flows = loaded.flows;
         self.base = loaded.base;
+        if self.base.is_none() {
+            self.view_mode = ViewMode::Normal;
+        }
         self.status = loaded.status;
         self.catalog_problems = loaded.catalog_problems;
-        self.rebuild_view(path);
+        if self.rebuild_view(path.as_deref()) {
+            self.select_node_by_id(node_id.as_deref());
+        }
         self.resize(self.area.width, self.area.height);
     }
 
@@ -416,10 +575,10 @@ impl App {
 
     fn refilter(&mut self) {
         let path = self.selected().map(|entry| entry.flow.path.clone());
-        self.rebuild_view(path);
+        self.rebuild_view(path.as_deref());
     }
 
-    fn rebuild_view(&mut self, selected_path: Option<String>) {
+    fn rebuild_view(&mut self, selected_path: Option<&str>) -> bool {
         let previous_position = self.selected_position().unwrap_or(0);
         let query = self.query().to_lowercase();
         self.view = self
@@ -429,10 +588,10 @@ impl App {
             .filter(|(_, entry)| matches_query(&entry.flow, &query))
             .map(|(index, _)| index)
             .collect();
-        let same_path = selected_path.as_ref().and_then(|path| {
+        let same_path = selected_path.and_then(|path| {
             self.view
                 .iter()
-                .position(|index| self.flows[*index].flow.path == *path)
+                .position(|index| self.flows[*index].flow.path == path)
         });
         self.rows.clear();
         let mut previous_group = None;
@@ -447,14 +606,11 @@ impl App {
             self.rows.push(ListRow::Flow(position));
         }
         let position = same_path.unwrap_or(previous_position);
+        self.select_row(position);
         if same_path.is_none() {
-            self.pan = Offset::default();
+            self.reset_flow_view();
         }
-        let pan = self.pan;
-        self.select(position);
-        if same_path.is_some() {
-            self.pan = pan;
-        }
+        same_path.is_some()
     }
 
     pub(super) fn selected(&self) -> Option<&Entry> {
@@ -463,37 +619,43 @@ impl App {
             .and_then(|index| self.flows.get(*index))
     }
     pub(super) fn diagram(&self) -> Option<&DiagramView> {
-        self.selected().map(|entry| {
-            if self.diff_mode {
-                &entry.difference
-            } else {
-                &entry.normal
-            }
+        self.selected().map(|entry| match self.view_mode {
+            ViewMode::Normal => &entry.normal,
+            ViewMode::Diff | ViewMode::SideBySide => &entry.difference,
         })
     }
     pub(super) fn panel_line_count(&self) -> usize {
-        let Some(entry) = self.selected() else {
-            return 0;
-        };
-        let mut count = entry.problems.len() + 1 + entry.footer.len();
-        if self.diff_mode {
-            count += entry.difference.details.len() + entry.stale.len();
-        }
-        count
+        self.panel_lines().len()
     }
 
     pub(super) fn panel_lines(&self) -> Vec<String> {
         let Some(entry) = self.selected() else {
             return Vec::new();
         };
-        let mut lines = entry.problems.clone();
-        if entry.footer.is_empty() {
+        let mut lines = Vec::new();
+        if let Some(step) = self.selected_step()
+            && let Some(graphic) = self.diagram().and_then(|view| view.graphic.as_ref())
+        {
+            let node = &graphic.diagram.nodes[step.node_index];
+            lines.push(node.label.join(" "));
+            if !step.returns_from.is_empty() {
+                let origins = step
+                    .returns_from
+                    .iter()
+                    .map(|&index| graphic.diagram.nodes[index].label.join(" "))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("Back from {origins}"));
+            }
+            lines.extend(self.source_preview.iter().cloned());
+        } else if entry.footer.is_empty() {
             lines.push("no anchors".into());
         } else {
             lines.push("Code:".into());
             lines.extend(entry.footer.iter().cloned());
         }
-        if self.diff_mode {
+        lines.extend(entry.problems.iter().cloned());
+        if self.view_mode != ViewMode::Normal {
             lines.extend(entry.difference.details.iter().cloned());
             lines.extend(entry.stale.iter().cloned());
         }
@@ -536,6 +698,7 @@ mod state_tests {
             .join("\n");
         let view = DiagramView {
             text: Text::raw(text),
+            graphic: None,
             summary: "unchanged since base".into(),
             details: Vec::new(),
         };
@@ -549,6 +712,7 @@ mod state_tests {
             marker: Marker::Same,
             normal: view.clone(),
             difference: view,
+            previous: None,
             problems: vec![],
             footer: vec![],
             stale: vec![],
@@ -841,6 +1005,7 @@ mod state_tests {
     #[test]
     fn resize_reclamps_both_axes() {
         let mut app = app();
+        app.focus = Focus::Diagram;
         app.pan = Offset {
             rows: u16::MAX,
             columns: u16::MAX,
@@ -850,7 +1015,7 @@ mod state_tests {
             app.pan,
             Offset {
                 rows: 76,
-                columns: 128
+                columns: 96
             }
         );
         app.resize(118, 28);
@@ -858,7 +1023,7 @@ mod state_tests {
             app.pan,
             Offset {
                 rows: 76,
-                columns: 128
+                columns: 96
             }
         );
         app.resize(122, 32);
@@ -866,7 +1031,7 @@ mod state_tests {
             app.pan,
             Offset {
                 rows: 74,
-                columns: 126
+                columns: 94
             }
         );
     }
@@ -1029,7 +1194,7 @@ mod state_tests {
         assert_eq!(app.search, Search::Typing("qjkd p?".into()));
         assert!(!app.help);
         assert!(!app.panel);
-        assert!(!app.diff_mode);
+        assert_eq!(app.view_mode, ViewMode::Normal);
     }
     #[test]
     fn esc_chain_order() {
@@ -1078,6 +1243,24 @@ mod state_tests {
         }
     }
     #[test]
+    fn map_opens_the_selected_flow_and_esc_returns_to_it_on_a_wide_terminal() {
+        let mut app = app();
+        app.resize(120, 40);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected().unwrap().flow.name, "Beta");
+        assert!(
+            super::super::layout::layout(app.area, &app)
+                .diagram
+                .is_empty()
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Diagram);
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert_eq!(app.focus, Focus::List);
+        assert_eq!(app.selected().unwrap().flow.name, "Beta");
+    }
+
+    #[test]
     fn narrow_enter_and_tab() {
         let mut app = app();
         app.resize(60, 20);
@@ -1094,7 +1277,7 @@ mod state_tests {
         let mut app = app();
         app.base = None;
         press(&mut app, KeyCode::Char('d'));
-        assert!(!app.diff_mode);
+        assert_eq!(app.view_mode, ViewMode::Normal);
         assert_eq!(app.status.as_deref(), Some("diff mode needs git"));
         press(&mut app, KeyCode::Down);
         assert!(app.status.is_none());
@@ -1102,9 +1285,10 @@ mod state_tests {
     #[test]
     fn diff_on_broken_flow_shows_the_error() {
         let mut app = app();
+        app.focus = Focus::Diagram;
         app.flows[0].difference.text = Text::raw("parse error, line 4: expected a step");
         press(&mut app, KeyCode::Char('d'));
-        assert!(app.diff_mode);
+        assert_eq!(app.view_mode, ViewMode::Diff);
         assert_eq!(
             app.diagram().unwrap().text.lines[0].spans[0].content,
             "parse error, line 4: expected a step"
@@ -1122,6 +1306,103 @@ mod state_tests {
             }
         );
     }
+
+    #[test]
+    fn zoom_is_clamped() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('-'));
+        assert_eq!(app.zoom(), FIT_ZOOM);
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Char('+'));
+        }
+        assert_eq!(app.zoom(), MAX_ZOOM);
+    }
+
+    #[test]
+    fn side_by_side_needs_a_base() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.view_mode, ViewMode::SideBySide);
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.view_mode, ViewMode::Diff);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.view_mode, ViewMode::Normal);
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.view_mode, ViewMode::Normal);
+
+        press(&mut app, KeyCode::Char('v'));
+        let mut reloaded = loaded_with_flows(&["Alpha"]);
+        reloaded.base = None;
+        app.apply(reloaded);
+        assert_eq!(app.view_mode, ViewMode::Normal);
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.view_mode, ViewMode::Normal);
+    }
+
+    fn loaded_with_diagram(source: &str) -> Loaded {
+        let flow = casemap::flows::parse_flow(
+            "checkout.md",
+            &format!("# Checkout\n\nA shopper pays.\n\n```mermaid\nflowchart TD\n{source}\n```"),
+        );
+        let mut entry = entry("Checkout");
+        entry.normal = super::super::normal_view(&flow);
+        entry.difference = entry.normal.clone();
+        entry.flow = flow;
+        Loaded {
+            flows: vec![entry],
+            ..loaded_with_flows(&[])
+        }
+    }
+
+    #[test]
+    fn view_mode_change_moves_a_missing_selection_to_the_first_step() {
+        let mut loaded = loaded_with_diagram("pay[Pay] --> receipt[Receive receipt]");
+        loaded.flows[0].difference = loaded_with_diagram("pay[Pay]").flows.remove(0).normal;
+        let mut app = App::new(loaded, false, true);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_node_id(), Some("receipt"));
+        app.set_view_mode(ViewMode::Diff);
+        assert_eq!(app.selected_node_id(), Some("pay"));
+    }
+
+    #[test]
+    fn selection_is_cleared_when_the_step_disappears() {
+        let mut app = App::new(
+            loaded_with_diagram("pay[Pay] --> receipt[Receive receipt]"),
+            false,
+            true,
+        );
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_step().unwrap().node_index, 1);
+        app.apply(loaded_with_diagram("pay[Pay]"));
+        assert!(app.selected_step().is_none());
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_step().unwrap().node_index, 0);
+    }
+
+    #[test]
+    fn reload_keeps_the_same_step_when_node_indices_change() {
+        let mut app = App::new(
+            loaded_with_diagram("pay[Pay] --> receipt[Receive receipt]"),
+            false,
+            true,
+        );
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        app.apply(loaded_with_diagram(
+            "cart[Open cart] --> pay[Pay] --> receipt[Receive receipt]",
+        ));
+        assert!(
+            app.panel_lines()
+                .iter()
+                .any(|line| line == "Receive receipt")
+        );
+    }
+
     #[test]
     fn reload_keeps_selection_by_path() {
         let mut app = app();

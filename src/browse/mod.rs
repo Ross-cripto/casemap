@@ -1,5 +1,6 @@
-mod ansi;
 pub(crate) mod app;
+mod code_panel;
+mod graphic;
 mod layout;
 mod ui;
 mod watch;
@@ -11,12 +12,14 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::bail;
+use casemap::flow_image::{self, ImageOptions, Theme};
 use casemap::flows::{self, Flow, FlowChange};
 use casemap::{Diagram, Options, anchors, check, diff, git};
 use ratatui::crossterm::event::{self, Event};
 
 use crate::{BaseChanges, DEFAULT_REF, Wake};
-use app::{Action, App, BaseInfo, DiagramView, Entry, Loaded, Marker, Standing};
+use app::{Action, App, BaseInfo, DiagramView, Entry, Graphic, Loaded, Marker, Standing};
+use ratatui::text::Text;
 use watch::{ReloadWatch, WakeMode};
 
 const KEY_POLL: Duration = Duration::from_millis(250);
@@ -123,7 +126,12 @@ impl BrowserSession {
     }
 }
 
-pub(crate) fn run(dir: &Path, reference: Option<&str>, opts: &Options) -> anyhow::Result<ExitCode> {
+pub(crate) fn run(
+    dir: &Path,
+    reference: Option<&str>,
+    opts: &Options,
+    theme: &Theme,
+) -> anyhow::Result<ExitCode> {
     crate::require_catalog(dir)?;
     if let Some(reference) = reference {
         git::merge_base(dir, reference)?;
@@ -134,19 +142,68 @@ pub(crate) fn run(dir: &Path, reference: Option<&str>, opts: &Options) -> anyhow
     let (mut session, mut app) = BrowserSession::new(dir, reference, opts)?;
     let _guard = TerminalGuard;
     let mut terminal = ratatui::try_init()?;
+    let mut images = graphic::ImageLayer::new(dir);
+    let mut code = code_panel::CodePanel::new(dir);
     let size = terminal.size()?;
     app.resize(size.width, size.height);
     loop {
         app.reloading = session.worker.is_reloading();
+        code.refresh(&mut app);
+        app.resize(app.area.width, app.area.height);
+        let graphics_changed = images.prepare(&mut app, theme);
+        if graphics_changed {
+            images.clear()?;
+            // Full-screen resize resets the back buffer without querying the cursor.
+            terminal.resize(app.area)?;
+        }
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        if images.paint(graphics_changed)? == graphic::PaintOutcome::NeedsRedraw {
+            images.prepare_redraw(&mut app, theme);
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        }
+        let mut editor_status = None;
         match handle_input(&mut app, input_timeout(session.worker.is_reloading()))? {
-            Action::Quit => return Ok(ExitCode::SUCCESS),
+            Action::Quit => {
+                images.clear()?;
+                return Ok(ExitCode::SUCCESS);
+            }
             Action::Reload => session.manual_reload(&mut app),
+            Action::OpenCode => {
+                editor_status = handle_open_code(&mut code, &mut terminal, &mut images, &mut app)?;
+            }
             Action::None => {}
         }
         poll_watch(&mut session, &mut app);
         apply_reload(&mut session.worker, &mut app);
+        let messages: Vec<_> = editor_status
+            .into_iter()
+            .chain(code.open_failure())
+            .collect();
+        if !messages.is_empty() {
+            app.status = Some(messages.join(" · "));
+        }
     }
+}
+
+fn handle_open_code(
+    code: &mut code_panel::CodePanel,
+    terminal: &mut ratatui::DefaultTerminal,
+    images: &mut graphic::ImageLayer,
+    app: &mut App,
+) -> anyhow::Result<Option<String>> {
+    let editor = match code.open() {
+        Ok(Some(editor)) => editor,
+        Ok(None) => return Ok(None),
+        Err(error) => return Ok(Some(error.to_string())),
+    };
+    images.clear()?;
+    images.hide();
+    terminal.show_cursor()?;
+    let (restored_terminal, status) = editor.run()?;
+    *terminal = restored_terminal;
+    let size = terminal.size()?;
+    app.resize(size.width, size.height);
+    Ok(status)
 }
 
 fn input_timeout(reloading: bool) -> Duration {
@@ -362,17 +419,30 @@ fn build_entry(
     flow: &Flow,
     report: &check::Report,
     base: Option<&BaseChanges>,
-    opts: &Options,
+    _opts: &Options,
 ) -> Entry {
-    let normal = normal_view(flow, opts);
+    let normal = normal_view(flow);
     let change = base.and_then(|base| {
         base.changes
             .iter()
             .find(|change| changed_flow(change).path == flow.path)
     });
     let stale = base.and_then(|base| base.stale.iter().find(|stale| stale.flow.path == flow.path));
-    let previous = base.and_then(|base| base.old.iter().find(|old| old.path == flow.path));
-    let (difference, change_marker) = diff_view(flow, previous, &normal, change, opts);
+    let historical = base
+        .and_then(|base| base.old.iter().find(|old| old.path == flow.path))
+        .map(|flow| flow_image::parse_flow(flow).map(|diagram| (flow.clone(), diagram)))
+        .transpose();
+    let (previous, base_error) = match historical {
+        Ok(previous) => (previous, None),
+        Err(error) => (None, Some(error)),
+    };
+    let (mut difference, change_marker) = diff_view(flow, previous.as_ref(), &normal, change);
+    if let Some(error) = base_error {
+        difference.summary = format!(
+            "{} (base flow could not be drawn: {error})",
+            difference.summary
+        );
+    }
     let problems: Vec<_> = report
         .problems
         .iter()
@@ -381,7 +451,7 @@ fn build_entry(
     let check_errors = problems
         .iter()
         .any(|problem| problem.code.severity() == check::Severity::Error);
-    let broken = matches!(flows::diagram(flow), Some(Err(_)));
+    let broken = normal.graphic.is_none() && !matches!(change, Some(FlowChange::Removed { .. }));
     Entry {
         flow: flow.clone(),
         standing: Standing::Unmapped,
@@ -389,6 +459,7 @@ fn build_entry(
         marker: Marker::choose(broken, check_errors, stale.is_some(), change_marker),
         normal,
         difference,
+        previous,
         problems: problems.into_iter().map(format_problem).collect(),
         footer: anchors::render_footer(flow)
             .lines()
@@ -419,14 +490,17 @@ fn format_problem(problem: &check::Problem) -> String {
     )
 }
 
-fn normal_view(flow: &Flow, opts: &Options) -> DiagramView {
-    let rendered = match flows::diagram(flow) {
-        Some(Ok(diagram)) => casemap::render_diagram(&diagram, opts),
-        Some(Err(error)) => format!("parse error, {error}"),
-        None => "no mermaid block".into(),
+fn normal_view(flow: &Flow) -> DiagramView {
+    let (text, graphic) = match flow_image::parse_flow(flow) {
+        Ok(diagram) => (Text::default(), Some(graphic_view(flow, diagram, None))),
+        Err(flow_image::FlowImageError::Parse(error)) => {
+            (Text::raw(format!("parse error, {error}")), None)
+        }
+        Err(error) => (Text::raw(error.to_string()), None),
     };
     DiagramView {
-        text: ansi::ansi_to_text(&rendered),
+        text,
+        graphic,
         summary: "unchanged since base".into(),
         details: Vec::new(),
     }
@@ -434,40 +508,50 @@ fn normal_view(flow: &Flow, opts: &Options) -> DiagramView {
 
 fn diff_view(
     flow: &Flow,
-    previous: Option<&Flow>,
+    previous: Option<&(Flow, Diagram)>,
     normal: &DiagramView,
     change: Option<&FlowChange>,
-    opts: &Options,
 ) -> (DiagramView, Marker) {
     let Some(change) = change else {
         return (normal.clone(), Marker::Same);
     };
     match change {
-        FlowChange::Modified { diff, .. } => (
-            render_difference(diff, diff.summary(), opts),
-            Marker::Modified,
-        ),
-        FlowChange::New {
-            diff, base_broken, ..
-        } => {
-            let mut summary = String::from("new since base");
-            if *base_broken {
-                summary.push_str(" (base version did not parse)");
+        FlowChange::Modified { diff, .. } => {
+            let Some(graphic) = &normal.graphic else {
+                return (normal.clone(), Marker::Error);
+            };
+            if previous.is_none() {
+                let added = diff::all_added(&graphic.diagram);
+                return (
+                    render_difference(flow, &added, "new since base".into()),
+                    Marker::New,
+                );
             }
-            (render_difference(diff, summary, opts), Marker::New)
+            (
+                render_difference(flow, diff, diff.summary()),
+                Marker::Modified,
+            )
+        }
+        FlowChange::New { diff, .. } => {
+            if normal.graphic.is_none() {
+                return (normal.clone(), Marker::Error);
+            }
+            (
+                render_difference(flow, diff, "new since base".into()),
+                Marker::New,
+            )
         }
         FlowChange::Unchanged { .. } => (normal.clone(), Marker::Same),
-        FlowChange::Broken { error, .. } => (
+        FlowChange::Broken { .. } => (
             DiagramView {
-                text: ansi::ansi_to_text(&format!("parse error, {error}")),
                 summary: "parse error".into(),
-                details: Vec::new(),
+                ..normal.clone()
             },
             Marker::Error,
         ),
         FlowChange::Removed { .. } => {
             let mut view = normal.clone();
-            if let Some(Ok(old)) = flows::diagram(previous.unwrap_or(flow)) {
+            if let Some((_, old)) = previous {
                 let empty = Diagram {
                     direction: old.direction,
                     nodes: vec![],
@@ -476,7 +560,7 @@ fn diff_view(
                     node_cluster: vec![],
                 };
                 view =
-                    render_difference(&diff::diff(&old, &empty), "removed since base".into(), opts);
+                    render_difference(flow, &diff::diff(old, &empty), "removed since base".into());
             }
             view.summary = "removed since base".into();
             (view, Marker::Removed)
@@ -484,19 +568,36 @@ fn diff_view(
     }
 }
 
-fn render_difference(
-    difference: &diff::DiagramDiff,
-    summary: String,
-    opts: &Options,
-) -> DiagramView {
+fn render_difference(flow: &Flow, difference: &diff::DiagramDiff, summary: String) -> DiagramView {
     DiagramView {
-        text: ansi::ansi_to_text(&casemap::render_diagram(&difference.union, opts)),
+        text: Text::default(),
+        graphic: Some(graphic_view(
+            flow,
+            difference.union.clone(),
+            Some(difference.changes.clone()),
+        )),
         summary,
         details: difference
             .details()
             .into_iter()
             .map(|(_, text)| text)
             .collect(),
+    }
+}
+
+fn graphic_view(flow: &Flow, diagram: Diagram, changes: Option<Vec<diff::Change>>) -> Graphic {
+    let steps = flow_image::steps(
+        flow,
+        &diagram,
+        ImageOptions {
+            changes: changes.as_deref(),
+            selected_step: None,
+        },
+    );
+    Graphic {
+        diagram,
+        changes,
+        steps,
     }
 }
 
@@ -771,8 +872,18 @@ mod tests {
         assert_eq!(retained.base.unwrap().sha, sha);
         assert_eq!(retained.flows[0].flow.title, "Updated title");
         assert_eq!(
-            retained.flows[0].difference.text,
-            modified.flows[0].difference.text
+            retained.flows[0]
+                .difference
+                .graphic
+                .as_ref()
+                .unwrap()
+                .changes,
+            modified.flows[0]
+                .difference
+                .graphic
+                .as_ref()
+                .unwrap()
+                .changes
         );
         assert!(retained.status.unwrap().starts_with("git reload failed:"));
     }
@@ -882,6 +993,27 @@ mod tests {
     }
 
     #[test]
+    fn load_does_not_build_images_for_generic_mermaid() {
+        for (path, content) in [
+            (
+                "example.md",
+                "# Flow\n\nDescription.\n\n```mermaid\nflowchart TD\na --> b\n```\n\n```mermaid\nflowchart TD\nc --> d\n```\n",
+            ),
+            ("example.mmd", "flowchart TD\na --> b"),
+        ] {
+            let flow = flows::parse_flow(path, content);
+            assert!(flows::diagram(&flow).unwrap().is_ok());
+            let view = normal_view(&flow);
+            assert!(view.graphic.is_none(), "{path}");
+            assert!(
+                view.text
+                    .to_string()
+                    .contains("one Mermaid flowchart block")
+            );
+        }
+    }
+
+    #[test]
     fn loaded_views_cover_changes_errors_and_anchors() {
         let directory = Path::new("tests/fixtures/flows/browse");
         let current = flows::load_dir(directory).unwrap();
@@ -923,30 +1055,32 @@ mod tests {
             &Options::default(),
         );
         assert_eq!(broken.difference.text, broken.normal.text);
-        assert_eq!(broken.difference.summary, "parse error");
+        assert!(broken.difference.summary.starts_with("parse error"));
         let pay = current
             .iter()
             .find(|flow| flow.name == "pay-for-an-order")
             .unwrap();
         let previous = casemap::flows::parse_flow(
             "pay-for-an-order.md",
-            "# Broken base\n\nDescription.\n\n```mermaid\ngraph TD\na -->\n```",
+            "# Broken base\n\nDescription.\n\n```mermaid\nflowchart TD\na -->\n```",
         );
         let changes = BaseChanges {
             base: "1234567890".into(),
             changed: vec![],
             root: Default::default(),
             prefix: String::new(),
-            changes: flows::compare(&[previous], &current),
-            old: vec![],
+            changes: flows::compare(std::slice::from_ref(&previous), &current),
+            old: vec![previous],
             stale: vec![],
         };
         let new = build_entry(directory, pay, &report, Some(&changes), &Options::default());
         assert_eq!(new.marker, Marker::New);
-        assert_eq!(
-            new.difference.summary,
-            "new since base (base version did not parse)"
+        assert!(
+            new.difference
+                .summary
+                .contains("base flow could not be drawn:")
         );
+        assert!(new.difference.summary.contains("line "));
         assert!(
             new.footer
                 .iter()
@@ -976,10 +1110,14 @@ mod tests {
         assert!(
             loaded.flows[0]
                 .difference
-                .text
-                .lines
+                .graphic
+                .as_ref()
+                .unwrap()
+                .diagram
+                .nodes
                 .iter()
-                .any(|line| line.to_string().contains("- Pay"))
+                .any(|node| node.mark == casemap::Mark::Removed
+                    && node.label.iter().any(|label| label.contains("Pay")))
         );
         let missing = flows::parse_flow("pay-for-an-order.md", "# Pay\n\nDescription.");
         let missing = build_entry(
@@ -989,17 +1127,24 @@ mod tests {
             Some(&removed),
             &Options::default(),
         );
-        assert_eq!(
-            missing.normal.text.lines[0].spans[0].content,
-            "no mermaid block"
+        assert!(
+            missing
+                .normal
+                .text
+                .to_string()
+                .contains("one Mermaid flowchart block")
         );
         assert!(
             missing
                 .difference
-                .text
-                .lines
+                .graphic
+                .as_ref()
+                .unwrap()
+                .diagram
+                .nodes
                 .iter()
-                .any(|line| line.to_string().contains("- Pay"))
+                .any(|node| node.mark == casemap::Mark::Removed
+                    && node.label.iter().any(|label| label.contains("Pay")))
         );
     }
 }

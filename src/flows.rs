@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::anchors::{self, Target};
 use crate::diff::{self, DiagramDiff};
 use crate::model::Shape;
-use crate::render::bold_line;
-use crate::{Diagram, Options, ParseError, canvas, markdown, parser, paths};
+use crate::terminal_text::{bold_line, mark_sgr};
+use crate::{Diagram, Options, ParseError, markdown, parser, paths};
 
 pub const SHORT_SHA_LEN: usize = 7;
 pub const MAX_STALE_FILES: usize = 5;
@@ -18,6 +18,7 @@ pub struct Flow {
     pub description: Option<String>,
     pub source: Option<String>,
     pub line_offset: usize,
+    pub(crate) single_mermaid_block: bool,
 }
 
 pub fn parse_flow(path: &str, text: &str) -> Flow {
@@ -34,13 +35,17 @@ pub fn parse_flow(path: &str, text: &str) -> Flow {
             description: None,
             source: Some(text.to_string()),
             line_offset: 0,
+            single_mermaid_block: false,
         };
     }
     let outline = markdown::outline(text);
-    let block = outline
+    let mut blocks = outline
         .blocks
         .into_iter()
-        .find(|block| markdown::is_mermaid(&block.info));
+        .filter(|block| markdown::is_mermaid(&block.info));
+    let block = blocks.next();
+    let single_mermaid_block =
+        block.as_ref().is_some_and(|block| block.closed) && blocks.next().is_none();
     Flow {
         path: path.to_string(),
         title: outline
@@ -51,6 +56,7 @@ pub fn parse_flow(path: &str, text: &str) -> Flow {
         description: outline.description.map(|(_, description)| description),
         line_offset: block.as_ref().map(|block| block.line).unwrap_or(0),
         source: block.map(|block| block.source),
+        single_mermaid_block,
     }
 }
 
@@ -348,7 +354,7 @@ fn push_marked_line(
     text: &str,
     opts: &Options,
 ) {
-    if let Some(sgr) = canvas::mark_sgr(mark).filter(|_| opts.color) {
+    if let Some(sgr) = mark_sgr(mark).filter(|_| opts.color) {
         output.push_str(&format!("{indent}{sgr}{text}{RESET_SGR}\n"));
     } else {
         output.push_str(&format!("{indent}{text}\n"));
@@ -491,8 +497,6 @@ fn render_diff_section(
     if marker && let Some(note) = unanchored_note_text(flow, difference) {
         push_marked_line(&mut output, "  ", crate::Mark::Changed, &note, opts);
     }
-    output.push('\n');
-    output.push_str(&crate::render_diagram(&difference.union, opts));
     output.push('\n');
     output
 }

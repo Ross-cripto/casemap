@@ -1,56 +1,38 @@
 # Browse
 
-`casemap browse [--base REF]` opens a full-screen catalog browser. The default base
-is `HEAD`; `--base main` compares against its merge base with HEAD. Use `--flows
-DIR`, `--ascii`, `--no-color` or `--dir TD|BT|LR|RL` as needed. `NO_COLOR` also
-selects a plain UI; `--color` has no effect here.
+`casemap browse` and `casemap map` open the activity map in an interactive
+terminal. Pick a use case and press Enter to see its diagram. Bare `casemap`
+opens the same view when the repository already has a catalog.
 
-An excerpt of the 120×30 `browse__wide` fixture snapshot:
+In a diagram, selecting a step highlights the paths leading into it. The
+panel shows its anchors, a code preview when available and steps that return
+to it. Press Enter to open the selected step's anchored code.
 
-```text
-┌ Flows ───────────────────────┐Pay for an order
-│✗ Bad flow                    │tests/fixtures/flows/browse/pay-for-an-order.md
-│✗ Broken flow                 │A customer pays for an order and receives a receipt.
-│~ Checkout                    │┌ Diagram ─────────────────────────────────────────────────────────────────────────────┐
-│· Login                       ││    ╭───────────╮                                                                     │
-│! Pay for an order            ││    │ Customer  │                                                                     │
-│+ Refund                      ││    ╰─────┬─────╯                                                                     │
-│· Wide flow                   ││          │                                                                           │
-│- Legacy export               ││          ▼                                                                           │
-```
+With `--base REF`, browse compares against the merge base of REF and HEAD.
+The default is HEAD. Press `d` for diff marks or `v` to see both versions.
 
-| Key | List focus | Diagram focus |
+| Key | Activity map | Diagram |
 |---|---|---|
-| ↑/↓, k/j | Select a flow | Pan one row |
-| ←/→, h/l | | Pan one column |
-| H/J/K/L | | Pan ten columns/rows |
-| PgUp/PgDn | Select by page | Pan by visible height |
+| Arrow keys | Select a flow | Select a step |
+| Enter | Open the selected flow | Open anchored code |
+| Tab | Open the selected flow | Return to the map |
+| `h` `j` `k` `l` | `j` and `k` select flows | Pan one row or column |
+| `H` `J` `K` `L` | | Pan ten rows or columns |
+| PgUp and PgDn | Select by page | Pan by page |
 | Home | First flow | Reset pan |
-| Tab | Focus diagram; open it on narrow terminals | Focus list |
-| Enter | Open diagram on narrow terminals | |
-| / | Search title or name | Search title or name |
-| d | Toggle diff against the base | Same |
-| p | Toggle problems, code anchors and diff details | Same |
-| r | Reload flows, checks and anchored code | Same |
-| ? | Help | Help |
-| q, Ctrl-C | Quit | Quit |
-| Esc | Close help → finish search → clear kept filter → narrow list → quit | Same |
+| `+` and `-` | | Zoom in or out |
+| `/` | Search title or name | Search title or name |
+| `d` or `v` | Set the comparison view | Toggle marks or side by side |
+| `p` | Toggle the panel | Toggle the panel |
+| `r` | Reload | Reload |
+| `?` | Help | Help |
+| Esc | Close help or search | Return to the map |
+| `q` or Ctrl-C | Quit | Quit |
 
-Search accepts printable characters, including command letters. ↑/↓ still
-select; Backspace deletes; Enter keeps the filter, or clears an empty query.
-Ctrl-C quits even while searching. Changed flow files reload automatically;
-edits to anchored code outside the catalog refresh on `r`. When git is unavailable
-or HEAD has no commit, the status says `no git` and diff mode is disabled.
+Changed flow files reload automatically. Press `r` to refresh anchored code
+after editing it outside the catalog. If terminal graphics are unavailable,
+the diagram panel shows the path to a temporary PNG.
 
-Markers, in priority order: `✗` (`x` in ASCII) means a parse/check error, `!`
-possibly stale, `~` modified, `+` new, `-` removed, and `·` (`.` in ASCII) unchanged.
-Removed flows appear last. Diagrams pan without wrapping. Below 80 columns,
-Tab switches between the list and diagram views.
-
-Bare `casemap` opens the browser only when stdin **and** stdout are terminals,
-`CI` is unset, `TERM` is not `dumb`, the catalog (`--flows` or `docs/flows`) has flows,
-and neither FILE nor `--watch` is supplied. With no flows it offers setup;
-outside an interactive session it reads stdin as before.
-Explicit `casemap browse` requires terminal stdout. Build with
-`--no-default-features --features cli` for the CLI without the browser; library
-embedders can use `default-features = false`.
+`casemap browse` needs a terminal and the `tui` feature. `casemap map` with
+redirected output still prints the grouped catalog for scripts. Use `--flows`
+to select a catalog or `--theme` and `--bg` to style the diagram.

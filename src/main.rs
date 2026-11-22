@@ -17,9 +17,11 @@ use unicode_width::UnicodeWidthStr;
 #[cfg(feature = "tui")]
 mod browse;
 mod hook;
+mod image_command;
+mod image_terminal;
 mod onboard;
-use casemap::markdown::is_markdown_path;
-use casemap::{Direction, Options, ParseError, anchors, check, coverage, git, map, skill};
+use casemap::flow_image::{self, ImageOptions};
+use casemap::{Options, anchors, check, coverage, git, map, skill};
 
 const DEFAULT_FLOWS_DIR: &str = skill::DEFAULT_CATALOG;
 const DEFAULT_REF: &str = "HEAD";
@@ -44,7 +46,7 @@ const WATCH_MAX_DRAIN: Duration = Duration::from_millis(500);
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-    /// Mermaid source or a .md file; stdin when omitted or '-'.
+    /// Use-case Markdown file. Reads Markdown from stdin when omitted or '-'.
     file: Option<PathBuf>,
     /// Re-render whenever FILE changes (Ctrl-C to quit).
     #[arg(short, long, global = true)]
@@ -52,18 +54,18 @@ struct Cli {
     /// Flow catalog directory (default docs/flows).
     #[arg(long, global = true, value_name = "DIR")]
     flows: Option<PathBuf>,
-    /// Override the flowchart direction.
-    #[arg(long, global = true, value_parser = parse_direction, value_name = "TD|BT|LR|RL")]
-    dir: Option<Direction>,
-    /// Use plain ASCII instead of box-drawing characters.
-    #[arg(long, global = true)]
-    ascii: bool,
     /// Force ANSI colour.
     #[arg(long, global = true, overrides_with = "no_color")]
     color: bool,
     /// Disable ANSI colour (also respects NO_COLOR).
     #[arg(long, global = true, overrides_with = "color")]
     no_color: bool,
+    /// Choose the flow image theme.
+    #[arg(long, global = true, value_enum)]
+    theme: Option<image_command::Preset>,
+    /// Set the flow image background to a hex color.
+    #[arg(long, global = true, value_name = "COLOR")]
+    bg: Option<casemap::flow_image::Color>,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -118,6 +120,18 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
+    #[command(about = "Export a use-case flow as a PNG or SVG image")]
+    Export {
+        flow: PathBuf,
+        /// Export a PNG (the default).
+        #[arg(long, conflicts_with = "svg")]
+        png: bool,
+        /// Export a portable SVG.
+        #[arg(long)]
+        svg: bool,
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Draw the use-case map from the catalog's README.md: activities in journey order, with their flows.
     Map {
         /// grid or outline; by default the grid when it fits the terminal width.
@@ -144,13 +158,19 @@ enum Commands {
         /// Also exit 1 when flows are possibly stale (for local agent runs).
         #[arg(long)]
         strict: bool,
+        /// Draw the previous and current versions together.
+        #[arg(long)]
+        side_by_side: bool,
     },
-    /// Preview a proposed version of a flow, read from stdin, against the current one (writes nothing).
+    /// Preview a proposed version of a flow, read from stdin, against the current one.
     Propose {
         /// Flow name (the file name without .md); a new name proposes a new flow.
         name: String,
         #[arg(long, value_enum, default_value_t = DiffFormat::Text)]
         format: DiffFormat,
+        /// Draw the previous and proposed versions together.
+        #[arg(long)]
+        side_by_side: bool,
     },
     /// Which flows and steps are anchored to the given files (only anchored flows are known).
     Which {
@@ -182,10 +202,6 @@ enum Commands {
 enum HookEvent {
     /// Run when a coding agent is about to finish: block once if the use-case map needs attention.
     Stop,
-}
-
-fn parse_direction(value: &str) -> Result<Direction, String> {
-    Direction::parse(value).ok_or_else(|| "expects one of TD, BT, LR, RL".into())
 }
 
 fn main() -> ExitCode {
@@ -222,10 +238,13 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         bail!("FILE cannot be combined with a subcommand");
     }
     let color = resolve_color(&cli);
+    let image_overrides = image_command::Overrides {
+        preset: cli.theme,
+        background: cli.bg.as_ref(),
+    };
     let opts = Options {
         color,
-        ascii: cli.ascii,
-        direction: cli.dir,
+        ..Options::default()
     };
     #[cfg(feature = "tui")]
     let browse_opts = Options {
@@ -241,20 +260,46 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     #[cfg(not(feature = "tui"))]
     let onboarding_opts = &opts;
     match cli.command {
-        Some(Commands::Propose { name, format }) => propose_flow(directory, &name, format, &opts),
+        Some(Commands::Export {
+            flow, svg, output, ..
+        }) => {
+            let format = if svg {
+                image_command::ExportFormat::Svg
+            } else {
+                image_command::ExportFormat::Png
+            };
+            image_command::export(&flow, format, output.as_deref(), image_overrides)
+        }
+        Some(Commands::Propose {
+            name,
+            format,
+            side_by_side,
+        }) => propose_flow(
+            directory,
+            &name,
+            format,
+            side_by_side,
+            &opts,
+            image_overrides,
+        ),
         Some(Commands::Diff {
             rev,
             strict,
             format,
+            side_by_side,
         }) => diff_catalog(
             directory,
             rev.as_deref().unwrap_or(DEFAULT_REF),
             strict,
             format,
+            side_by_side,
             &opts,
+            image_overrides,
         ),
         #[cfg(feature = "tui")]
-        Some(Commands::Browse { base }) => browse::run(directory, base.as_deref(), &browse_opts),
+        Some(Commands::Browse { base }) => {
+            run_browse(directory, base.as_deref(), &browse_opts, image_overrides)
+        }
         #[cfg(not(feature = "tui"))]
         Some(Commands::Browse { .. }) => bail!("casemap was built without the tui feature"),
         Some(Commands::Which { paths, format }) => which_flows(directory, &paths, format),
@@ -279,12 +324,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             hooks,
         }) => {
             let outcome = init_catalog(directory, force, agent, ci, hooks)?;
-            finish_onboarding(outcome, onboarding_opts)
+            finish_onboarding(outcome, onboarding_opts, image_overrides)
         }
         Some(Commands::Flows { name, format }) => {
-            show_flows(directory, name.as_deref(), format, &opts)
+            show_flows(directory, name.as_deref(), format, &opts, image_overrides)
         }
-        Some(Commands::Map { layout }) => show_map(directory, layout, &opts),
+        Some(Commands::Map { layout }) => {
+            #[cfg(feature = "tui")]
+            if layout.is_none() && interactive_session() {
+                return run_browse(directory, None, &browse_opts, image_overrides);
+            }
+            show_map(directory, layout, &opts)
+        }
         Some(Commands::Check { strict, format }) => check_catalog(directory, strict, format, color),
         Some(Commands::Hook {
             event: HookEvent::Stop,
@@ -312,6 +363,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 onboard::BareMode::Browse => finish_onboarding(
                     onboard::Outcome::Browse(directory.to_path_buf()),
                     onboarding_opts,
+                    image_overrides,
                 ),
                 onboard::BareMode::Onboard => {
                     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -322,27 +374,50 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         onboard::detect_agents(),
                         onboard::run,
                     )?;
-                    finish_onboarding(outcome, onboarding_opts)
+                    finish_onboarding(outcome, onboarding_opts, image_overrides)
                 }
-                onboard::BareMode::ReadStdin => render_file(cli.file.as_deref(), cli.watch, &opts),
+                onboard::BareMode::ReadStdin => {
+                    render_file(cli.file.as_deref(), cli.watch, image_overrides)
+                }
             }
         }
     }
 }
 
 #[cfg(feature = "tui")]
-fn finish_onboarding(outcome: onboard::Outcome, options: &Options) -> anyhow::Result<ExitCode> {
+fn run_browse(
+    directory: &Path,
+    base: Option<&str>,
+    options: &Options,
+    overrides: image_command::Overrides<'_>,
+) -> anyhow::Result<ExitCode> {
+    let theme = image_command::theme(directory, overrides)?;
+    browse::run(directory, base, options, &theme)
+}
+
+#[cfg(feature = "tui")]
+fn finish_onboarding(
+    outcome: onboard::Outcome,
+    options: &Options,
+    overrides: image_command::Overrides<'_>,
+) -> anyhow::Result<ExitCode> {
     match outcome {
         onboard::Outcome::Exit(code) => Ok(code),
-        onboard::Outcome::Browse(catalog) => browse::run(&catalog, None, options),
+        onboard::Outcome::Browse(catalog) => run_browse(&catalog, None, options, overrides),
     }
 }
 
 #[cfg(not(feature = "tui"))]
-fn finish_onboarding(outcome: onboard::Outcome, options: &Options) -> anyhow::Result<ExitCode> {
+fn finish_onboarding(
+    outcome: onboard::Outcome,
+    options: &Options,
+    overrides: image_command::Overrides<'_>,
+) -> anyhow::Result<ExitCode> {
     match outcome {
         onboard::Outcome::Exit(code) => Ok(code),
-        onboard::Outcome::Browse(catalog) => show_flows(&catalog, None, Format::Text, options),
+        onboard::Outcome::Browse(catalog) => {
+            show_flows(&catalog, None, Format::Text, options, overrides)
+        }
     }
 }
 
@@ -398,23 +473,27 @@ fn is_stdin(path: &Path) -> bool {
     path == Path::new("-")
 }
 
-fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
-    match file {
-        None => read_stdin(),
-        Some(path) if is_stdin(path) => read_stdin(),
-        Some(path) => std::fs::read_to_string(path).with_context(|| path.display().to_string()),
-    }
-}
-
-fn render_file(file: Option<&Path>, watch: bool, opts: &Options) -> anyhow::Result<ExitCode> {
+fn render_file(
+    file: Option<&Path>,
+    watch: bool,
+    overrides: image_command::Overrides<'_>,
+) -> anyhow::Result<ExitCode> {
     if watch {
         return match file {
-            Some(path) if !is_stdin(path) => watch_file(path, opts),
+            Some(path) if !is_stdin(path) => {
+                watch_file(path, &image_command::theme(path, overrides)?)
+            }
             _ => bail!("--watch needs a file path"),
         };
     }
-    let source = read_source(file)?;
-    print!("{}", render_source(file, &source, opts)?);
+    let named = file.filter(|path| !is_stdin(path));
+    let (flow, diagram) = match named {
+        Some(path) => image_command::read_flow(path)?,
+        None => image_command::parse_flow(Path::new("flow.md"), &read_stdin()?)?,
+    };
+    let theme = image_command::theme(named.unwrap_or(Path::new(".")), overrides)?;
+    let image = flow_image::svg(&flow, &diagram, &theme, ImageOptions::default());
+    image_terminal::display(&image, named.unwrap_or(Path::new("flow.md")), false)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -430,24 +509,6 @@ fn read_stdin() -> anyhow::Result<String> {
         .read_to_string(&mut source)
         .context("reading stdin")?;
     Ok(source)
-}
-
-#[derive(Debug, thiserror::Error)]
-enum RenderError {
-    #[error(transparent)]
-    Parse(#[from] ParseError),
-    #[error("{0}: no mermaid blocks")]
-    NoBlocks(String),
-}
-
-fn render_source(path: Option<&Path>, src: &str, opts: &Options) -> Result<String, RenderError> {
-    let Some(path) = path.filter(|path| is_markdown_path(path)) else {
-        return Ok(casemap::render_str(src, opts)?);
-    };
-    if casemap::markdown::mermaid_blocks(src).is_empty() {
-        return Err(RenderError::NoBlocks(path.display().to_string()));
-    }
-    Ok(casemap::render_markdown(src, opts)?)
 }
 
 fn require_catalog(dir: &Path) -> anyhow::Result<()> {
@@ -508,19 +569,30 @@ fn base_changes(dir: &Path, rev: &str, current: &[Flow]) -> anyhow::Result<BaseC
     })
 }
 
+fn base_label(reference: &str, base: &str) -> String {
+    let short_sha: String = base.chars().take(casemap::flows::SHORT_SHA_LEN).collect();
+    format!("{reference} ({short_sha})")
+}
+
 fn diff_catalog(
     dir: &Path,
     rev: &str,
     strict: bool,
     format: DiffFormat,
+    side_by_side: bool,
     opts: &Options,
+    overrides: image_command::Overrides<'_>,
 ) -> anyhow::Result<ExitCode> {
     if matches!(format, DiffFormat::Markdown) {
+        if side_by_side {
+            bail!("--side-by-side requires the image comparison format");
+        }
         return diff_catalog_markdown(dir, rev, strict);
     }
     let new = load_catalog(dir)?;
     let BaseChanges {
         base,
+        old,
         changes,
         stale,
         ..
@@ -529,15 +601,61 @@ fn diff_catalog(
         "{}",
         casemap::flows::render_report(&changes, &stale, rev, &base, opts)
     );
-    if changes
-        .iter()
-        .any(|change| matches!(change, casemap::flows::FlowChange::Broken { .. }))
+    let theme = image_command::theme(dir, overrides)?;
+    let comparison_base = base_label(rev, &base);
+    let mut image_failed = false;
+    for change in &changes {
+        let previous = image_flow(change)
+            .and_then(|flow| old.iter().find(|previous| previous.path == flow.path));
+        if let Err(error) = show_change_image(
+            dir,
+            change,
+            previous,
+            &theme,
+            side_by_side,
+            &comparison_base,
+        ) {
+            eprintln!("casemap: {error:#}");
+            image_failed = true;
+        }
+    }
+    if image_failed
+        || changes
+            .iter()
+            .any(|change| matches!(change, casemap::flows::FlowChange::Broken { .. }))
         || (strict && !stale.is_empty())
     {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
     }
+}
+
+fn image_flow(change: &FlowChange) -> Option<&Flow> {
+    match change {
+        FlowChange::New { flow, .. }
+        | FlowChange::Modified { flow, .. }
+        | FlowChange::Removed { flow } => Some(flow),
+        FlowChange::Broken { .. } | FlowChange::Unchanged { .. } => None,
+    }
+}
+
+fn show_change_image(
+    dir: &Path,
+    change: &FlowChange,
+    previous: Option<&Flow>,
+    theme: &flow_image::Theme,
+    side_by_side: bool,
+    base_label: &str,
+) -> anyhow::Result<()> {
+    if let Some(flow) = image_flow(change)
+        && let Some(image) =
+            image_command::change_svg(change, previous, theme, side_by_side, base_label)?
+    {
+        image_terminal::display(&image, &dir.join(&flow.path), side_by_side)
+            .with_context(|| flow.path.clone())?;
+    }
+    Ok(())
 }
 
 fn diff_catalog_markdown(dir: &Path, rev: &str, strict: bool) -> anyhow::Result<ExitCode> {
@@ -656,8 +774,13 @@ fn propose_flow(
     dir: &Path,
     raw_name: &str,
     format: DiffFormat,
+    side_by_side: bool,
     opts: &Options,
+    overrides: image_command::Overrides<'_>,
 ) -> anyhow::Result<ExitCode> {
+    if side_by_side && matches!(format, DiffFormat::Markdown) {
+        bail!("--side-by-side requires the image comparison format");
+    }
     let name = proposal_name(raw_name)?;
     let text = read_proposal(name)?;
     let catalog = load_catalog(dir)?;
@@ -687,6 +810,10 @@ fn propose_flow(
     print!("{section}");
     if matches!(format, DiffFormat::Text) {
         write_check_problems(&mut io::stdout().lock(), dir, &report, opts.color)?;
+        if let Some(change) = change {
+            let theme = image_command::theme(dir, overrides)?;
+            show_change_image(dir, change, current, &theme, side_by_side, "current")?;
+        }
         println!("proposal: {}", problem_counts(&report));
     }
     Ok(proposal_exit_code(&report, change))
@@ -699,9 +826,8 @@ fn terminal_width() -> usize {
     {
         return width;
     }
-    #[cfg(feature = "tui")]
     if io::stdout().is_terminal()
-        && let Ok((columns, _)) = ratatui::crossterm::terminal::size()
+        && let Ok((columns, _)) = crossterm::terminal::size()
         && columns > 0
     {
         return usize::from(columns);
@@ -742,6 +868,7 @@ fn show_flows(
     name: Option<&str>,
     format: Format,
     opts: &Options,
+    overrides: image_command::Overrides<'_>,
 ) -> anyhow::Result<ExitCode> {
     if name.is_some() && matches!(format, Format::Json) {
         bail!("--format json lists the catalog; drop the flow name");
@@ -795,17 +922,10 @@ fn show_flows(
         let available: Vec<&str> = flows.iter().map(|flow| flow.name.as_str()).collect();
         bail!("no flow named {name}; available: {}", available.join(", "));
     };
-    let diagram = match casemap::flows::diagram(flow) {
-        Some(Ok(diagram)) => diagram,
-        Some(Err(error)) => bail!("{}: {error}", flow.path),
-        None => bail!("{}: no mermaid block", flow.path),
-    };
-    print!("{}", casemap::render::bold_line(&flow.title, opts.color));
-    if let Some(description) = &flow.description {
-        println!("{description}");
-    }
-    println!();
-    print!("{}", casemap::render_diagram(&diagram, opts));
+    let diagram = flow_image::parse_flow(flow).with_context(|| flow.path.clone())?;
+    let theme = image_command::theme(dir, overrides)?;
+    let image = flow_image::svg(flow, &diagram, &theme, ImageOptions::default());
+    image_terminal::display(&image, &dir.join(&flow.path), false)?;
     print!("{}", anchors::render_footer(flow));
     Ok(ExitCode::SUCCESS)
 }
@@ -1844,38 +1964,6 @@ fn init_core(cwd: &Path, dir: &Path, force: bool) -> anyhow::Result<InitOutcome>
     })
 }
 
-fn watch_frame(
-    path: &Path,
-    read: io::Result<String>,
-    opts: &Options,
-    last_good: &mut String,
-) -> String {
-    let status = match read {
-        Ok(source) => match render_source(Some(path), &source, opts) {
-            Ok(output) => {
-                *last_good = output;
-                String::new()
-            }
-            Err(RenderError::Parse(error)) => format!("parse error, {error}"),
-            Err(error @ RenderError::NoBlocks(_)) => error.to_string(),
-        },
-        Err(error) => format!("cannot read file: {error}"),
-    };
-    let header = format!("{} · watching for changes", path.display());
-    let (dim, bold, reset) = if opts.color {
-        ("\x1b[90m", "\x1b[1m", "\x1b[0m")
-    } else {
-        ("", "", "")
-    };
-    let mut screen_text = String::from("\x1b[2J\x1b[H");
-    screen_text.push_str(&format!("{dim}{header}{reset}\n\n"));
-    screen_text.push_str(last_good);
-    if !status.is_empty() {
-        screen_text.push_str(&format!("\n{bold}{status}{reset}\n"));
-    }
-    screen_text
-}
-
 type FileStamp = Option<(SystemTime, u64)>;
 
 fn file_stamp(path: &Path) -> FileStamp {
@@ -1887,29 +1975,6 @@ fn file_stamp(path: &Path) -> FileStamp {
     })
 }
 
-struct Screen {
-    last: String,
-}
-
-impl Screen {
-    fn show(&mut self, frame: &str, out: &mut impl Write) -> bool {
-        if frame == self.last {
-            return false;
-        }
-        // A frame that failed to reach the terminal is not remembered, so the next tick retries it.
-        if out
-            .write_all(frame.as_bytes())
-            .and_then(|()| out.flush())
-            .is_err()
-        {
-            return false;
-        }
-        self.last = frame.to_string();
-        true
-    }
-}
-
-/// The stamp of the last successful read of the watched file.
 enum Seen {
     Never,
     Stamp(FileStamp),
@@ -1954,7 +2019,7 @@ fn wait(wake: &mut Wake) {
     }
 }
 
-fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
+fn watch_file(path: &Path, theme: &flow_image::Theme) -> anyhow::Result<ExitCode> {
     let (sender, receiver) = mpsc::channel();
     let parent = path
         .parent()
@@ -1969,23 +2034,83 @@ fn watch_file(path: &Path, opts: &Options) -> anyhow::Result<ExitCode> {
         }
     };
     let mut last_seen = Seen::Never;
-    let mut last_good = String::new();
-    let mut screen = Screen {
-        last: String::new(),
-    };
+    let mut last_notice = None;
+    let terminal = image_terminal::Terminal::detect();
     let mut stdout = io::stdout();
     loop {
         let stamp = file_stamp(path);
         if !last_seen.matches(&stamp) {
             let read = std::fs::read_to_string(path);
-            if read.is_ok() {
+            if read.is_ok() || stamp.is_none() {
                 last_seen = Seen::Stamp(stamp);
             }
-            let screen_text = watch_frame(path, read, opts, &mut last_good);
-            screen.show(&screen_text, &mut stdout);
+            let frame = read
+                .with_context(|| path.display().to_string())
+                .and_then(|source| image_command::parse_flow(path, &source));
+            match frame {
+                Ok((flow, diagram)) => {
+                    last_notice = None;
+                    let image = flow_image::svg(&flow, &diagram, theme, ImageOptions::default());
+                    update_watch_image(
+                        path,
+                        &image,
+                        terminal.as_ref().map_err(|reason| reason.as_ref()),
+                        &mut stdout,
+                    )?;
+                }
+                Err(error) => {
+                    let notice = format!("casemap: {error:#}");
+                    if last_notice.as_ref() != Some(&notice) {
+                        eprintln!("{notice}");
+                        last_notice = Some(notice);
+                    }
+                }
+            }
         }
         wait(&mut wake);
     }
+}
+
+fn update_watch_image(
+    path: &Path,
+    image: &str,
+    terminal: Result<&image_terminal::Terminal, &str>,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let terminal = match terminal {
+        Ok(terminal) => terminal,
+        Err(reason) => return show_watch_fallback(path, image, reason, output),
+    };
+    let mut frame = Vec::new();
+    let width = u16::try_from(terminal_width()).unwrap_or(u16::MAX);
+    if let Err(error) = terminal.write(image, &mut frame, width) {
+        if error.is::<image_terminal::ItermSizeLimit>() {
+            return show_watch_fallback(path, image, image_terminal::ITERM_LIMIT_REASON, output);
+        }
+        eprintln!("casemap: {}: {error:#}", path.display());
+        return Ok(());
+    }
+    terminal.clear(output)?;
+    write!(
+        output,
+        "\x1b[2J\x1b[H{} · watching for changes\r\n\r\n",
+        path.display()
+    )?;
+    output.write_all(&frame)?;
+    output.flush()
+}
+
+fn show_watch_fallback(
+    path: &Path,
+    image: &str,
+    reason: &str,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    match image_terminal::save_png(image, path, false) {
+        Ok(png_path) => image_terminal::write_fallback(&png_path, reason, output)?,
+        Err(error) => eprintln!("casemap: {}: {error:#}", path.display()),
+    }
+    output.flush()
 }
 
 #[cfg(test)]
@@ -2068,19 +2193,6 @@ mod tests {
     }
 
     #[test]
-    fn screen_writes_only_changed_frames() {
-        let mut screen = Screen {
-            last: String::new(),
-        };
-        let mut output = Vec::new();
-        assert!(screen.show("first", &mut output));
-        assert!(!screen.show("first", &mut output));
-        assert_eq!(output, b"first");
-        assert!(screen.show("second", &mut output));
-        assert_eq!(output, b"firstsecond");
-    }
-
-    #[test]
     fn drain_is_bounded() {
         let (sender, receiver) = mpsc::channel();
         let producer = std::thread::spawn(move || {
@@ -2106,40 +2218,6 @@ mod tests {
         let started = Instant::now();
         wait(&mut Wake::Poll);
         assert!(started.elapsed() >= Duration::from_millis(900));
-    }
-
-    #[test]
-    fn watch_frame_keeps_last_good_on_error() {
-        let path = Path::new("flow.mmd");
-        let opts = Options::default();
-        let mut last_good = String::new();
-        let good = watch_frame(
-            path,
-            Ok("graph TD\na[Visible]\n".into()),
-            &opts,
-            &mut last_good,
-        );
-        assert_eq!(
-            good,
-            format!("\x1b[2J\x1b[Hflow.mmd · watching for changes\n\n{last_good}")
-        );
-        assert!(last_good.contains("Visible"));
-        let diagram = last_good.clone();
-        let broken = watch_frame(path, Ok("graph TD\na -->".into()), &opts, &mut last_good);
-        assert_eq!(last_good, diagram);
-        assert!(broken.starts_with(&good));
-        assert!(broken.contains("\nparse error, line 2:"));
-        let unreadable = watch_frame(
-            path,
-            Err(io::Error::other("temporarily busy")),
-            &opts,
-            &mut last_good,
-        );
-        assert_eq!(last_good, diagram);
-        assert_eq!(
-            unreadable,
-            format!("{good}\ncannot read file: temporarily busy\n")
-        );
     }
 
     #[test]
@@ -2180,16 +2258,10 @@ mod tests {
                 Some(Commands::Diff {
                     rev: None,
                     strict: false,
-                    format: DiffFormat::Text
+                    format: DiffFormat::Text,
+                    side_by_side: false,
                 })
             ));
         }
-        let cli = Cli::try_parse_from(["casemap", "--dir", "LR", "--dir", "TD"]).unwrap();
-        assert_eq!(cli.dir, Some(Direction::TopDown));
-        assert!(
-            Cli::try_parse_from(["casemap", "--ascii", "--ascii"])
-                .unwrap()
-                .ascii
-        );
     }
 }

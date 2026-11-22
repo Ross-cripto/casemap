@@ -13,22 +13,53 @@ A customer pays for the items in the cart and gets an order confirmation.
 
 ```mermaid
 flowchart TD
-    cart([Customer opens the cart]) --> pay[Enter payment details]
-    pay --> ok{Payment accepted?}
-    ok -->|yes| confirm[Show the order confirmation]
-    ok -->|no| error[Show the payment error]
+    subgraph payment [Payment]
+        cart([Customer opens the cart]) --> pay[Enter payment details]
+        pay --> ok{Payment accepted?}
+        error[Show the payment error]
+    end
+    subgraph confirmation [Confirmation]
+        confirm[Show the order confirmation]
+    end
+    ok -->|yes| confirm
+    ok -->|no| error
     error --> pay
+    %% @icon confirm check
+    %% @icon error x
 ```
 ````
 
 - One use case per top-level Markdown file, named in kebab-case, with a title,
-  a one-sentence description and one Mermaid flowchart.
+  a one-sentence description and one Mermaid `flowchart TD` block.
 - Start from the actor or trigger as a stadium `([...])`. Use rectangles for
   steps and diamonds for decisions, with every exit labelled.
+- Use `subgraph id [Name]` and `end` to group steps into named sections.
+  Sections are optional. In a sectioned flow, declare each step in its section
+  and put links between sections after the blocks. `casemap check` warns about
+  empty sections, nested sections and steps outside every section.
 - Keep it to 3 to 15 steps, using the user's words and behaviour verified in code.
 - Keep node ids stable: change labels to rename steps. Keep file paths stable,
   because renaming a file reads as removing one flow and adding another.
 - Describe the current behaviour. Casemap computes changes from git.
+
+## Step icons
+
+Add `%% @icon <step> <name>` inside the Mermaid block to choose an icon for a
+step. Pick a glyph that helps the reader recognise the action, such as `search`
+for a lookup or `file` for opening a document. Casemap defaults to `user` for the
+actor, `circle-dot` for a step and `diamond` for a decision. `casemap check` warns
+about unknown icon names and step IDs.
+
+Use one of the following names.
+
+`arrow-right`, `bell`, `bot`, `calendar`, `chart-bar`, `check`, `circle-dot`,
+`circle-help`, `clock`, `code`, `credit-card`, `database`, `diamond`, `download`,
+`eye`, `file`, `file-text`, `filter`, `folder-open`, `git-branch`, `git-compare`,
+`globe`, `house`, `image`, `info`, `key-round`, `link`, `list`, `lock`, `log-in`,
+`log-out`, `mail`, `map`, `message-square`, `monitor`, `package`, `pencil`, `plus`,
+`refresh-cw`, `scan`, `search`, `send`, `settings`, `share-2`, `shopping-cart`,
+`split`, `square`, `star`, `tag`, `terminal`, `trash-2`, `triangle-alert`,
+`upload`, `user`, `users`, `webhook`, `x`.
 
 ## The map
 
@@ -60,7 +91,9 @@ missing flows and mismatched link titles. Ask your coding agent to write and
 maintain the map; an ordinary README without activity links stays an ordinary
 README.
 
-`casemap map --no-color` draws this commerce catalog at 80 columns:
+In an interactive terminal, `casemap map` opens the map in browse. Redirect its
+output or pass `--layout` to print the map. The example shows a grid at 80
+columns.
 
 ```text
  docs/flows · 9 use cases in 3 activities
@@ -78,7 +111,7 @@ README.
 When the grid does not fit, the map becomes an outline with each activity's
 sentence and its flows. `--layout grid` or `--layout outline` forces a layout.
 Width comes from a positive `COLUMNS`, otherwise the stdout terminal when
-available, otherwise 80. `--ascii` replaces the box-drawing symbols with ASCII.
+available, otherwise 80.
 
 `casemap flows` and `casemap browse` use the same activity order, with flows not
 on the map last. Browse search keeps the headings of matching groups, and the
@@ -87,4 +120,5 @@ map, both commands keep their flat lists.
 
 ## Catalog files
 
-Catalogs contain top-level `.md` or `.mmd` files. `.mmd` files use the whole file as their diagram.
+Put each flow in a top-level `.md` file and run `casemap check --strict` to
+validate the catalog.

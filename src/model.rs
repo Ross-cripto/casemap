@@ -1,4 +1,6 @@
-//! Core diagram model shared by the parser, the layout engine and the renderer.
+//! Core diagram model shared by the parser, comparison and image layout.
+
+use crate::icons::Icon;
 
 /// Direction in which ranks (layers) advance across the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,11 +20,6 @@ impl Direction {
             "RL" => Some(Direction::RightLeft),
             _ => None,
         }
-    }
-
-    /// True when ranks advance along the screen's vertical axis.
-    pub fn is_vertical(self) -> bool {
-        matches!(self, Direction::TopDown | Direction::BottomUp)
     }
 }
 
@@ -71,7 +68,18 @@ pub struct Node {
     pub id: String,
     pub label: Vec<String>,
     pub shape: Shape,
+    pub icon: Option<Icon>,
     pub mark: Mark,
+}
+
+impl Node {
+    pub fn effective_icon(&self) -> Icon {
+        self.icon.unwrap_or(match self.shape {
+            Shape::Stadium => Icon::User,
+            Shape::Diamond => Icon::Diamond,
+            _ => Icon::CircleDot,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -113,22 +121,5 @@ impl Diagram {
         }
         path.reverse();
         path
-    }
-
-    /// Self-loops have no good orthogonal drawing in a layered layout, so they
-    /// are folded into a marker on the node label instead.
-    pub fn fold_self_loops(&mut self) {
-        let edges = std::mem::take(&mut self.edges);
-        for e in edges {
-            if e.from == e.to {
-                if let Some(last) = self.nodes[e.from].label.last_mut() {
-                    if !last.ends_with('↻') {
-                        last.push_str(" ↻");
-                    }
-                }
-            } else {
-                self.edges.push(e);
-            }
-        }
     }
 }

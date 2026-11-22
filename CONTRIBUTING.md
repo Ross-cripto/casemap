@@ -23,29 +23,26 @@ To install from a local checkout, run `cargo install --path .`.
 
 ```bash
 cargo build
-cargo test                                      # invariants over tests/fixtures in all four directions
-cargo test --test quality -- --nocapture        # diagram layout metrics over the real-app corpus
+cargo test
 cargo test --no-default-features
 cargo test --no-default-features --features cli --locked
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- check --strict                     # casemap's own flows in docs/flows
-cargo run -- tests/fixtures/simple.mmd          # render once
-cargo run -- --watch tests/fixtures/architecture.mmd  # redraw on every save
+cargo run -- docs/flows/render-a-diagram.md          # render once
+cargo run -- --watch docs/flows/render-a-diagram.md  # redraw on every save
 ```
 
 ## Tests
 
-`cargo test` checks invariants across every fixture in all four directions:
-exactly one arrowhead per arrow end, every node and edge label visible, no
-dangling line ends, deterministic output, and pure-ASCII output in `--ascii` mode.
-The flow tests also check Markdown extraction, union diagrams and state colours,
-catalog classification, and CLI behaviour against temporary git repositories
-with committed and uncommitted changes. The test suite requires the `git` binary.
+`cargo test` checks that flow cards, branches and labels fit the image layout
+across the fixture corpus. It also tests terminal encoders, export, catalog
+validation and CLI behavior against temporary repositories. Install `git` to run
+the integration tests.
 
 ## Where things live
 
-`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing, proposals and rendering. The binary-only `hook` module handles agent Stop checks, warning memory and project hook configuration. The binary-only `onboard` module handles the first-run menu, agent detection and launch. [docs/renderer.md](docs/renderer.md) explains each layout stage. The binary-only `src/browse/` TUI (behind the default-on `tui` feature) handles interactive browsing with pure app state, layout, widgets and ANSI conversion.
+`parser` builds a diagram with sections and icons. `src/flow_image/` lays it out and draws SVG or PNG. `image_terminal` handles in-terminal graphics and temporary PNGs. `src/main.rs` dispatches catalog setup, validation, listing, diffing, proposals and rendering. The binary-only `hook` module handles agent Stop checks, warning memory and project hook configuration. The binary-only `onboard` module handles the first-run menu, agent detection and launch. [docs/renderer.md](docs/renderer.md) covers rendering, export and themes. The `src/browse/` TUI runs behind the default-on `tui` feature and handles the activity map, step selection and image viewport.
 
 `anchors` (anchor syntax, matcher, file walk), `markdown` (mermaid blocks in .md), `map` (map file parsing, grouping, map renderers), `diff` (union diagram + marks), `mermaid` (Mermaid writer), `flows` (catalog, compare, report), `git` (repository paths, ignore checks, merge base and files at a commit via the git binary), `coverage` (code classification, repository coverage and uncovered changes), `check` (catalog validation), `skill` (embedded casemap skill, source `skills/casemap/SKILL.md`).
 

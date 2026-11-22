@@ -2,7 +2,7 @@
 source: src/browse/ui.rs
 expression: rendered
 ---
-"┌ Flows ───────────────────────────────────────────────────┐"
+"┌ Activity map ────────────────────────────────────────────┐"
 "│✗ Bad flow                                                │"
 "│✗ Broken flow                                             │"
 "│~ Checkout                                                │"
@@ -21,4 +21,4 @@ expression: rendered
 "│                                                          │"
 "│                                                          │"
 "└──────────────────────────────────────────────────────────┘"
-"↑↓ select · Tab focus · / search · d diffbase main (1234567)"
+"↑↓ select · Enter open · / search · ? helbase main (1234567)"

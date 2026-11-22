@@ -1,62 +1,10 @@
 mod common;
 
-use casemap::{Direction, Options, diff, flows};
+use casemap::flow_image::{ImageOptions, Theme, svg};
+use casemap::{Options, flows};
 use common::{CliRun, TempRepo, divergent_catalog, run_casemap, transcript};
 use std::fs;
 use std::path::Path;
-
-fn matrix(mut render: impl FnMut(&Options) -> String) -> String {
-    let mut body = String::new();
-    for (label, direction) in [
-        ("None", None),
-        ("TD", Some(Direction::TopDown)),
-        ("BT", Some(Direction::BottomUp)),
-        ("LR", Some(Direction::LeftRight)),
-        ("RL", Some(Direction::RightLeft)),
-    ] {
-        for (mode, ascii, color) in [
-            ("unicode", false, false),
-            ("ascii", true, false),
-            ("color", false, true),
-        ] {
-            let output = render(&Options {
-                direction,
-                ascii,
-                color,
-            });
-            body.push_str(&format!("== {label} {mode}\n{output}"));
-        }
-    }
-    body.push_str("[end]\n");
-    body.replace('\x1b', "␛")
-}
-
-fn render_fixture(path: &str) -> String {
-    let source = fs::read_to_string(path).unwrap();
-    matrix(|options| casemap::render_str(&source, options).unwrap())
-}
-
-fn union(name: &str, added: bool) -> String {
-    let previous = flows::load_dir(Path::new("tests/fixtures/flows/before")).unwrap();
-    let current = flows::load_dir(Path::new("tests/fixtures/flows/after")).unwrap();
-    let difference = if added {
-        let catalog = if name == "legacy-export" {
-            &previous
-        } else {
-            &current
-        };
-        let flow = catalog.iter().find(|flow| flow.name == name).unwrap();
-        diff::all_added(&flows::diagram(flow).unwrap().unwrap())
-    } else {
-        let previous = previous.iter().find(|flow| flow.name == name).unwrap();
-        let current = current.iter().find(|flow| flow.name == name).unwrap();
-        diff::diff(
-            &flows::diagram(previous).unwrap().unwrap(),
-            &flows::diagram(current).unwrap().unwrap(),
-        )
-    };
-    matrix(|options| casemap::render_diagram(&difference.union, options))
-}
 
 fn cli(args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> String {
     transcript(
@@ -91,228 +39,38 @@ fn repo_transcript(repo: &TempRepo, args: &[&str]) -> String {
 }
 
 #[test]
-fn render_architecture() {
-    insta::assert_snapshot!(
-        "render__architecture",
-        render_fixture("tests/fixtures/architecture.mmd")
+fn svg_sectioned_catalog_flow() {
+    let flow = flows::parse_flow(
+        "check-the-catalog.md",
+        include_str!("../docs/flows/check-the-catalog.md"),
     );
+    let diagram = flows::diagram(&flow).unwrap().unwrap();
+    let image = svg(&flow, &diagram, &Theme::dark(), ImageOptions::default());
+    insta::assert_snapshot!("svg__sectioned_catalog_flow", image);
 }
 
 #[test]
-fn render_simple() {
-    insta::assert_snapshot!(
-        "render__simple",
-        render_fixture("tests/fixtures/simple.mmd")
+fn svg_marked_checkout_comparison() {
+    let before = flows::parse_flow(
+        "checkout.md",
+        include_str!("fixtures/flows/before/checkout.md"),
     );
-}
-
-#[test]
-fn render_edgecases() {
-    insta::assert_snapshot!(
-        "render__edgecases",
-        render_fixture("tests/fixtures/edgecases.mmd")
+    let after = flows::parse_flow(
+        "checkout.md",
+        include_str!("fixtures/flows/after/checkout.md"),
     );
-}
-
-#[test]
-fn render_fanout() {
-    insta::assert_snapshot!(
-        "render__fanout",
-        render_fixture("tests/fixtures/fanout.mmd")
-    );
-}
-
-#[test]
-fn render_nested() {
-    insta::assert_snapshot!(
-        "render__nested",
-        render_fixture("tests/fixtures/nested.mmd")
-    );
-}
-
-#[test]
-fn render_pipeline() {
-    insta::assert_snapshot!(
-        "render__pipeline",
-        render_fixture("tests/fixtures/pipeline.mmd")
-    );
-}
-
-#[test]
-fn union_checkout() {
-    insta::assert_snapshot!("union__checkout", union("checkout", false));
-}
-
-#[test]
-fn union_login() {
-    insta::assert_snapshot!("union__login", union("login", false));
-}
-
-#[test]
-fn union_refund_new() {
-    insta::assert_snapshot!("union__refund_new", union("refund", true));
-}
-
-#[test]
-fn union_legacy_export_new() {
-    insta::assert_snapshot!("union__legacy_export_new", union("legacy-export", true));
-}
-
-#[test]
-fn markdown_blocks() {
-    let document = "# A\nProse\n```mermaid\ngraph TD\na[First] --> b[Second]\n```\n## B\n```bash\n# not a heading\n```\n```mermaid\ngraph LR\nc[Third] --> d[Fourth]\n```\n";
-    let mut body = String::new();
-    for color in [false, true] {
-        body.push_str(&format!(
-            "== color={color}\n{}",
-            casemap::render_markdown(
-                document,
-                &Options {
-                    color,
-                    ..Options::default()
-                }
-            )
-            .unwrap()
-        ));
-    }
-    body.push_str("[end]\n");
-    insta::assert_snapshot!("markdown__blocks", body.replace('\x1b', "␛"));
-}
-
-#[test]
-fn cli_render() {
-    insta::assert_snapshot!(
-        "cli__render",
-        cli(&["tests/fixtures/simple.mmd", "--no-color"], &[], None)
-    );
-}
-
-#[test]
-fn cli_lowercase_dir() {
-    insta::assert_snapshot!(
-        "cli__lowercase_dir",
-        cli(
-            &[
-                "--dir",
-                "lr",
-                "--ascii",
-                "--no-color",
-                "tests/fixtures/simple.mmd"
-            ],
-            &[],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_tb() {
-    insta::assert_snapshot!(
-        "cli__tb",
-        cli(
-            &["--dir", "TB", "--no-color", "tests/fixtures/simple.mmd"],
-            &[],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_repeated_dir() {
-    insta::assert_snapshot!(
-        "cli__repeated_dir",
-        cli(
-            &[
-                "--dir",
-                "LR",
-                "--dir",
-                "TD",
-                "--no-color",
-                "tests/fixtures/simple.mmd"
-            ],
-            &[],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_color() {
-    insta::assert_snapshot!(
-        "cli__color",
-        cli(&["--color", "tests/fixtures/simple.mmd"], &[], None)
-    );
-}
-
-#[test]
-fn cli_color_then_no_color() {
-    insta::assert_snapshot!(
-        "cli__color_then_no_color",
-        cli(
-            &["--color", "--no-color", "tests/fixtures/simple.mmd"],
-            &[],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_no_color_then_color() {
-    insta::assert_snapshot!(
-        "cli__no_color_then_color",
-        cli(
-            &["--no-color", "--color", "tests/fixtures/simple.mmd"],
-            &[],
-            None
-        )
-    );
+    let previous = flows::diagram(&before).unwrap().unwrap();
+    let current = flows::diagram(&after).unwrap().unwrap();
+    let difference = casemap::diff::diff(&previous, &current);
+    let options = ImageOptions {
+        changes: Some(&difference.changes),
+        ..ImageOptions::default()
+    };
+    let image = svg(&after, &difference.union, &Theme::dark(), options);
+    insta::assert_snapshot!("svg__marked_checkout_comparison", image);
 }
 
 // pins: an explicit --color beats NO_COLOR
-#[test]
-fn cli_no_color_env() {
-    insta::assert_snapshot!(
-        "cli__no_color_env",
-        cli(
-            &["--color", "tests/fixtures/simple.mmd"],
-            &[("NO_COLOR", "1")],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_stdin() {
-    insta::assert_snapshot!(
-        "cli__stdin",
-        cli(
-            &["--no-color"],
-            &[],
-            Some(include_str!("fixtures/simple.mmd"))
-        )
-    );
-}
-
-#[test]
-fn cli_stdin_dash() {
-    insta::assert_snapshot!(
-        "cli__stdin_dash",
-        cli(
-            &["-", "--no-color"],
-            &[],
-            Some(include_str!("fixtures/simple.mmd"))
-        )
-    );
-}
-
-#[test]
-fn cli_stdin_error() {
-    insta::assert_snapshot!(
-        "cli__stdin_error",
-        cli(&["--no-color"], &[], Some("graph TD\n a -->"))
-    );
-}
-
 #[test]
 fn cli_list() {
     insta::assert_snapshot!(
@@ -340,24 +98,6 @@ fn example_catalog_check() {
                 "--strict",
                 "--flows",
                 "examples/commerce/docs/flows",
-                "--no-color"
-            ],
-            &[],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_refund() {
-    insta::assert_snapshot!(
-        "cli__refund",
-        cli(
-            &[
-                "flows",
-                "refund",
-                "--flows",
-                "tests/fixtures/flows/after",
                 "--no-color"
             ],
             &[],
@@ -421,63 +161,11 @@ fn cli_watch_diff() {
 }
 
 #[test]
-fn cli_markdown() {
-    let repo = TempRepo::new();
-    for filename in ["README.MD", "flow.markdown"] {
-        fs::write(
-            repo.file(filename),
-            "# Render\n```mermaid\ngraph TD\na[Visible]\n```\n",
-        )
-        .unwrap();
-    }
-    fs::write(repo.file("empty.md"), "# No diagram\n").unwrap();
-    insta::assert_snapshot!(
-        "cli__markdown_uppercase",
-        repo_transcript(&repo, &["README.MD", "--no-color"])
-    );
-    insta::assert_snapshot!(
-        "cli__markdown_extension",
-        repo_transcript(&repo, &["flow.markdown", "--no-color"])
-    );
-    insta::assert_snapshot!(
-        "cli__markdown_empty",
-        repo_transcript(&repo, &["empty.md", "--no-color"])
-    );
-}
-
-#[test]
-fn cli_catalog_diff() {
+fn cli_invalid_diff_revision() {
     let repo = divergent_catalog();
-    insta::assert_snapshot!(
-        "cli__diff_main",
-        repo_transcript(&repo, &["diff", "main", "--no-color"])
-    );
-    insta::assert_snapshot!(
-        "cli__diff_head",
-        repo_transcript(&repo, &["diff", "--no-color"])
-    );
-    insta::assert_snapshot!(
-        "cli__diff_color",
-        repo_transcript(&repo, &["diff", "main", "--color"])
-    );
     insta::assert_snapshot!(
         "cli__diff_invalid_revision",
         repo_transcript(&repo, &["diff", "-", "--no-color"])
-    );
-}
-
-#[test]
-fn cli_broken_flow() {
-    let repo = TempRepo::committed_before();
-    fs::write(
-        repo.flow_path("checkout.md"),
-        "# Checkout\n\n```mermaid\ngraph TD\na -->\n```\n",
-    )
-    .unwrap();
-    repo.add_fixture("after", "refund.md");
-    insta::assert_snapshot!(
-        "cli__diff_broken_flow",
-        repo_transcript(&repo, &["diff", "--no-color"])
     );
 }
 
@@ -488,22 +176,6 @@ fn cli_empty_catalog() {
     insta::assert_snapshot!(
         "cli__empty_catalog",
         repo_transcript(&repo, &["flows", "--flows", "empty", "--no-color"])
-    );
-}
-
-#[test]
-fn cli_no_color_env_no_flag() {
-    insta::assert_snapshot!(
-        "cli__no_color_env_no_flag",
-        cli(&["tests/fixtures/simple.mmd"], &[("NO_COLOR", "1")], None)
-    );
-}
-
-#[test]
-fn cli_no_flags_piped() {
-    insta::assert_snapshot!(
-        "cli__no_flags_piped",
-        cli(&["tests/fixtures/simple.mmd"], &[], None)
     );
 }
 
@@ -540,36 +212,6 @@ fn cli_flows_repeated() {
             &[],
             None
         )
-    );
-}
-
-#[test]
-fn cli_flows_ascii_dir() {
-    insta::assert_snapshot!(
-        "cli__flows_ascii_dir",
-        cli(
-            &[
-                "flows",
-                "refund",
-                "--flows",
-                "tests/fixtures/flows/after",
-                "--ascii",
-                "--dir",
-                "LR",
-                "--no-color"
-            ],
-            &[],
-            None
-        )
-    );
-}
-
-#[test]
-fn cli_diff_ascii() {
-    let repo = divergent_catalog();
-    insta::assert_snapshot!(
-        "cli__diff_ascii",
-        repo_transcript(&repo, &["diff", "main", "--ascii", "--no-color"])
     );
 }
 
@@ -690,14 +332,6 @@ fn proposal_transcript(args: &[&str]) -> String {
     let proposal = fs::read_to_string("tests/fixtures/flows/after/checkout.md").unwrap();
     let run: CliRun = repo.casemap_stdin(args, &proposal).into();
     redact_shas(&repo, transcript(&args.join(" "), &run))
-}
-
-#[test]
-fn cli_propose_text() {
-    insta::assert_snapshot!(
-        "cli__propose_text",
-        proposal_transcript(&["propose", "checkout", "--no-color"])
-    );
 }
 
 #[test]

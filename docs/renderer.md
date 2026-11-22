@@ -1,72 +1,74 @@
-# Rendering any Mermaid file
+# Flow images
 
-Mermaid flowcharts render as clean, readable terminal diagrams. Keep a diagram
-open in a side pane while you (or your agent) work on the code:
+Render a use-case Markdown file with one Mermaid `flowchart TD` block.
 
 ```sh
-casemap docs/architecture.mmd           # render once
-casemap --watch docs/architecture.mmd   # redraw on every save
-cat flow.mmd | casemap --dir=LR          # stdin, override direction
+casemap docs/flows/render-a-diagram.md
+casemap --watch docs/flows/render-a-diagram.md
+casemap export docs/flows/render-a-diagram.md --png
+casemap export docs/flows/render-a-diagram.md --svg -o diagram.svg
 ```
 
-The source of truth is plain Mermaid in your repo, so diagrams diff, review
-and version like code. The layout engine is where the work went, because
-that's where terminal diagram tools usually fall apart.
+Kitty, Ghostty, cmux, iTerm2 and terminals with Sixel support can show the image
+inline. When graphics are unavailable, including Terminal.app and redirected
+output, casemap prints the reason and the path to a temporary PNG. Each flow
+reuses a PNG named from its stem and canonical path under the system's temporary
+directory. On Unix, the private directory is `casemap-<uid>`. On other platforms,
+it is `casemap`. In tmux,
+inline graphics require `allow-passthrough`. Use `CASEMAP_IMAGE_PROTOCOL=kitty`, `iterm`,
+`sixel` or `none` to override detection. For a VS Code terminal with image
+support enabled, set `CASEMAP_IMAGE_PROTOCOL=sixel`.
 
-In watch mode an invalid edit keeps the last good diagram on screen with the
-parse error underneath, so a half-written change from an agent doesn't blank
-the pane.
+Watch mode redraws on save. If a file becomes invalid, casemap reports the
+error and keeps the last valid image. Export writes a 2× PNG by default. An SVG
+export converts text to paths so it opens with the same fonts on other systems.
+Geist and Geist Mono are bundled. Characters outside those fonts use installed
+fonts when available.
 
-Supported Mermaid: `flowchart`/`graph` with TD/TB/BT/LR/RL; shapes `[]`,
-`()`, `([])`, `[[]]`, `[()]`, `(())`, `{}`, `{{}}`; quoted labels and
-`<br>`; chains (`a --> b --> c`); `&` fan-out; solid `-->`, dotted `-.->`,
-thick `==>`, open `---`, bidirectional `<-->`; labels as `-->|x|` or
-`-- x -->`; nested `subgraph … end`. Styling statements (`classDef`,
-`style`, `linkStyle`, `click`) are accepted and ignored.
+## Reading a flow
 
-`casemap FILE.md` renders every Mermaid block under its nearest heading, and `casemap --watch FILE.md` redraws them on save.
+Named Mermaid `subgraph` blocks appear as colored sections. Steps use the same
+card shape, with an icon chosen by `%% @icon` or by the step type. A single
+continuation goes down. Side branches start on a horizontal line to the right.
+Decision labels sit beside their continuation or on their side branch, with
+green for `yes`, red for `no` and the destination section's color for other
+actions. Loops use **Back to** and extra paths into a step use **Go to**.
+Both jumps leave the right edge of the source card and name the destination
+section and, when needed, the step within it.
 
-## How the layout works
+`casemap diff` and `casemap propose` mark new, edited and removed steps on the
+image. `--side-by-side` draws the previous and proposed versions together.
+GitHub PR comments use Mermaid so reviewers can read the diagram in the PR.
 
-```
-parse → break cycles → rank → split long edges → order → size → position → route → draw
-```
+## Themes
 
-| Stage | What it does | Why it matters in a terminal |
-|---|---|---|
-| Break cycles | Adds edges in declaration order and reverses only the ones that close a cycle | The edge drawn "backwards" is the one you wrote as feedback (`retry`), not an arbitrary one |
-| Rank | Longest path, then median balancing on edge length | Sources and sinks sit next to their neighbours instead of stranded at the top or bottom |
-| Split long edges | Edges spanning several layers get pass-through points; labelled edges get a dedicated label row | Labels never collide with nodes or other edges |
-| Order | Barycenter sweeps plus adjacent transposition, keeping each subgraph contiguous between its border chains | Fewer crossings; clusters never interleave |
-| Position | Per layer, weighted least squares under spacing constraints (isotonic regression via pool-adjacent-violators), then relaxation | Siblings spread symmetrically under a parent; long edges stay straight |
-| Clusters | Each side snaps to one straight line hugging its members; columns are inserted for titles | Tight boxes that never contain outsiders |
-| Route | Ports placed per edge, buses for fan-out, tracks ordered so a vertical never cuts a horizontal it could avoid | Orthogonal, readable wiring; straight lines wherever geometrically possible |
-| Draw | Lines stored as per-cell connection flags and resolved to glyphs at the end | Correct junctions (`┬ ┴ ├ ┼`) regardless of draw order; crossings render as hops, not fake junctions |
-
-All coordinates are abstract (rank axis × order axis), so TD, BT, LR and RL
-share one code path. Dotted edges use `┄┆`, thick use `━┃`, cluster borders
-use a fainter `┈┊`, and edges crossing a cluster border interrupt the border,
-not the edge.
-
-## Library
-
-The CLI is a thin wrapper around the crate, so a TUI or an MCP server can embed it:
-
-```rust
-let options = casemap::Options::default();
-let text = casemap::render_str(source, &options)?;
-let document = casemap::render_markdown(markdown, &options)?;
-
-let old = casemap::parser::parse(old_source)?;
-let new = casemap::parser::parse(new_source)?;
-let changes = casemap::diff::diff(&old, &new);
-let summary = changes.summary();
-let drawing = casemap::render_diagram(&changes.union, &options);
-let mermaid = casemap::mermaid::write(&changes.union);
-```
-
-For the library only, disable the default CLI feature:
+Casemap loads the repository's `casemap.toml` and applies the user's settings
+from `~/.config/casemap/config.toml` or `$XDG_CONFIG_HOME/casemap/config.toml`.
+`--theme dark`, `--theme light` and `--bg '#111827'` override their respective
+settings for one invocation.
 
 ```toml
-casemap = { version = "0.6", default-features = false }
+[render]
+theme = "dark"
+background = "#111827"
+sections = ["#a8bafa", "#78c9c1", "#f1b780"]
+```
+
+Set any of `card`, `text`, `muted`, `yes`, `no`, `added`, `changed` and `removed`
+in `[render]` to customize the corresponding color. Values accept `#RGB` or
+`#RRGGBB`. Section colors cycle in declaration order.
+
+## Rust library
+
+Read the flow and use `flow_image::svg` to generate markup. Use
+`flow_image::png` for raster output or `flow_image::outlined_svg` for portable
+SVG. These functions are available with the default features disabled.
+
+```rust
+use casemap::flow_image::{ImageOptions, Theme, parse_flow, png, svg};
+
+let flow = casemap::flows::parse_flow("checkout.md", markdown);
+let diagram = parse_flow(&flow)?;
+let svg = svg(&flow, &diagram, &Theme::dark(), ImageOptions::default());
+let bytes = png(&svg, 2.0)?;
 ```

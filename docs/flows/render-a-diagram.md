@@ -1,17 +1,28 @@
 # Render a diagram
 
-A developer points casemap at a Mermaid or Markdown file and gets the diagram in the terminal.
+A developer opens a Markdown use-case flow and gets an image of its diagram.
 
 ```mermaid
 flowchart TD
-    dev([Developer runs casemap FILE]) --> kind{Markdown file?}
-    kind -->|no| parse[Parse the flowchart]
-    kind -->|yes| blocks[Extract mermaid blocks]
-    blocks --> parse
-    parse --> ok{Valid?}
-    ok -->|yes| draw[Print the diagram]
-    ok -->|no| error[Print the parse error and exit 1]
+    subgraph input [Read the input]
+        dev([Developer runs casemap FLOW.md]) --> blocks[Read the Mermaid block]
+        blocks --> parse
+        parse[Parse the flowchart]
+    end
+    subgraph outcome [Display the result]
+        ok{Valid?} -->|yes| graphics{Terminal shows images?}
+        ok -->|no| error[Print an error and exit 1]
+        graphics -->|yes| draw[Show the image inline]
+        graphics -->|no| save[Save a temporary PNG and print its path]
+    end
+    parse --> ok
+    %% @icon blocks file
+    %% @icon parse scan
+    %% @icon draw image
+    %% @icon save download
+    %% @icon error triangle-alert
     %% @code parse src/parser.rs
     %% @code blocks src/markdown.rs
-    %% @code draw src/render.rs src/canvas.rs src/layout src/route.rs
+    %% @code draw src/flow_image src/image_terminal.rs
+    %% @code save src/image_terminal.rs
 ```
