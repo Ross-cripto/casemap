@@ -777,7 +777,7 @@ pub fn render_grouped_list(groups: &[Group<'_>], opts: &Options) -> String {
             .activity
             .map(|activity| activity.name.as_str())
             .unwrap_or(UNMAPPED_HEADING);
-        let mut section = crate::render::bold_line(name, opts.color);
+        let mut section = crate::terminal_text::bold_line(name, opts.color);
         for flow in &group.flows {
             section.push_str(&format!("  {}", flows::list_line(flow, width)));
         }
@@ -1229,11 +1229,7 @@ mod tests {
                     "flows",
                     layout,
                     80,
-                    &Options {
-                        ascii: true,
-                        color,
-                        ..Options::default()
-                    },
+                    &Options { ascii: true, color },
                 );
                 assert!(output.is_ascii(), "{output}");
             }

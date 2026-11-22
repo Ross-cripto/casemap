@@ -39,11 +39,19 @@ A customer pays for the items in the cart and gets an order confirmation.
 
 ```mermaid
 flowchart TD
-    cart([Customer opens the cart]) --> pay[Enter payment details]
-    pay --> ok{Payment accepted?}
-    ok -->|yes| confirm[Show the order confirmation]
-    ok -->|no| error[Show the payment error]
+    subgraph payment [Payment]
+        cart([Customer opens the cart]) --> pay[Enter payment details]
+        pay --> ok{Payment accepted?}
+        error[Show the payment error]
+    end
+    subgraph confirmation [Confirmation]
+        confirm[Show the order confirmation]
+    end
+    ok -->|yes| confirm
+    ok -->|no| error
     error --> pay
+    %% @icon confirm check
+    %% @icon error x
     %% @code pay src/checkout/payment.ts
     %% @code confirm src/checkout/confirmation.ts
 ```
@@ -52,7 +60,8 @@ flowchart TD
 
 - The `#` title names the use case; the next line is one sentence: who does what, and the outcome.
 - Exactly one mermaid flowchart per file, and it is the first code block. Start it with `flowchart TD`.
-- Shapes: the actor or trigger as a stadium `([...])`, steps as rectangles `[...]`, decisions as diamonds `{...}` with every exit labelled (`-->|yes|`).
+- Use solid arrows (`-->`) for links; other link styles fail `unsupported-link`. Other directions are drawn top-down with a `not-top-down` warning.
+- Shapes: the actor or trigger as a stadium `([...])`, steps as rectangles `[...]`, decisions as diamonds `{...}` with every exit labelled (`-->|yes|`). Other shapes fail `unsupported-shape`.
 - 3 to 15 steps. Never pad a flow to reach the minimum: merge a tiny flow into the one it belongs to, or keep it short. Split a bigger flow into separate use cases; the larger part keeps the file.
 - Keep every label within 40 columns (wide characters count double) so the flow fits a side pane.
 - When on-screen text is longer than 40 columns, shorten it but keep its meaning.
@@ -60,9 +69,20 @@ flowchart TD
 - Show a sign-in requirement as one decision, and only where a signed-out user can reach it. Do not draw middleware, validation layers or retries as steps.
 - Node ids are short, lowercase and stable (`pay`, `confirm`). casemap compares flows by id, so rename a step by changing its label, never its id.
 - Node ids must not be Mermaid keywords (`click`, `end`, `style`, `class`, `default`…); `casemap check` reports them.
-- No subgraphs, styling (`classDef`, `style`, `linkStyle`, `:::`), `click` or mermaid config blocks.
+- Use `subgraph id [Name]` and `end` for named sections when the flow has distinct phases. Declare each step inside its section and put cross-section links after the blocks. Keep sections nonempty and at the top level.
+- Add `%% @icon <step> <name>` inside the Mermaid block to give a step a recognisable glyph. Casemap uses `user` for the actor, `circle-dot` for a step and `diamond` for a decision by default. `casemap check` warns about unknown names and step IDs.
+- Omit styling (`classDef`, `style`, `linkStyle`, `:::`), `click` and Mermaid config blocks.
 - Include the main path, the decisions, and the failures the user actually sees. Not every exception or retry.
 - Every step and branch must come from code you read, and describe what the code does, not what it was meant to do. If you are unsure, or a branch looks dead or buggy, leave it out and list it as an open question. The one exception is a proposal while you plan a change (see "Plan a change"); once implemented, it follows this rule too.
+
+Choose from `arrow-right`, `bell`, `bot`, `calendar`, `chart-bar`, `check`,
+`circle-dot`, `circle-help`, `clock`, `code`, `credit-card`, `database`, `diamond`,
+`download`, `eye`, `file`, `file-text`, `filter`, `folder-open`, `git-branch`,
+`git-compare`, `globe`, `house`, `image`, `info`, `key-round`, `link`, `list`,
+`lock`, `log-in`, `log-out`, `mail`, `map`, `message-square`, `monitor`, `package`,
+`pencil`, `plus`, `refresh-cw`, `scan`, `search`, `send`, `settings`, `share-2`,
+`shopping-cart`, `split`, `square`, `star`, `tag`, `terminal`, `trash-2`,
+`triangle-alert`, `upload`, `user`, `users`, `webhook`, `x`.
 
 Anchor steps to the code that implements them, with `%% @code <step> <path>` lines at the end of the block (the paths above are placeholders: use the real paths you read). `%% @code * <path>` anchors the whole flow. Paths are relative to the repository root; a folder means everything inside it, `*` matches within a folder and `**` across folders, and every other character (brackets included) is literal. Anchor the steps a future change is most likely to touch, not every step. Mermaid and GitHub ignore these lines. For framework routes with brackets, write the path as it is: `%% @code page app/product/[handle]/page.tsx`.
 
@@ -127,7 +147,7 @@ When you plan a change instead of making it right away (plan mode, a spec workfl
 
 1. Find the flows the change touches with `casemap which <file>` and `casemap flows`.
 2. Write the proposed version of each affected flow, or of a new one: the whole file, as it should read once the change is done. Only here may steps describe behaviour the code does not have yet.
-3. Preview each proposal against the current flow. `casemap propose <name>` reads it on stdin and writes nothing, so it works in plan mode:
+3. Preview each proposal against the current flow. `casemap propose <name>` reads it on stdin without changing the catalog. Use `--format markdown` when you need a Markdown preview:
 
    ````sh
    casemap propose check-out-a-cart <<'EOF'
@@ -170,7 +190,7 @@ Commit new or changed flows with the code. `casemap diff` and the hook compare a
 | `casemap flows <name>` | Render one flow in the terminal |
 | `casemap check` | Validate every flow and exit 1 on errors (`--strict` also fails on warnings, `--format json`) |
 | `casemap diff [REF]` | What changed in each flow since REF (default `HEAD`), uncommitted edits included |
-| `casemap propose <name>` | Preview a proposed version of a flow, read from stdin, against the current one (writes nothing) |
+| `casemap propose <name>` | Preview a proposed version of a flow, read from stdin, against the current one without changing the catalog |
 | `casemap which <file>` | Which flows and steps are anchored to a file |
 | `casemap coverage [REF]` | Code no flow covers: the whole repository, or the files changed since REF |
 | `casemap browse` | Explore the catalog interactively (for humans; agents use the other commands) |

@@ -11,6 +11,6 @@ Start with the [README](../README.md) for what casemap is and how to install it.
 | [Coverage](coverage.md) | `casemap coverage`: code no flow covers |
 | [Agents](agents.md) | `casemap init`, the agent skill, `casemap propose`, Stop hooks, pre-commit |
 | [Commands](commands.md) | Every command and flag, check codes, JSON output, known limits |
-| [Rendering any Mermaid file](renderer.md) | `casemap FILE`, `--watch`, supported Mermaid, the layout engine, the Rust library |
+| [Flow images](renderer.md) | Terminal rendering, export, themes and the Rust library |
 
 A complete example catalog: [examples/commerce](../examples/commerce).

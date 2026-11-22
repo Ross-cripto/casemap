@@ -8,15 +8,18 @@ use unicode_width::UnicodeWidthStr;
 
 use casemap::map::truncate;
 
-use super::app::{App, Focus, Marker, Search, Standing};
+use super::app::{App, Focus, Marker, Search, Standing, ViewMode};
 use super::layout::layout;
 
 /// Keep at least this many title columns before dropping the activity suffix.
 const MIN_HEADER_TITLE: usize = 8;
 
-const STATUS_KEYS: &str = "↑↓ select · Tab focus · / search · d diff · p panel · ? help · q quit";
-const ASCII_STATUS_KEYS: &str =
-    "up/down select | Tab focus | / search | d diff | p panel | ? help | q quit";
+const MAP_KEYS: &str = "↑↓ select · Enter open · / search · ? help · q quit";
+const DIAGRAM_KEYS: &str =
+    "↑↓ step · Enter code · +/- zoom · d diff · v compare · Esc map · ? help";
+const ASCII_MAP_KEYS: &str = "up/down select | Enter open | / search | ? help | q quit";
+const ASCII_DIAGRAM_KEYS: &str =
+    "up/down step | Enter code | +/- zoom | d diff | v compare | Esc map | ? help";
 const ASCII_BORDER: symbols::border::Set = symbols::border::Set {
     top_left: "+",
     top_right: "+",
@@ -40,27 +43,26 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         let empty = app.flows.is_empty();
         let text = if empty {
             Text::raw(welcome_text(&app.catalog))
+        } else if let Some(notice) = &app.image_notice {
+            Text::raw(notice)
         } else {
             app.diagram()
                 .map(|view| view.text.clone())
                 .unwrap_or_default()
         };
-        let title = if app.diff_mode && !empty {
+        let title = if app.view_mode != ViewMode::Normal && !empty {
             " Diff "
         } else {
             " Diagram "
         };
-        let mut diagram = Paragraph::new(text)
+        let diagram = Paragraph::new(text)
             .block(border(
                 title,
                 app.ascii,
                 app.focus == Focus::Diagram,
                 app.color,
             ))
-            .scroll((app.pan.rows, app.pan.columns));
-        if empty {
-            diagram = diagram.wrap(Wrap { trim: false });
-        }
+            .wrap(Wrap { trim: false });
         frame.render_widget(diagram, areas.diagram);
     }
     if !areas.panel.is_empty() {
@@ -68,13 +70,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             Paragraph::new(
                 visible_panel_lines(app, areas.panel.height.saturating_sub(2)).join("\n"),
             )
-            .block(border(" Problems & code ", app.ascii, false, app.color)),
+            .block(border(" Step & code ", app.ascii, false, app.color)),
             areas.panel,
         );
     }
-    if areas.diagram.height <= 2
-        && (app.focus == Focus::Diagram || area.width >= super::layout::WIDE_WIDTH)
-    {
+    if areas.diagram.height <= 2 && app.focus == Focus::Diagram {
         let available = Rect::new(
             areas.header.x,
             area.y,
@@ -150,10 +150,17 @@ fn marker_style(marker: Marker, color: bool) -> Style {
 }
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.flows.is_empty() {
+        frame.render_widget(
+            Paragraph::new(welcome_text(&app.catalog))
+                .block(border(" Activity map ", app.ascii, true, app.color))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
     let title_width = usize::from(area.width.saturating_sub(4));
-    let items: Vec<_> = if app.flows.is_empty() {
-        vec![ListItem::new("no flows yet")]
-    } else if app.view.is_empty() {
+    let items: Vec<_> = if app.view.is_empty() {
         vec![ListItem::new("no matching flows")]
     } else {
         app.rows
@@ -186,7 +193,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let list = List::new(items)
         .block(border(
-            " Flows ",
+            " Activity map ",
             app.ascii,
             app.focus == Focus::List,
             app.color,
@@ -228,7 +235,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Line::raw(entry.path.clone()),
         Line::raw(entry.flow.description.clone().unwrap_or_default()),
     ];
-    if app.diff_mode {
+    if app.view_mode != ViewMode::Normal {
         lines.push(Line::raw(entry.difference.summary.clone()));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -236,14 +243,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let right = match &app.base {
-        Some(base) => format!(
-            "base {} ({})",
-            base.reference,
-            base.sha
-                .chars()
-                .take(casemap::flows::SHORT_SHA_LEN)
-                .collect::<String>()
-        ),
+        Some(base) => format!("base {}", base.label()),
         None => "no git".into(),
     };
     let [left_area, right_area] = ratatui::layout::Layout::horizontal([
@@ -256,13 +256,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         None => match &app.search {
             Search::Typing(query) => format!("/{query}"),
             Search::Kept(query) => format!("/{query} (Esc clears)"),
-            Search::Off => {
-                if app.ascii {
-                    ASCII_STATUS_KEYS.into()
-                } else {
-                    STATUS_KEYS.into()
-                }
-            }
+            Search::Off => match (app.focus, app.ascii) {
+                (Focus::List, false) => MAP_KEYS.into(),
+                (Focus::List, true) => ASCII_MAP_KEYS.into(),
+                (Focus::Diagram, false) => DIAGRAM_KEYS.into(),
+                (Focus::Diagram, true) => ASCII_DIAGRAM_KEYS.into(),
+            },
         },
     };
     if app.reloading {
@@ -293,20 +292,20 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let overlay = area.centered(Constraint::Length(76), Constraint::Length(19));
-    let help = "Key                   List                       Diagram
-up/down, j/k          Select a flow              Pan one row
-left/right, h/l                                  Pan one column
-H/J/K/L                                          Pan ten columns/rows
+    let help = "Key                   Activity map               Diagram
+Up/down arrows        Select a flow              Select a step
+h/j/k/l                                          Pan one column or row
+H/J/K/L                                          Pan ten columns or rows
 PgUp/PgDn             Select by page             Pan by page
 Home                  First flow                 Reset pan
-Tab                   Focus diagram              Focus list
-Enter                 Open diagram (narrow)
+Enter                 Open diagram               Open anchored code
++/-                                              Zoom in or out
+Tab                   Open diagram               Return to the map
 /                     Search title or name
-Enter (search)        Keep filter (empty clears)
-Esc                   Help > search > filter > narrow list > quit
-up/down (search)      Select; other printable keys enter the query
-d                     Toggle diff mode
-p                     Toggle problems and code panel
+Esc                   Close help, search, or diagram
+d                     Toggle diff marks
+v                     Toggle side-by-side comparison
+p                     Toggle the step and code panel
 r                     Reload flows, checks and anchored code
 ?                     Toggle this help
 q / Ctrl-C            Quit (Ctrl-C also works during search)";
@@ -413,6 +412,7 @@ mod tests {
         let options = Options::default();
         let mut app = App::new(crate::browse::commerce_loaded(&options), false, false);
         select_flow(&mut app, "check-out-a-cart");
+        press(&mut app, KeyCode::Enter);
         let rendered = render(&mut app, 120, 30);
         assert!(
             rendered.contains("Check out a cart  Choose and buy · 4 of 4"),
@@ -466,11 +466,7 @@ mod tests {
     #[test]
     fn map_headings_use_color_only_when_enabled() {
         for color in [false, true] {
-            let options = Options {
-                ascii: true,
-                color,
-                ..Options::default()
-            };
+            let options = Options { ascii: true, color };
             let mut app = App::new(crate::browse::commerce_loaded(&options), true, color);
             let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -495,21 +491,21 @@ mod tests {
             let mut app = fixture_app_with_options(&Options {
                 ascii,
                 color: false,
-                direction: None,
             });
             select_flow(&mut app, "checkout");
-            app.panel = true;
+            press(&mut app, KeyCode::Enter);
+            app.source_preview = vec!["No anchored code".into()];
             let rendered = render(&mut app, 120, 30);
-            assert!(rendered.contains("no anchors"));
+            assert!(rendered.contains("No anchored code"));
             assert!(!rendered.contains("Code:"));
             let selected = app.view[app.list_state.selected().unwrap()];
             app.flows[selected].problems =
                 (0..20).map(|number| format!("problem {number}")).collect();
             let rendered = render(&mut app, 120, 30);
             let marker = if ascii {
-                "... (+15 more)"
+                "... (+16 more)"
             } else {
-                "… (+15 more)"
+                "… (+16 more)"
             };
             assert!(rendered.contains(marker), "{rendered}");
         }
@@ -538,7 +534,6 @@ mod tests {
         loaded.catalog = "docs/flows".into();
         let mut app = App::new(loaded, false, false);
         let rendered = render(&mut app, 120, 30);
-        assert!(rendered.contains("no flows yet"));
         assert!(rendered.contains("No use cases yet."));
         assert!(!rendered.contains("catalog: 1 problem"));
         assert!(rendered.contains("docs/flows/"));
@@ -576,6 +571,7 @@ mod tests {
     fn diff_mode() {
         let mut app = fixture_app();
         select_flow(&mut app, "checkout");
+        press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Char('d'));
         app.panel = true;
         assert_browse_snapshot("browse__diff_mode", render(&mut app, 120, 30));
@@ -584,7 +580,7 @@ mod tests {
     fn problems_panel() {
         let mut app = fixture_app();
         app.list_state.select(Some(0));
-        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Enter);
         assert_browse_snapshot("browse__problems_panel", render(&mut app, 120, 30));
     }
     #[test]
@@ -603,23 +599,13 @@ mod tests {
         assert_browse_snapshot("browse__search", render(&mut app, 120, 30));
     }
     #[test]
-    fn panned() {
-        let mut app = fixture_app();
-        select_flow(&mut app, "wide-flow");
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Char('L'));
-        press(&mut app, KeyCode::Char('J'));
-        assert!(app.pan.columns > 0);
-        assert_browse_snapshot("browse__panned", render(&mut app, 120, 30));
-    }
-    #[test]
-    fn colour_styles_pin_markers_selection_focus_and_diff() {
+    fn map_marks_stale_flows_and_highlights_selection() {
         let mut app = fixture_app();
         let terminal = render_terminal(&mut app, 120, 30);
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(1, 5)].symbol(), "!");
         assert_eq!(buffer[(1, 5)].fg, Color::Yellow);
-        for column in 1..31 {
+        for column in 1..119 {
             assert!(
                 buffer[(column, 5)]
                     .modifier
@@ -628,26 +614,45 @@ mod tests {
             );
         }
         assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
         let terminal = render_terminal(&mut app, 120, 30);
+        let diagram = layout(app.area, &app).diagram;
         assert!(
-            terminal.backend().buffer()[(32, 3)]
+            terminal.backend().buffer()[(diagram.x, diagram.y)]
                 .modifier
                 .contains(Modifier::BOLD)
         );
-        select_flow(&mut app, "checkout");
-        press(&mut app, KeyCode::Char('d'));
-        let terminal = render_terminal(&mut app, 120, 30);
-        let diagram = layout(app.area, &app).diagram;
-        let buffer = terminal.backend().buffer();
-        let diagram_has_green = (diagram.y + 1..diagram.bottom() - 1).any(|row| {
-            (diagram.x + 1..diagram.right() - 1)
-                .any(|column| buffer[(column, row)].fg == Color::Green)
-        });
+    }
+
+    #[test]
+    fn unsupported_terminal_shows_the_saved_png_path() {
+        let mut app = fixture_app();
+        press(&mut app, KeyCode::Enter);
+        app.image_notice =
+            Some("Terminal image support unavailable.\nPNG saved to path.png".into());
+        let rendered = render(&mut app, 120, 30);
+        assert!(rendered.contains("Terminal image support unavailable."));
+        assert!(rendered.contains("PNG saved to path.png"));
+    }
+
+    #[test]
+    fn selected_step_moves_with_arrows_and_can_open_code() {
+        let mut app = fixture_app();
+        press(&mut app, KeyCode::Enter);
+        assert!(app.panel_lines().iter().any(|line| line == "Customer"));
+        press(&mut app, KeyCode::Down);
         assert!(
-            diagram_has_green,
-            "union diagram lost its added-step colour"
+            app.panel_lines()
+                .iter()
+                .any(|line| line == "Pay for the order")
         );
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.handle(enter), super::super::app::Action::OpenCode);
+
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.view_mode, ViewMode::SideBySide);
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.view_mode, ViewMode::Diff);
     }
 
     #[test]
@@ -660,7 +665,7 @@ mod tests {
                     "search typing" => app.search = Search::Typing("pay".into()),
                     "panel+diff" => {
                         app.panel = true;
-                        app.diff_mode = true;
+                        press(&mut app, KeyCode::Char('d'));
                     }
                     "narrow diagram" => app.focus = Focus::Diagram,
                     _ => unreachable!(),
@@ -675,7 +680,6 @@ mod tests {
         let mut app = fixture_app_with_options(&Options {
             ascii: true,
             color: false,
-            direction: None,
         });
         app.panel = true;
         let rendered = render(&mut app, 120, 30);
@@ -684,8 +688,8 @@ mod tests {
         select_flow(&mut app, "checkout");
         for focus in [Focus::List, Focus::Diagram] {
             app.focus = focus;
-            for diff_mode in [false, true] {
-                app.diff_mode = diff_mode;
+            for mode in [ViewMode::Normal, ViewMode::Diff] {
+                app.view_mode = mode;
                 assert!(render(&mut app, 60, 20).is_ascii());
                 assert!(render(&mut app, 120, 30).is_ascii());
             }
@@ -698,7 +702,6 @@ mod tests {
             let mut app = fixture_app_with_options(&Options {
                 ascii,
                 color: false,
-                direction: None,
             });
             app.reloading = true;
             press(&mut app, KeyCode::Down);
@@ -716,7 +719,6 @@ mod tests {
         let mut app = fixture_app_with_options(&Options {
             ascii: true,
             color: false,
-            direction: None,
         });
         app.catalog_problems = 2;
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();

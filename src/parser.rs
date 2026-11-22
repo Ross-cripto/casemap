@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use crate::icons::{self, DirectiveError};
 use crate::model::{Cluster, Diagram, Direction, Edge, LineStyle, Mark, Node, Shape};
 
 pub const RESERVED_IDS: &[&str] = &[
@@ -53,12 +54,32 @@ pub struct ParseError {
 }
 
 pub fn parse(source: &str) -> Result<Diagram, ParseError> {
-    let mut b = Builder::default();
+    parse_with_diagnostics(source).map(|parsed| parsed.diagram)
+}
+
+pub(crate) struct ParsedDiagram {
+    pub diagram: Diagram,
+    pub section_lines: Vec<usize>,
+    pub icon_errors: Vec<(usize, DirectiveError)>,
+}
+
+pub(crate) fn parse_with_diagnostics(source: &str) -> Result<ParsedDiagram, ParseError> {
+    let mut builder = Builder::default();
     let mut header_seen = false;
-    for (idx, raw) in source.lines().enumerate() {
-        let line_no = idx + 1;
+    let mut icon_directives = Vec::new();
+    let mut icon_errors = Vec::new();
+    for (index, raw) in source.lines().enumerate() {
+        let line_number = index + 1;
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with("%%") {
+        if trimmed.starts_with("%%") {
+            match icons::directive(trimmed) {
+                Some(Ok(directive)) => icon_directives.push((line_number, directive)),
+                Some(Err(error)) => icon_errors.push((line_number, error)),
+                None => {}
+            }
+            continue;
+        }
+        if trimmed.is_empty() {
             continue;
         }
         for stmt in split_statements(trimmed) {
@@ -69,17 +90,31 @@ pub fn parse(source: &str) -> Result<Diagram, ParseError> {
             if !header_seen {
                 header_seen = true;
                 if let Some(dir) = parse_header(stmt) {
-                    b.direction = Some(dir);
+                    builder.direction = Some(dir);
                     continue;
                 }
             }
-            b.statement(stmt).map_err(|message| ParseError {
-                line: line_no,
-                message,
-            })?;
+            builder
+                .statement(stmt, line_number)
+                .map_err(|message| ParseError {
+                    line: line_number,
+                    message,
+                })?;
         }
     }
-    Ok(b.finish())
+    for (line, directive) in icon_directives {
+        if let Some(&node_index) = builder.index.get(directive.step) {
+            builder.nodes[node_index].icon = Some(directive.icon);
+        } else {
+            icon_errors.push((line, DirectiveError::UnknownStep(directive.step.to_owned())));
+        }
+    }
+    let (diagram, section_lines) = builder.finish();
+    Ok(ParsedDiagram {
+        diagram,
+        section_lines,
+        icon_errors,
+    })
 }
 
 pub fn is_header(stmt: &str) -> bool {
@@ -182,7 +217,7 @@ pub(crate) fn statement_mentions_id(statement: &str, id: &str) -> bool {
         return false;
     }
     let mut builder = Builder::default();
-    builder.statement(statement).is_ok() && builder.nodes.iter().any(|node| node.id == id)
+    builder.statement(statement, 1).is_ok() && builder.nodes.iter().any(|node| node.id == id)
 }
 
 #[derive(Default)]
@@ -192,6 +227,7 @@ struct Builder {
     index: HashMap<String, usize>,
     edges: Vec<Edge>,
     clusters: Vec<Cluster>,
+    section_lines: Vec<usize>,
     node_cluster: Vec<Option<usize>>,
     stack: Vec<usize>,
 }
@@ -204,17 +240,18 @@ struct Link {
 }
 
 impl Builder {
-    fn finish(self) -> Diagram {
-        Diagram {
+    fn finish(self) -> (Diagram, Vec<usize>) {
+        let diagram = Diagram {
             direction: self.direction.unwrap_or(Direction::TopDown),
             nodes: self.nodes,
             edges: self.edges,
             clusters: self.clusters,
             node_cluster: self.node_cluster,
-        }
+        };
+        (diagram, self.section_lines)
     }
 
-    fn statement(&mut self, stmt: &str) -> Result<(), String> {
+    fn statement(&mut self, stmt: &str, line: usize) -> Result<(), String> {
         if starts_with_keyword_node(stmt) {
             return self.chain(stmt);
         }
@@ -224,7 +261,7 @@ impl Builder {
         };
         match first.to_ascii_lowercase().as_str() {
             "subgraph" => {
-                self.open_subgraph(rest);
+                self.open_subgraph(rest, line);
                 Ok(())
             }
             "end" if rest.is_empty() => {
@@ -237,7 +274,7 @@ impl Builder {
         }
     }
 
-    fn open_subgraph(&mut self, rest: &str) {
+    fn open_subgraph(&mut self, rest: &str, line: usize) {
         let rest = rest.trim();
         let (id, title) = if let Some(open) = rest.find('[') {
             let id = rest[..open].trim().to_string();
@@ -258,6 +295,7 @@ impl Builder {
         };
         let title = if title.is_empty() { id.clone() } else { title };
         self.clusters.push(Cluster { id, title, parent });
+        self.section_lines.push(line);
         self.stack.push(idx);
     }
 
@@ -354,6 +392,7 @@ impl Builder {
             id,
             label,
             shape,
+            icon: None,
             mark: Mark::Same,
         });
         self.node_cluster.push(current);
@@ -712,6 +751,31 @@ mod tests {
         let diagram = parse("flowchart TD\na[A] --> b[B]\nclick a callback\nclass a,b c").unwrap();
         assert_eq!(diagram.nodes.len(), 2);
         assert_eq!(diagram.edges.len(), 1);
+    }
+
+    #[test]
+    fn attaches_icons_to_forward_step_ids_and_falls_back_by_shape() {
+        let diagram = parse(
+            "%% @icon result search\nflowchart TD\nactor([Reader]) --> decide{Found?}\n\
+             decide -->|yes| result[Show result]\ndecide -->|no| retry[Try again]\n\
+             %% @icon retry made-up\n%% @icon missing check",
+        )
+        .unwrap();
+
+        let icons: Vec<_> = diagram
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node.effective_icon().as_str()))
+            .collect();
+        assert_eq!(
+            icons,
+            [
+                ("actor", "user"),
+                ("decide", "diamond"),
+                ("result", "search"),
+                ("retry", "circle-dot"),
+            ]
+        );
     }
 
     #[test]

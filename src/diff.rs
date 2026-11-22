@@ -1,6 +1,8 @@
-use crate::model::{Diagram, Mark};
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, PartialEq, Eq)]
+use crate::model::{Diagram, Mark, Node};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     StepAdded {
         id: String,
@@ -15,6 +17,8 @@ pub enum Change {
         old: String,
         new: String,
         shape: bool,
+        icon: bool,
+        section: Option<StepSectionChange>,
     },
     LinkAdded {
         from: String,
@@ -34,6 +38,12 @@ pub enum Change {
         style_changed: bool,
         arrows_changed: bool,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepSectionChange {
+    pub previous: Option<String>,
+    pub current: Option<String>,
 }
 
 impl Change {
@@ -81,7 +91,7 @@ fn same_link(old: &crate::model::Edge, new: &crate::model::Edge) -> bool {
 pub fn diff(old: &Diagram, new: &Diagram) -> DiagramDiff {
     let mut union = new.clone();
     let mut changes = Vec::new();
-    classify_nodes(old, &mut union, &mut changes);
+    classify_nodes(old, new, &mut union, &mut changes);
     append_removed_nodes(old, new, &mut union, &mut changes);
     let matched = classify_edges(old, new, &mut union, &mut changes);
     append_removed_edges(old, &matched, &mut union, &mut changes);
@@ -89,30 +99,130 @@ pub fn diff(old: &Diagram, new: &Diagram) -> DiagramDiff {
     DiagramDiff { union, changes }
 }
 
-fn classify_nodes(old: &Diagram, union: &mut Diagram, changes: &mut Vec<Change>) {
-    for node in &mut union.nodes {
-        match old.nodes.iter().find(|candidate| candidate.id == node.id) {
-            Some(previous) if previous.label == node.label && previous.shape == node.shape => {
-                node.mark = Mark::Same
+fn classify_nodes(old: &Diagram, new: &Diagram, union: &mut Diagram, changes: &mut Vec<Change>) {
+    let reordered = reordered_sections(old, new);
+    let mut old_nodes_by_id = HashMap::with_capacity(old.nodes.len());
+    for (node_index, node) in old.nodes.iter().enumerate() {
+        old_nodes_by_id
+            .entry(node.id.as_str())
+            .or_insert(node_index);
+    }
+    for (node_index, node) in union.nodes.iter_mut().enumerate() {
+        let change = match old_nodes_by_id.get(node.id.as_str()) {
+            Some(&previous_index) => {
+                let previous_section = step_section(old, previous_index);
+                let current_section = step_section(new, node_index);
+                let section = changed_section(previous_section, current_section, &reordered);
+                node_change(&old.nodes[previous_index], node, section)
             }
-            Some(previous) => {
-                node.mark = Mark::Changed;
-                changes.push(Change::StepChanged {
-                    id: node.id.clone(),
-                    old: previous.label.join(" "),
-                    new: node.label.join(" "),
-                    shape: previous.shape != node.shape,
-                });
-            }
-            None => {
-                node.mark = Mark::Added;
-                changes.push(Change::StepAdded {
-                    id: node.id.clone(),
-                    label: node.label.join(" "),
-                });
-            }
+            None => Some(Change::StepAdded {
+                id: node.id.clone(),
+                label: node.label.join(" "),
+            }),
+        };
+        node.mark = change.as_ref().map_or(Mark::Same, Change::mark);
+        if let Some(change) = change {
+            changes.push(change);
         }
     }
+}
+
+fn node_change(
+    previous: &Node,
+    current: &Node,
+    section: Option<StepSectionChange>,
+) -> Option<Change> {
+    let label_changed = previous.label != current.label;
+    let shape_changed = previous.shape != current.shape;
+    let icon_changed =
+        previous.icon != current.icon && previous.effective_icon() != current.effective_icon();
+    let presentation_changed = label_changed || shape_changed || icon_changed;
+    if !presentation_changed && section.is_none() {
+        return None;
+    }
+    Some(Change::StepChanged {
+        id: current.id.clone(),
+        old: previous.label.join(" "),
+        new: current.label.join(" "),
+        shape: shape_changed,
+        icon: icon_changed,
+        section,
+    })
+}
+
+fn reordered_sections<'a>(old: &'a Diagram, new: &Diagram) -> HashSet<&'a str> {
+    let mut ordered_old = section_ids(old);
+    let mut ordered_new = section_ids(new);
+    let old_ids: HashSet<_> = ordered_old.iter().copied().collect();
+    let new_ids: HashSet<_> = ordered_new.iter().copied().collect();
+    ordered_old.retain(|id| new_ids.contains(id));
+    ordered_new.retain(|id| old_ids.contains(id));
+    if ordered_old == ordered_new {
+        return HashSet::new();
+    }
+    sections_outside_longest_common_subsequence(&ordered_old, &ordered_new)
+}
+
+fn section_ids(diagram: &Diagram) -> Vec<&str> {
+    diagram
+        .clusters
+        .iter()
+        .map(|section| section.id.as_str())
+        .collect()
+}
+
+fn sections_outside_longest_common_subsequence<'a>(
+    old: &[&'a str],
+    new: &[&str],
+) -> HashSet<&'a str> {
+    let lengths = longest_common_subsequence_lengths(old, new);
+    let mut reordered = HashSet::new();
+    let mut old_index = 0;
+    let mut new_index = 0;
+    while old_index < old.len() && new_index < new.len() {
+        if old[old_index] == new[new_index] {
+            old_index += 1;
+            new_index += 1;
+        } else if lengths[old_index + 1][new_index] >= lengths[old_index][new_index + 1] {
+            reordered.insert(old[old_index]);
+            old_index += 1;
+        } else {
+            new_index += 1;
+        }
+    }
+    reordered.extend(old[old_index..].iter().copied());
+    reordered
+}
+
+fn longest_common_subsequence_lengths(old: &[&str], new: &[&str]) -> Vec<Vec<usize>> {
+    let mut lengths = vec![vec![0; new.len() + 1]; old.len() + 1];
+    for (old_index, old_section) in old.iter().enumerate().rev() {
+        for (new_index, new_section) in new.iter().enumerate().rev() {
+            lengths[old_index][new_index] = if old_section == new_section {
+                1 + lengths[old_index + 1][new_index + 1]
+            } else {
+                lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
+            };
+        }
+    }
+    lengths
+}
+
+fn changed_section(
+    previous: Option<&str>,
+    current: Option<&str>,
+    reordered: &HashSet<&str>,
+) -> Option<StepSectionChange> {
+    let moved = previous.is_some_and(|id| reordered.contains(id));
+    (moved || previous != current).then(|| StepSectionChange {
+        previous: previous.map(str::to_owned),
+        current: current.map(str::to_owned),
+    })
+}
+
+fn step_section(diagram: &Diagram, node: usize) -> Option<&str> {
+    let section = &diagram.clusters[diagram.node_cluster[node]?];
+    Some(&section.id)
 }
 
 fn append_removed_nodes(
@@ -349,8 +459,20 @@ fn change_detail(change: &Change) -> String {
             old,
             new,
             shape,
+            icon,
+            section,
         } => {
-            let suffix = if *shape { " (shape)" } else { "" };
+            let change_kinds = [
+                shape.then_some("shape"),
+                icon.then_some("icon"),
+                section.as_ref().map(|_| "section"),
+            ];
+            let kinds = change_kinds.into_iter().flatten().collect::<Vec<_>>();
+            let suffix = if kinds.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", kinds.join(", "))
+            };
             format!("~ step {id} {} -> {}{suffix}", quote(old), quote(new))
         }
         Change::LinkAdded { from, to, label } => {
@@ -462,6 +584,106 @@ mod tests {
         );
         assert_eq!(result.union.nodes[0].label, ["A"]);
         assert_eq!(result.union.edges[0].label.as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn section_rename_is_not_a_step_change() {
+        let source = "flowchart TD\nsubgraph payment [Payment]\na[A] --> b[B]\nend";
+        let old = parser::parse(source).unwrap();
+        let new = parser::parse(&source.replace("[Payment]", "[Pay now]")).unwrap();
+        let difference = diff(&old, &new);
+        assert!(difference.changes.is_empty());
+        assert!(
+            difference
+                .union
+                .nodes
+                .iter()
+                .all(|node| node.mark == Mark::Same)
+        );
+    }
+
+    #[test]
+    fn moving_a_step_between_sections_counts_as_a_change() {
+        let old = parser::parse("flowchart TD\nsubgraph first [First]\na[A]\nend\nsubgraph second [Second]\nb[B]\nend\na --> b").unwrap();
+        let new =
+            parser::parse("flowchart TD\nsubgraph second [Second]\na[A] --> b[B]\nend").unwrap();
+        let difference = diff(&old, &new);
+        assert_eq!(difference.union.nodes[0].mark, Mark::Changed);
+        assert_eq!(difference.union.nodes[1].mark, Mark::Same);
+        assert!(difference.changes.iter().any(|change| matches!(change,
+            Change::StepChanged { id, section: Some(StepSectionChange { previous: Some(previous), current: Some(current) }), .. }
+            if id == "a" && previous == "first" && current == "second"
+        )));
+    }
+
+    #[test]
+    fn three_section_rotation_marks_one() {
+        let first = "subgraph first [First]\na[A]\nend\n";
+        let second = "subgraph second [Second]\nb[B]\nend\n";
+        let third = "subgraph third [Third]\nc[C]\nend\n";
+        let old = parser::parse(&format!(
+            "flowchart TD\n{first}{second}{third}a --> b --> c"
+        ))
+        .unwrap();
+        let new = parser::parse(&format!(
+            "flowchart TD\n{second}{third}{first}a --> b --> c"
+        ))
+        .unwrap();
+        let difference = diff(&old, &new);
+
+        assert_eq!(
+            detail_text(&difference),
+            ["~ step a \"A\" -> \"A\" (section)"]
+        );
+        let marks: Vec<_> = difference
+            .union
+            .nodes
+            .iter()
+            .map(|node| node.mark)
+            .collect();
+        assert_eq!(marks, [Mark::Same, Mark::Same, Mark::Changed]);
+    }
+
+    #[test]
+    fn swapping_sections_marks_one() {
+        let first = "subgraph first [First]\na[A]\nend\n";
+        let second = "subgraph second [Second]\nb[B]\nend\n";
+        let old = parser::parse(&format!("flowchart TD\n{first}{second}a --> b")).unwrap();
+        let new = parser::parse(&format!("flowchart TD\n{second}{first}a --> b")).unwrap();
+        let difference = diff(&old, &new);
+
+        assert_eq!(
+            detail_text(&difference),
+            ["~ step a \"A\" -> \"A\" (section)"]
+        );
+    }
+
+    #[test]
+    fn inserting_a_section_does_not_mark_shared_sections_as_reordered() {
+        let first = "subgraph first [First]\na[A]\nend\n";
+        let second = "subgraph second [Second]\nb[B]\nend\n";
+        let extra = "subgraph extra [Extra]\nc[C]\nend\n";
+        let old = parser::parse(&format!("flowchart TD\n{first}{second}a --> b")).unwrap();
+        let inserted =
+            parser::parse(&format!("flowchart TD\n{first}{extra}{second}a --> b")).unwrap();
+        let difference = diff(&old, &inserted);
+        assert_eq!(difference.changes.len(), 1);
+        assert!(matches!(&difference.changes[0], Change::StepAdded { id, .. } if id == "c"));
+    }
+
+    #[test]
+    fn an_icon_change_marks_the_step_even_when_the_label_stays_the_same() {
+        let old = parser::parse("flowchart TD\na[Search]\n%% @icon a square").unwrap();
+        let new = parser::parse("flowchart TD\na[Search]\n%% @icon a search").unwrap();
+
+        let result = diff(&old, &new);
+
+        assert_eq!(result.union.nodes[0].mark, Mark::Changed);
+        assert_eq!(result.summary(), "~1 step");
+        assert_eq!(
+            detail_text(&result),
+            ["~ step a \"Search\" -> \"Search\" (icon)"]
+        );
     }
 
     #[test]

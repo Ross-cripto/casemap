@@ -49,7 +49,7 @@ For agents without skill support, `casemap guide` prints the skill body.
 
 ## Plan a change first
 
-Have the agent write the proposed flow, then preview it against the current one with `casemap propose <name>`: it reads stdin and writes nothing, so a heredoc works in Claude Code or Codex plan mode. Put the preview in the plan or spec (Spec Kit's spec or Kiro's requirements); after approval, write the flow first, then the code.
+Have the agent write the proposed flow, then preview it against the current one with `casemap propose <name>`: it reads stdin without changing the catalog. Add `--format markdown` to include the preview in a plan without creating a temporary PNG. Put the preview in the plan or spec (Spec Kit's spec or Kiro's requirements); after approval, write the flow first, then the code.
 
 The flow stays in the catalog after the change, so it can guide later work instead of disappearing with a per-change spec.
 

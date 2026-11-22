@@ -21,6 +21,8 @@ const BROKEN_DIAGRAM_PAY: &str =
     "# Pay\n\nA customer pays.\n\n```mermaid\nflowchart TD\na -->\n```\n";
 const NO_ACTOR_PAY: &str = "# Pay\n\nA customer pays.\n\n```mermaid\nflowchart TD\npay[Pay]\n```\n";
 
+const PNG_FALLBACK: &str = ". Saved PNG to ";
+
 fn casemap_command(repo: &TempRepo) -> Command {
     Command::from_std(common::casemap_command(&repo.config_path()))
 }
@@ -32,6 +34,58 @@ fn stdout(output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout.clone()).unwrap()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ImageReport {
+    summary: String,
+    images: Vec<Vec<u8>>,
+}
+
+fn assert_fallback_filename(report: &str, stem: &str) {
+    let saved = report
+        .lines()
+        .last()
+        .unwrap()
+        .split_once(PNG_FALLBACK)
+        .unwrap()
+        .1;
+    let filename = std::path::Path::new(saved)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let (name, hash) = filename
+        .strip_suffix(".png")
+        .unwrap()
+        .rsplit_once('-')
+        .unwrap();
+    assert_eq!(name, stem, "{report}");
+    assert_eq!(hash.len(), 8, "{report}");
+    assert!(
+        hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{report}"
+    );
+}
+
+fn read_image_report(stdout: &str) -> ImageReport {
+    let mut summary = String::new();
+    let mut images = Vec::new();
+    for line in stdout.split_inclusive('\n') {
+        let Some((_, path)) = line
+            .trim_end_matches(['\r', '\n'])
+            .split_once(PNG_FALLBACK)
+            .filter(|(notice, _)| notice.starts_with("Terminal graphics unavailable ("))
+        else {
+            summary.push_str(line);
+            continue;
+        };
+        let png = fs::read(path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        fs::remove_file(path).unwrap();
+        assert!(resvg::tiny_skia::Pixmap::decode_png(&png).is_ok(), "{path}");
+        images.push(png);
+    }
+    ImageReport { summary, images }
 }
 
 #[test]
@@ -56,7 +110,7 @@ fn cli_diff_reports_base_that_did_not_parse() {
     repo.git(&["init", "-q", "-b", BASE_BRANCH]);
     repo.git(&["add", "."]);
     repo.git(&["commit", "-qm", "broken base"]);
-    fs::write(path, "# X\n```mermaid\ngraph TD\na[A]\n```\n").unwrap();
+    fs::write(path, "# X\n```mermaid\nflowchart TD\na[A]\n```\n").unwrap();
     let output = stdout(&repo.casemap(&["diff", "--no-color"]));
     assert!(
         output.contains("X (x.md)  new flow: +1 step (base version did not parse)"),
@@ -80,6 +134,24 @@ fn cli_diff_against_branch_includes_uncommitted() {
     }
     let output = stdout(&repo.casemap(&["diff", "--no-color"]));
     assert!(output.contains("1 modified, 0 new, 0 removed"), "{output}");
+}
+
+#[test]
+fn cli_diff_side_by_side_widens_the_report_image() {
+    let repo = TempRepo::committed_before();
+    repo.add_fixture("after", "checkout.md");
+    let marked_report = stdout(&repo.casemap(&["diff", "--no-color"]));
+    let compared_report = stdout(&repo.casemap(&["diff", "--no-color", "--side-by-side"]));
+    assert_fallback_filename(&marked_report, "checkout");
+    assert_fallback_filename(&compared_report, "checkout-before-after");
+    let marked = read_image_report(&marked_report);
+    let compared = read_image_report(&compared_report);
+    assert_eq!(marked.images.len(), 1);
+    assert_eq!(compared.images.len(), 1);
+    assert_eq!(marked.summary, compared.summary);
+    let marked = resvg::tiny_skia::Pixmap::decode_png(&marked.images[0]).unwrap();
+    let compared = resvg::tiny_skia::Pixmap::decode_png(&compared.images[0]).unwrap();
+    assert!(compared.width() > marked.width());
 }
 
 #[test]
@@ -154,13 +226,7 @@ fn cli_flows_lists_and_renders_one() {
         "tests/fixtures/flows/after",
         "--no-color",
     ]));
-    for expected in [
-        "Refund",
-        "A customer asks for a refund and gets the money back or a reason why not.",
-        "Refund to card",
-    ] {
-        assert!(output.contains(expected), "{output}");
-    }
+    assert_eq!(read_image_report(&output).images.len(), 1, "{output}");
     let output = run(&[
         "flows",
         "unknown",
@@ -184,26 +250,70 @@ fn cli_guide_prints_convention() {
 }
 
 #[test]
-fn cli_diff_reports_broken_flow_and_continues() {
+fn diff_text_with_a_broken_flow_reports_and_continues() {
     let repo = TempRepo::committed_before();
     fs::write(
+        repo.flow_path("login.md"),
+        "# Login\n\n```mermaid\ngraph TD\na -->\n```\n",
+    )
+    .unwrap();
+    repo.add_fixture("after", "checkout.md");
+    let output = repo.casemap(&["diff", "--format", "text", "--no-color"]);
+    assert_eq!(output.status.code(), Some(1));
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("Login (login.md)  parse error, line 5:"),
+        "{report}"
+    );
+    assert!(
+        report.contains("Checkout (checkout.md)  modified:"),
+        "{report}"
+    );
+    assert_fallback_filename(&report, "checkout");
+    assert_eq!(read_image_report(&report).images.len(), 1, "{report}");
+}
+
+#[test]
+fn cli_diff_ignores_the_graphics_override_when_stdout_is_redirected() {
+    let repo = TempRepo::committed_before();
+    repo.add_fixture("after", "checkout.md");
+    repo.add_fixture("after", "refund.md");
+    let output = casemap_command(&repo)
+        .args(["diff", "--no-color"])
+        .current_dir(repo.path())
+        .env("CASEMAP_IMAGE_PROTOCOL", "invalid")
+        .output()
+        .unwrap();
+    assert_eq!(read_image_report(&stdout(&output)).images.len(), 2);
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert!(errors.is_empty(), "{errors}");
+    assert_eq!(
+        stdout(&output)
+            .matches("Terminal graphics unavailable (not a terminal)")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn cli_diff_renders_other_flows_after_an_image_format_error() {
+    let repo = TempRepo::committed_before();
+    // The second Mermaid block makes this flow undrawable.
+    fs::write(
         repo.flow_path("checkout.md"),
-        "# Checkout\n\n```mermaid\ngraph TD\na -->\n```\n",
+        "# Checkout\n\n```mermaid\nflowchart TD\na[Use the new checkout]\n```\n\n```mermaid\nflowchart TD\nb[Other]\n```\n",
     )
     .unwrap();
     repo.add_fixture("after", "refund.md");
     let output = repo.casemap(&["diff", "--no-color"]);
     assert_eq!(output.status.code(), Some(1));
+    let errors = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        errors.contains("checkout.md: casemap draws use-case flow files"),
+        "{errors}"
+    );
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        report.contains("Checkout (checkout.md)  parse error, line 5:"),
-        "{report}"
-    );
-    assert!(
-        report.contains("Refund (refund.md)  new flow: +4 steps, +3 links"),
-        "{report}"
-    );
-    assert!(report.contains("Refund to card"), "{report}");
+    assert_eq!(read_image_report(&report).images.len(), 1, "{report}");
 }
 
 #[test]
@@ -237,19 +347,20 @@ fn cli_render_markdown_and_reject_invalid_arguments() {
     let repo = TempRepo::new();
     fs::write(
         repo.file("flow.markdown"),
-        "# Render\n```mermaid\ngraph TD\na[Visible]\n```\n",
+        "# Render\n```mermaid\nflowchart TD\na[Visible]\n```\n",
     )
     .unwrap();
     let output = stdout(&repo.casemap(&["flow.markdown", "--no-color"]));
-    assert!(output.starts_with("Render\n"), "{output}");
-    assert!(output.contains("Visible"), "{output}");
+    let first = read_image_report(&output);
+    assert_eq!(first.images.len(), 1, "{output}");
     fs::copy(repo.file("flow.markdown"), repo.file("README.MD")).unwrap();
     let output = stdout(&repo.casemap(&["README.MD", "--no-color"]));
-    assert!(output.starts_with("Render\n"), "{output}");
-    assert!(output.contains("Visible"), "{output}");
+    assert_eq!(read_image_report(&output), first);
     fs::write(repo.file("empty.md"), "# No diagram\n").unwrap();
+    fs::write(repo.file("generic.mmd"), "flowchart LR\na --> b\n").unwrap();
     for (args, expected) in [
-        (vec!["empty.md"], "empty.md: no mermaid blocks"),
+        (vec!["empty.md"], "casemap draws use-case flow files"),
+        (vec!["generic.mmd"], "casemap draws use-case flow files"),
         (vec!["--flows"], "--flows"),
         (
             vec!["--watch", "diff"],
@@ -283,20 +394,12 @@ fn usage_errors_exit_with_one() {
     for args in [
         vec!["--bogus"],
         vec!["--flows"],
-        vec!["--dir"],
+        vec!["--ascii"],
+        vec!["--dir=LR"],
         vec!["a.mmd", "b.mmd"],
     ] {
         casemap_command(&repo).args(args).assert().code(1);
     }
-    casemap_command(&repo)
-        .args(["--dir", "XX"])
-        .assert()
-        .code(1)
-        .stderr(predicate::str::contains("expects one of TD, BT, LR, RL"));
-    casemap_command(&repo)
-        .args(["--dir=lr", "tests/fixtures/simple.mmd", "--no-color"])
-        .assert()
-        .success();
     for flag in ["--help", "--version", "-h", "-V"] {
         casemap_command(&repo).arg(flag).assert().success();
     }
@@ -322,14 +425,14 @@ fn completions_generate_for_each_shell() {
 fn file_and_subcommand_conflict() {
     let repo = TempRepo::new();
     casemap_command(&repo)
-        .args(["x.mmd", "--ascii", "diff"])
+        .args(["x.md", "--no-color", "diff"])
         .assert()
         .code(1)
         .stderr("casemap: FILE cannot be combined with a subcommand\n");
 }
 
 #[test]
-fn dot_slash_renders_a_file_named_like_a_command() {
+fn explicit_path_treats_a_command_name_as_a_file() {
     let repo = TempRepo::new();
     fs::write(repo.file("diff"), "graph TD\na[Visible]\n").unwrap();
     for args in [
@@ -340,24 +443,23 @@ fn dot_slash_renders_a_file_named_like_a_command() {
             .current_dir(repo.path())
             .args(args)
             .assert()
-            .success()
-            .stdout(predicate::str::contains("Visible"));
+            .code(1)
+            .stderr(predicate::str::contains(
+                "casemap draws use-case flow files",
+            ));
     }
 }
 
 #[test]
 fn no_color_wins_across_subcommand_boundaries() {
-    let repo = TempRepo::new();
+    let directory = common::map_catalog();
     for args in [
-        ["--color", "flows", "refund", "--no-color"],
-        ["--no-color", "flows", "refund", "--color"],
+        ["--color", "map", "--no-color"],
+        ["--no-color", "map", "--color"],
     ] {
-        casemap_command(&repo)
-            .args(args)
-            .args(["--flows", "tests/fixtures/flows/after"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("\x1b").not());
+        let run = common::run_casemap(&args, directory.path(), &[], None);
+        assert_eq!(run.status, 0, "{}", run.stderr);
+        assert!(!run.stdout.contains('\x1b'), "{}", run.stdout);
     }
 }
 
@@ -370,22 +472,31 @@ struct WatchProcess {
     reader: Option<JoinHandle<()>>,
 }
 
+enum WatchOutput {
+    Images,
+    Errors,
+}
+
 impl WatchProcess {
-    fn start(repo: &TempRepo) -> Self {
+    fn start(repo: &TempRepo, capture: WatchOutput) -> Self {
         let mut command = common::casemap_command(&repo.config_path());
-        let mut child = command
-            .args(["--watch", "--no-color", "f.mmd"])
-            .current_dir(repo.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut stdout = child.stdout.take().unwrap();
+        command
+            .args(["--watch", "--no-color", "f.md"])
+            .current_dir(repo.path());
+        match capture {
+            WatchOutput::Images => command.stdout(Stdio::piped()).stderr(Stdio::null()),
+            WatchOutput::Errors => command.stdout(Stdio::null()).stderr(Stdio::piped()),
+        };
+        let mut child = command.spawn().unwrap();
+        let mut stream: Box<dyn Read + Send> = match capture {
+            WatchOutput::Images => Box::new(child.stdout.take().unwrap()),
+            WatchOutput::Errors => Box::new(child.stderr.take().unwrap()),
+        };
         let (sender, output) = mpsc::channel();
         let reader = thread::spawn(move || {
             let mut buffer = [0; 4096];
             loop {
-                let Ok(count) = stdout.read(&mut buffer) else {
+                let Ok(count) = stream.read(&mut buffer) else {
                     break;
                 };
                 if count == 0 || sender.send(buffer[..count].to_vec()).is_err() {
@@ -401,7 +512,7 @@ impl WatchProcess {
     }
 
     // Each call starts with an empty buffer so a second wait only sees new output.
-    fn wait_for(&self, expected: &str, mut on_tick: impl FnMut()) -> bool {
+    fn wait_for(&self, expected: &str, mut on_tick: impl FnMut()) -> Option<String> {
         let deadline = Instant::now() + WATCH_TEST_DEADLINE;
         let mut output = Vec::new();
         while Instant::now() < deadline {
@@ -410,11 +521,12 @@ impl WatchProcess {
                 Err(RecvTimeoutError::Timeout) => on_tick(),
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            if String::from_utf8_lossy(&output).contains(expected) {
-                return true;
+            let received = String::from_utf8_lossy(&output);
+            if received.ends_with('\n') && received.contains(expected) {
+                return Some(received.into_owned());
             }
         }
-        false
+        None
     }
 }
 
@@ -431,35 +543,68 @@ impl Drop for WatchProcess {
 #[test]
 fn cli_watch_redraws_on_save() {
     let repo = TempRepo::new();
-    fs::write(repo.file("f.mmd"), "graph TD\na[Initial]\n").unwrap();
-    let watch = WatchProcess::start(&repo);
-    assert!(
-        watch.wait_for("Initial", || {}),
-        "missing initial watch frame"
-    );
+    fs::write(repo.file("f.md"), RECEIPT_FLOW).unwrap();
+    let watch = WatchProcess::start(&repo, WatchOutput::Images);
+    let initial = watch
+        .wait_for(PNG_FALLBACK, || {})
+        .expect("missing initial image");
+    assert_fallback_filename(&initial, "f");
+    let initial = read_image_report(&initial);
+    assert_eq!(initial.images.len(), 1);
     let mut revision = 0;
-    let updated = watch.wait_for("SavedLabel", || {
-        revision += 1;
-        fs::write(
-            repo.file("f.mmd"),
-            format!("graph TD\na[SavedLabel{revision}]\n"),
-        )
-        .unwrap();
-    });
+    let updated = watch
+        .wait_for(PNG_FALLBACK, || {
+            revision += 1;
+            fs::write(
+                repo.file("f.md"),
+                RECEIPT_FLOW.replace("Show result", &format!("Saved result {revision}")),
+            )
+            .unwrap();
+        })
+        .expect("watch did not redraw after saving the flow within 15 seconds");
     drop(watch);
-    assert!(
-        updated,
-        "watch did not render a saved label within 15 seconds"
-    );
+    assert_fallback_filename(&updated, "f");
+    let updated = read_image_report(&updated);
+    assert!(!updated.images.is_empty());
+    assert_ne!(updated.images[0], initial.images[0]);
 }
 
 #[test]
 fn cli_watch_draws_missing_file_immediately() {
     let repo = TempRepo::new();
-    let watch = WatchProcess::start(&repo);
-    let displayed = watch.wait_for("cannot read file:", || {});
-    drop(watch);
-    assert!(displayed, "watch did not display the missing-file error");
+    let watch = WatchProcess::start(&repo, WatchOutput::Errors);
+    watch
+        .wait_for("casemap: f.md:", || {})
+        .expect("watch did not report the missing-file error");
+}
+
+#[test]
+fn cli_watch_keeps_running_after_an_oversized_image() {
+    const OVERSIZED_FLOW_STEPS: usize = 300;
+    let repo = TempRepo::new();
+    let path = repo.file("f.md");
+    let chain = (0..OVERSIZED_FLOW_STEPS)
+        .map(|index| format!("step{index}"))
+        .collect::<Vec<_>>()
+        .join(" --> ");
+    fs::write(
+        &path,
+        format!("# Oversized\n\n```mermaid\nflowchart TD\n{chain}\n```\n"),
+    )
+    .unwrap();
+    let watch = WatchProcess::start(&repo, WatchOutput::Errors);
+    watch
+        .wait_for("image exceeds the raster size limit", || {})
+        .expect("missing size error");
+    watch
+        .wait_for("link has no target node", || {
+            fs::write(
+                &path,
+                "# Next save\n\n```mermaid\nflowchart TD\nstart -->\n```\n",
+            )
+            .unwrap();
+        })
+        .expect("watch stopped before checking the next save");
 }
 
 #[test]
@@ -507,14 +652,39 @@ fn check_exits_1_on_errors() {
 }
 
 #[test]
+fn check_rejects_undrawable_flow_files() {
+    for (name, source, code) in [
+        (
+            "extra.md",
+            "# Extra\n\nA flow with two blocks.\n\n```mermaid\nflowchart TD\na([Customer]) --> b[Pay] --> c[Done]\n```\n\n```mermaid\nflowchart TD\nd[Other]\n```\n",
+            "extra-diagram",
+        ),
+        (
+            "flow.mmd",
+            "flowchart TD\na([Customer]) --> b[Pay] --> c[Done]\n",
+            "mmd-flow",
+        ),
+    ] {
+        let repo = TempRepo::new();
+        fs::write(repo.flow_path(name), source).unwrap();
+        let output = repo.casemap(&["check", "--no-color"]);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert!(output.stderr.is_empty());
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(report.contains(&format!("[{code}]")), "{report}");
+        assert!(report.ends_with("checked 1 flows: 1 error\n"), "{report}");
+    }
+}
+
+#[test]
 fn check_warnings_exit_0_unless_strict() {
     let repo = TempRepo::new();
     write_valid_flow(&repo, "checkout.md");
     let path = repo.flow_path("checkout.md");
     let valid = fs::read_to_string(&path).unwrap();
-    fs::write(&path, format!("{valid}```mermaid\nflowchart TD\n```\n")).unwrap();
+    fs::write(&path, valid.replace("flowchart TD", "flowchart LR")).unwrap();
     let report = stdout(&repo.casemap(&["check", "--no-color"]));
-    assert!(report.contains("[extra-diagram]"), "{report}");
+    assert!(report.contains("[not-top-down]"), "{report}");
     assert!(report.ends_with("checked 1 flows: 1 warning\n"), "{report}");
     let strict = repo.casemap(&["check", "--strict", "--no-color"]);
     assert_eq!(strict.status.code(), Some(1));
@@ -1457,26 +1627,10 @@ fn anchors_do_not_change_rendering() {
     let repo = common::anchored_catalog();
     let without_anchors = common::ANCHORED_PAY.replace("%% @code pay src/pay.rs\n", "");
     fs::write(repo.file("baseline.md"), &without_anchors).unwrap();
-    let block = casemap::markdown::mermaid_blocks(&without_anchors).remove(0);
-    fs::write(repo.file("baseline.mmd"), &block.source).unwrap();
-    fs::write(
-        repo.file("anchored.mmd"),
-        format!("{}%% @code * src\n", block.source),
-    )
-    .unwrap();
-    for direction in ["TD", "BT", "LR", "RL"] {
-        for mode in ["--no-color", "--color", "--ascii"] {
-            for (baseline, anchored) in [
-                ("baseline.md", "docs/flows/pay.md"),
-                ("baseline.mmd", "anchored.mmd"),
-            ] {
-                assert_eq!(
-                    stdout(&repo.casemap(&[baseline, "--dir", direction, mode])),
-                    stdout(&repo.casemap(&[anchored, "--dir", direction, mode]))
-                );
-            }
-        }
-    }
+    let baseline = read_image_report(&stdout(&repo.casemap(&["baseline.md"])));
+    let anchored = read_image_report(&stdout(&repo.casemap(&["docs/flows/pay.md"])));
+    assert_eq!(baseline.images.len(), 1);
+    assert_eq!(baseline, anchored);
 }
 
 #[test]
@@ -1574,12 +1728,10 @@ fn browse_invalid_base_fails_like_diff() {
 #[test]
 fn bare_casemap_with_piped_stdin_still_renders() {
     let repo = TempRepo::new();
-    casemap_command(&repo)
-        .current_dir(repo.path())
-        .write_stdin("graph TD\na[First] --> b[Second]\n")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("First"));
+    let bare = read_image_report(&stdout(&repo.casemap_stdin(&[], RECEIPT_FLOW)));
+    let explicit = read_image_report(&stdout(&repo.casemap_stdin(&["-"], RECEIPT_FLOW)));
+    assert_eq!(bare.images.len(), 1);
+    assert_eq!(bare, explicit);
 }
 
 #[cfg(not(feature = "tui"))]
@@ -1598,12 +1750,8 @@ fn browse_without_tui_feature_errors() {
 fn bare_casemap_without_catalog_and_piped_stdin_still_renders() {
     let repo = TempRepo::new();
     std::fs::remove_dir(repo.file("docs/flows")).unwrap();
-    casemap_command(&repo)
-        .current_dir(repo.path())
-        .write_stdin("graph TD\na[First] --> b[Second]\n")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("First"));
+    let report = read_image_report(&stdout(&repo.casemap_stdin(&[], RECEIPT_FLOW)));
+    assert_eq!(report.images.len(), 1);
 }
 
 #[test]
@@ -1786,9 +1934,9 @@ fn diff_markdown_fails_check_errors_even_without_diagram_changes() {
 #[test]
 fn diff_markdown_warnings_do_not_fail_even_with_strict() {
     let repo = common::anchored_catalog();
-    fs::write(repo.flow_path("warning.mmd"), "flowchart TD\na[A]").unwrap();
+    fs::write(repo.flow_path("warning.md"), "# Warning\n\nA warning-only flow.\n\n```mermaid\nflowchart LR\na([Customer]) --> b[Pay] --> c[Done]\n```\n").unwrap();
     let output = stdout(&repo.casemap(&["diff", "--format", "markdown", "--strict"]));
-    assert!(output.contains("[mmd-flow]"));
+    assert!(output.contains("[not-top-down]"));
     assert!(!output.contains(flows::QUIET_MARKER));
 }
 
@@ -2561,15 +2709,17 @@ fn diff_pay_with(addition: &str) -> (String, String) {
 fn propose_marks_unanchored_steps_like_diff() {
     let repo = common::anchored_catalog();
     let proposal = common::append_step(common::ANCHORED_PAY, MAIL_STEP);
-    let text = stdout(&propose_in(&repo, "pay", "text", &proposal));
-    assert!(text.contains(TEXT_MAIL_MARKER), "{text}");
+    let text = read_image_report(&stdout(&propose_in(&repo, "pay", "text", &proposal)));
+    assert!(text.summary.contains(TEXT_MAIL_MARKER), "{}", text.summary);
     let markdown = stdout(&propose_in(&repo, "pay", "markdown", &proposal));
     assert!(markdown.contains(MARKDOWN_MAIL_MARKER), "{markdown}");
     fs::write(repo.flow_path("pay.md"), proposal).unwrap();
+    let diff = read_image_report(&stdout(&repo.casemap(&["diff", "--no-color"])));
     assert!(
-        stdout(&repo.casemap(&["diff", "--no-color"]))
-            .contains(text.strip_suffix("proposal: ok\n").unwrap())
+        diff.summary
+            .contains(text.summary.strip_suffix("proposal: ok\n").unwrap())
     );
+    assert_eq!(text.images, diff.images);
 }
 
 #[test]
@@ -2589,13 +2739,18 @@ fn propose_matches_diff_of_the_written_file() {
     let repo = TempRepo::committed_before();
     let proposal = fs::read_to_string("tests/fixtures/flows/after/checkout.md").unwrap();
     let before = repo.git_stdout(&["status", "--porcelain"]);
-    let output = stdout(&repo.casemap_stdin(&["propose", "checkout", "--no-color"], &proposal));
+    let output = read_image_report(&stdout(
+        &repo.casemap_stdin(&["propose", "checkout", "--no-color"], &proposal),
+    ));
     assert_eq!(repo.git_stdout(&["status", "--porcelain"]), before);
-    let section = output.strip_suffix("proposal: ok\n").unwrap();
+    let section = output.summary.strip_suffix("proposal: ok\n").unwrap();
     assert!(!section.is_empty());
     assert!(section.starts_with("Checkout (checkout.md)"));
     repo.add_fixture("after", "checkout.md");
-    assert!(stdout(&repo.casemap(&["diff", "--no-color"])).contains(section));
+    let diff = read_image_report(&stdout(&repo.casemap(&["diff", "--no-color"])));
+    assert!(diff.summary.contains(section));
+    assert_eq!(output.images.len(), 1);
+    assert_eq!(diff.images, output.images);
 }
 
 #[test]
@@ -2789,14 +2944,6 @@ fn map_grid_fits_or_falls_back() {
             assert!(run.stdout.lines().all(|line| line.width() <= 80));
         }
     }
-    let run = common::run_casemap(
-        &["map", "--ascii", "--no-color"],
-        directory.path(),
-        &[],
-        None,
-    );
-    assert_eq!(run.status, 0, "{}", run.stderr);
-    assert!(run.stdout.is_ascii());
 }
 
 #[test]
@@ -3170,11 +3317,21 @@ fn map_ignores_bad_columns() {
 fn flows_name_ignores_the_map() {
     let directory = common::map_catalog();
     let args = ["flows", "check-out-a-cart", "--no-color"];
-    let mapped = common::run_casemap(&args, directory.path(), &[], None);
+    let temporary_images = directory.path().join("temporary-images");
+    let temporary_images = temporary_images.to_str().unwrap();
+    let environment = [
+        ("TMPDIR", temporary_images),
+        ("TMP", temporary_images),
+        ("TEMP", temporary_images),
+    ];
+    let mapped = common::run_casemap(&args, directory.path(), &environment, None);
+    let mapped_report = read_image_report(&mapped.stdout);
     fs::remove_file(directory.path().join("docs/flows/README.md")).unwrap();
-    let flat = common::run_casemap(&args, directory.path(), &[], None);
+    let flat = common::run_casemap(&args, directory.path(), &environment, None);
     assert_eq!(mapped.status, flat.status);
-    assert_eq!(mapped.stdout, flat.stdout);
+    let flat = read_image_report(&flat.stdout);
+    assert_eq!(mapped_report.images.len(), 1);
+    assert_eq!(mapped_report, flat);
 }
 
 #[test]
@@ -3195,4 +3352,44 @@ fn flows_lists_unmapped_last() {
         flow_titles_from_list(&run.stdout).last(),
         Some(&"Unmapped  (no mermaid block)")
     );
+}
+
+#[test]
+fn export_writes_into_the_current_directory_by_default() {
+    let repo = TempRepo::new();
+    repo.add_fixture("after", "checkout.md");
+    let output = repo.casemap(&["export", "docs/flows/checkout.md"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(repo.file("checkout.png").exists());
+    assert!(!repo.flow_path("checkout.png").exists());
+    let report = repo.casemap(&["check", "--strict"]);
+    assert!(!stdout(&report).contains("ignored-entry"));
+}
+
+#[test]
+fn propose_reports_renderer_style_problems() {
+    let repo = common::anchored_catalog();
+    let sideways = common::ANCHORED_PAY.replace("flowchart TD", "graph LR");
+    let output = propose_in(&repo, "pay", "text", &sideways);
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("not-top-down"));
+    for (addition, code) in [
+        ("\nextra -.-> other[Other]\n", "unsupported-link"),
+        ("\nextra((Circle))\n", "unsupported-shape"),
+    ] {
+        let proposal = common::ANCHORED_PAY.replace("```\n", &format!("{addition}```\n"));
+        let output = propose_in(&repo, "pay", "markdown", &proposal);
+        assert!(!output.status.success());
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(report.contains(code), "{report}");
+        fs::write(repo.flow_path("pay.md"), &proposal).unwrap();
+        let checked = repo.casemap(&["check"]);
+        assert!(!checked.status.success());
+        let report = String::from_utf8(checked.stdout).unwrap();
+        assert!(report.contains(code), "{report}");
+    }
 }

@@ -9,21 +9,20 @@ The living map of an app's use cases: one Markdown file per use case in `docs/fl
 
 ```bash
 cargo build
-cargo test                                      # invariants over tests/fixtures in all four directions
-cargo test --test quality -- --nocapture   # diagram layout metrics over the real-app corpus
+cargo test
 cargo test --no-default-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo insta review
 cargo run -- check --strict
-cargo run -- tests/fixtures/simple.mmd                # render once
-cargo run -- --watch tests/fixtures/architecture.mmd  # redraw on every save
+cargo run -- docs/flows/render-a-diagram.md                # render once
+cargo run -- --watch docs/flows/render-a-diagram.md  # redraw on every save
 ```
 
 Release: automatic. main only takes PRs with green CI; each merge updates the release-plz PR (version + CHANGELOG from conventional commits); its CI needs a maintainer's "Approve workflows to run" click, and merging it publishes to crates.io, tags `vX.Y.Z` and dispatches cargo-dist (`release.yml`) for binaries, installers and the Homebrew formula. Commit messages must be conventional (`feat:`, `fix:`, `chore:` …). Run `dist generate` after editing `dist-workspace.toml`.
 
 ## Code map
 
-`src/lib.rs` wires the pipeline: `parser` → `layout/` (`acyclic` → `rank` → `order` → `size` → `position`) → `route` → `render` on top of `canvas`. `src/main.rs` dispatches catalog setup, validation, listing, diffing, proposals and rendering. The binary-only `hook` module handles agent Stop checks, warning memory and project hook configuration. The binary-only `onboard` module handles the first-run menu, agent detection and launch. `docs/renderer.md` explains each layout stage. The binary-only `src/browse/` TUI (behind the default-on `tui` feature) handles interactive browsing with pure app state, layout, widgets and ANSI conversion.
+`parser` builds a diagram with sections and icons. `src/flow_image/` lays it out and draws SVG or PNG. `image_terminal` handles in-terminal graphics and temporary PNGs. `src/main.rs` dispatches catalog setup, validation, listing, diffing, proposals and rendering. The binary-only `hook` module handles agent Stop checks, warning memory and project hook configuration. The binary-only `onboard` module handles the first-run menu, agent detection and launch. `docs/renderer.md` covers rendering, export and themes. The `src/browse/` TUI runs behind the default-on `tui` feature and handles the activity map, step selection and image viewport.
 
 `anchors` (anchor syntax, matcher, file walk), `markdown` (mermaid blocks in .md), `map` (map file parsing, grouping, map renderers), `diff` (union diagram + marks), `mermaid` (Mermaid writer), `flows` (catalog, compare, report), `git` (repository paths, ignore checks, merge base and files at a commit via the git binary), `coverage` (code classification, repository coverage and uncovered changes), `check` (catalog validation), `skill` (embedded casemap skill, source `skills/casemap/SKILL.md`).
 

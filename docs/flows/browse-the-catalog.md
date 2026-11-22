@@ -1,23 +1,38 @@
 # Browse the catalog
 
-A developer explores use cases, pans wide diagrams and inspects changes in a terminal.
+A developer browses the activity map, follows incoming paths and opens the code for a step.
 
 ```mermaid
 flowchart TD
-    who([Developer runs casemap browse]) --> catalog{Catalog exists?}
-    catalog -->|no| fail[Report the missing catalog]
-    catalog -->|yes| base{Explicit base valid?}
-    base -->|no| fail
-    base -->|yes or omitted| tty{Terminal stdout?}
-    tty -->|no| fail
-    tty -->|yes| load[Load flows, checks and base data]
-    load --> screen[Show the list and selected diagram]
-    screen --> action{Developer action?}
-    action -->|navigate or search| view[Select, filter or pan]
-    view --> screen
-    action -->|diff or panel| details[Show changes, problems and code]
-    details --> screen
-    action -->|reload or file edit| load
-    action -->|quit| restore[Restore the terminal and exit]
+    subgraph opening [Open the catalog]
+        who([Developer runs casemap browse]) --> catalog{Catalog exists?}
+        catalog -->|no| fail[Report the missing catalog]
+        catalog -->|yes| base{Explicit base valid?}
+        base -->|no| fail
+        base -->|yes or omitted| tty{Terminal stdout?}
+        tty -->|no| fail
+    end
+    subgraph exploration [Explore the flows]
+        load[Load flows, checks and base data] --> screen[Show the activity map]
+        screen --> view[Open a use-case diagram]
+        view --> action{Developer action?}
+        action -->|select step| details[Show incoming paths and code]
+        details --> screen
+        action -->|open code| open[Open the step's anchored code]
+        open --> view
+        action -->|change comparison| compare[Show marks or side-by-side images]
+        compare --> view
+        action -->|reload or file edit| load
+        action -->|quit| restore[Restore the terminal and exit]
+    end
+    tty -->|yes| load
+    %% @icon fail triangle-alert
+    %% @icon load folder-open
+    %% @icon screen monitor
+    %% @icon view search
+    %% @icon details git-compare
+    %% @icon open code
+    %% @icon compare git-compare
+    %% @icon restore terminal
     %% @code * src/browse
 ```

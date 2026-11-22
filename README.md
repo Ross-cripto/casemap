@@ -52,39 +52,11 @@ flowchart TD
 ```
 ````
 
-In the terminal, `casemap flows check-out-a-cart` draws it:
-
-```text
-Check out a cart
-A shopper with items in the cart goes to the store's hosted checkout.
-
-                                ╭─────────────────────────╮
-                                │ Shopper opens the cart  │
-                                ╰────────────┬────────────╯
-                                             │
-                                             ▼
-                                    ╱─────────────────╲
-                                   <  Cart has items?  >
-                                    ╲────────┬────────╱
-             ╭───────────────────────────────┤
-             │                               │
-            no                              yes
-             │                               │
-             ▼                               ▼
-┌─────────────────────────┐    ┌───────────────────────────┐
-│ See Your cart is empty. │    │ Click Proceed to Checkout │
-└─────────────────────────┘    └──────────┬────────────────┘
-                                          │
-                                          ▼
-                         ┌─────────────────────────────────┐
-                         │ See loading dots on the button  │
-                         └───────────────┬─────────────────┘
-                                         │
-                                         ▼
-                       ┌───────────────────────────────────┐
-                       │ Land on the hosted checkout page  │
-                       └───────────────────────────────────┘
-```
+In the terminal, `casemap flows check-out-a-cart` displays an image with colored
+sections, labeled branches and links back to earlier steps. On terminals without
+graphics support it prints the path to a PNG. For a file you can share, use
+`casemap export docs/flows/check-out-a-cart.md --svg`. The demo above was recorded
+before the image renderer. [Rendering and themes →](docs/renderer.md)
 
 `casemap map` shows the whole app by user activity:
 
@@ -130,8 +102,8 @@ ask your coding agent: **"document the use-case flows of this repo"**.
 
 ## What you get
 
-**Browse the catalog.** `casemap browse` opens a full-screen browser: every flow
-with a status marker, pannable diagrams, search, and a diff against any branch.
+**Browse the catalog.** `casemap browse` opens the activity map. Pick a flow to see its diagram,
+trace a step’s incoming paths, and open the code behind it.
 [Browse →](docs/browse.md)
 
 **Validate in CI.** `casemap check` reports every problem with file and line, as
@@ -184,3 +156,4 @@ command and flag, check codes, JSON output, the GitHub Action and agent setup.
 
 Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). casemap is
 [MIT licensed](LICENSE).
+Embedded fonts and icons have [third-party notices](THIRD-PARTY-NOTICES.md).

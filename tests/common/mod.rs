@@ -46,7 +46,12 @@ pub fn git_command(config: &Path) -> Command {
 pub fn casemap_command(config: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_casemap"));
     isolate_git(&mut command, config);
-    command.env_remove("NO_COLOR");
+    let temporary_images = config.with_file_name("temporary-images");
+    command
+        .env_remove("NO_COLOR")
+        .env("TMPDIR", &temporary_images)
+        .env("TMP", &temporary_images)
+        .env("TEMP", &temporary_images);
     command
 }
 

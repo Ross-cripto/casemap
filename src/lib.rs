@@ -1,35 +1,25 @@
-//! casemap: the living map of an app's use cases, checked, rendered and diffed in the terminal.
+//! Casemap checks, renders and compares Markdown use-case flows.
 //!
-//! The pipeline is `parser` → `layout` (layered, cluster-aware) → `route`
-//! (orthogonal edge routing) → `render` (box-drawing canvas). Each stage is a
-//! plain function over plain data, so a TUI, a file watcher or an MCP server
-//! can embed it directly.
-//! A flow catalog records use cases in Markdown and compares their diagrams with git.
-//!
-//! ```
-//! let out = casemap::render_str("graph TD\n  a[API] --> b[(DB)]", &casemap::Options::default()).unwrap();
-//! assert!(out.contains("API"));
-//! ```
+//! The image pipeline parses the Mermaid flowchart, lays out its cards and
+//! connections, and renders SVG. The CLI can export the SVG, rasterize it
+//! to PNG, or display the image through a terminal graphics protocol.
 
 pub mod anchors;
-pub mod canvas;
 pub mod check;
 pub mod coverage;
 pub mod diff;
+pub mod flow_image;
 pub mod flows;
 pub mod git;
-pub mod layout;
+pub mod icons;
 pub mod map;
 pub mod markdown;
 pub mod mermaid;
 pub mod model;
 pub mod parser;
 pub mod paths;
-#[doc(hidden)]
-pub mod quality;
-pub mod render;
-pub mod route;
 pub mod skill;
+mod terminal_text;
 
 pub use model::{Diagram, Direction, Mark};
 pub use parser::ParseError;
@@ -40,50 +30,4 @@ pub struct Options {
     pub ascii: bool,
     /// ANSI colour output.
     pub color: bool,
-    /// Override the direction declared in the source.
-    pub direction: Option<Direction>,
-}
-
-/// Lays out and draws an already-parsed diagram.
-pub fn render_diagram(diagram: &Diagram, opts: &Options) -> String {
-    let mut d = diagram.clone();
-    if let Some(dir) = opts.direction {
-        d.direction = dir;
-    }
-    d.fold_self_loops();
-    let lay = layout::layout(&d);
-    let rt = route::route(&d, &lay);
-    render::render(
-        &d,
-        &lay,
-        &rt,
-        &render::Options {
-            ascii: opts.ascii,
-            color: opts.color,
-        },
-    )
-}
-
-/// Parses Mermaid flowchart source and renders it.
-pub fn render_str(source: &str, opts: &Options) -> Result<String, ParseError> {
-    let d = parser::parse(source)?;
-    Ok(render_diagram(&d, opts))
-}
-
-/// Renders every mermaid block under its nearest heading; error lines refer to the document.
-pub fn render_markdown(md: &str, opts: &Options) -> Result<String, ParseError> {
-    let mut rendered = Vec::new();
-    for block in markdown::mermaid_blocks(md) {
-        let diagram = parser::parse(&block.source).map_err(|error| ParseError {
-            line: block.line + error.line,
-            message: error.message,
-        })?;
-        let mut output = String::new();
-        if let Some(heading) = block.heading {
-            output.push_str(&render::bold_line(&heading, opts.color));
-        }
-        output.push_str(&render_diagram(&diagram, opts));
-        rendered.push(output);
-    }
-    Ok(rendered.join("\n"))
 }
