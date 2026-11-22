@@ -205,7 +205,7 @@ enum HookEvent {
 }
 
 fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some("hook") {
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "hook") {
         std::panic::set_hook(Box::new(|_| {}));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Ok(cli) = Cli::try_parse() {
